@@ -75,7 +75,7 @@ static std::atomic<bool>        g_dialog_done{false};
 static std::string              g_dialog_result;
 static std::string              g_dialog_kind;   // which UI element opened the dialog
 
-static void gui_log(const char* msg, bool //is_error) {
+static void gui_log(const char* msg, bool /*is_error*/) {
     std::lock_guard<std::mutex> lock(g_log_mutex);
     std::string line = msg;
     while (!line.empty() && line.back() == '\n') line.pop_back();
