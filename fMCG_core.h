@@ -22,9 +22,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-#if defined(__linux__)
 #include <sys/mman.h>
-#endif
 #elif defined(_WIN32)
 #include <windows.h>
 #endif
@@ -163,8 +161,8 @@ class BinaryReader {
     }
 
 public:
-    BinaryReader(const std::string& path, size_t start = 0, bool mmap = false)
-        : use_mmap(mmap), pos(start), buf_pos(0), buf_len(0) {
+    BinaryReader(const std::string& path, size_t start = 0, bool want_mmap = false)
+        : use_mmap(want_mmap), pos(start), buf_pos(0), buf_len(0) {
 
 #if defined(_WIN32)
         int wlen = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
