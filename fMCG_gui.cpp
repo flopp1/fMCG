@@ -791,10 +791,12 @@ static void render_preview_popup() {
             snprintf(overlay, sizeof(overlay), "Rendering %d%%", (int)(p * 100));
             ImGui::ProgressBar(p, ImVec2(-1, 0), overlay);
         } else {
+            // Render finished in the background: clear the flag once. The popup
+            // stays open (unless it was opened for the render itself) so Preview
+            // can always bring it back.
             if (g_render_active && !g_busy.load()) {
                 g_render_active = false;
                 g_preview_playing = false;
-                g_show_preview = false;
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 120);
@@ -1162,7 +1164,6 @@ int main() {
         // --- Action Buttons ---
         {
             bool can_process = (midi_buf[0] != '\0') && !g_busy.load();
-            bool can_preview = g_processed.load() && !g_busy.load();
             bool can_render  = g_processed.load() && !g_busy.load();
 
             if (!can_process) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
@@ -1193,11 +1194,15 @@ int main() {
                 }
             }
 
+            // Preview opens whenever data exists — also while an ffmpeg render
+            // runs (live progress view), and after the popup was closed.
+            bool can_preview = g_processed.load() && (!g_busy.load() || g_render_active);
+            bool preview_starts_render_view = g_render_active && g_busy.load();
             ImGui::SameLine();
             if (!can_preview) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
             if (ImGui::Button("Preview", ImVec2(140, 30)) && can_preview) {
                 g_show_preview = true;
-                g_preview_playing = true;
+                g_preview_playing = !preview_starts_render_view;
                 g_preview_start_time = glfwGetTime();
                 g_preview_start_pos = g_preview_time;
                 ImGui::OpenPopup("Preview");
