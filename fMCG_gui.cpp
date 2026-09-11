@@ -274,7 +274,7 @@ struct GuiSettings {
     CommaOpts   commas;
     PadOpts     pad;
     bool        cc_stats = false;
-    double      start_delay = 0.0;
+    double      start_delay = 3.0;
     // 0 = corner alignment dropdown, 1 = explicit x/y (top-left of text block)
     int         pos_mode = 0;
     int         pos_x = 30;
