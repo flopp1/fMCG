@@ -48,6 +48,9 @@ static std::string                g_text_colour_ass{"&H00FFFFFF"};
 static int                        g_ass_alignment{7};
 static int                        g_font_size{36};       // video-resolution font size (ASS Fontsize)
 static std::string                g_font_family;         // family used for the last processed render
+static std::string                g_font_variant;        // subfamily/style, e.g. "Bold"
+static int                        g_font_bold = 0;
+static int                        g_font_italic = 0;
 static bool                       g_show_preview{false};
 static bool                       g_render_active{false};  // true while FFmpeg render is in progress
 static bool                       g_preview_playing{false};
@@ -195,18 +198,19 @@ static std::string format_frame_text(const FrameStats& fs) {
     return result;
 }
 
-// Load the preview font for the current family. Deferred out of the frame: the
-// family->file lookup walks the font directories, and atlas additions must not
-// happen mid-frame. Size is applied per-frame via PushFont (dynamic atlas).
+// Load the preview font for the current family+variant. Deferred out of the
+// frame: the file lookup walks the font directories, and atlas additions must
+// not happen mid-frame. Size is applied per-frame via PushFont (dynamic atlas).
 static void process_preview_font_reload() {
     if (!g_preview_font_reload.exchange(false)) return;
-    if (g_font_family.empty() || g_font_family == g_preview_baked_family) return;
-    std::string file = find_font_file_for_family(g_font_family);
+    if (g_font_family.empty()) return;
+    std::string key = g_font_family + "|" + g_font_variant;
+    std::string file = find_font_file_for_variant(g_font_family, g_font_variant);
     if (file.empty()) return;
     ImGuiIO& io = ImGui::GetIO();
     g_preview_font = io.Fonts->AddFontFromFileTTF(file.c_str(), 36.0f);
     if (g_preview_font)
-        g_preview_baked_family = g_font_family;
+        g_preview_baked_family = key;
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +270,9 @@ struct GuiSettings {
     std::string output_video;
     std::string layout_text;
     std::string font_family;
+    std::string font_variant;   // subfamily/style within the family ("" = default)
+    int         font_bold = 0;
+    int         font_italic = 0;
     int         font_size = 36;
     int         alignment = 1;
     int         width = 1920;
@@ -366,6 +373,8 @@ static void run_process(GuiSettings s) {
     acfg.fps = s.fps;
     acfg.font_size = s.font_size;
     acfg.font_family = s.font_family;
+    acfg.bold = s.font_bold;
+    acfg.italic_flag = s.font_italic;
     acfg.text_color_ass = text_color_ass;
     acfg.ass_alignment = ass_alignment;
     acfg.pos_mode = s.pos_mode;
@@ -401,6 +410,9 @@ static void run_process(GuiSettings s) {
     g_ass_alignment = ass_alignment;
     g_font_size = s.font_size;
     g_font_family = s.font_family;
+    g_font_variant = s.font_variant;
+    g_font_bold = s.font_bold;
+    g_font_italic = s.font_italic;
     g_preview_font_reload = true;   // preview font must match the (possibly new) family
 
     gui_log("Processing complete. Ready for preview/render.", false);
@@ -964,18 +976,64 @@ int main() {
         ImGui::Spacing();
 
         // --- Settings ---
+        // Font family + weight/variant share one row to stay compact.
         ImGui::Text("Font Family");
-        ImGui::SetNextItemWidth(-1);
         if (!font_list_loaded && !font_cstrs.empty()) font_list_loaded = true;
+        bool fam_changed = false;
         if (!font_cstrs.empty()) {
-            ImGui::Combo("##font", &selected_font_idx, font_cstrs.data(), (int)font_cstrs.size());
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 130);
+            if (ImGui::Combo("##font", &selected_font_idx, font_cstrs.data(), (int)font_cstrs.size()))
+                fam_changed = true;
             settings.font_family = system_fonts[selected_font_idx];
         } else {
             char font_buf[256];
             strncpy(font_buf, settings.font_family.c_str(), sizeof(font_buf) - 1);
             font_buf[sizeof(font_buf) - 1] = '\0';
-            ImGui::InputText("##font_custom", font_buf, sizeof(font_buf));
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 130);
+            if (ImGui::InputText("##font_custom", font_buf, sizeof(font_buf)))
+                fam_changed = true;
             settings.font_family = font_buf;
+        }
+
+        // Style/weight combo on the same row, populated from the family's files.
+        static std::vector<std::string> variant_names;
+        static std::vector<const char*> variant_cstrs;
+        static std::string variants_for;
+        static int variant_idx = 0;
+        if (fam_changed || variants_for != settings.font_family) {
+            variants_for = settings.font_family;
+            variant_names.clear();
+            variant_cstrs.clear();
+            for (const auto& v : enumerate_font_variants(settings.font_family)) {
+                variant_names.push_back(v.style);
+                variant_cstrs.push_back(variant_names.back().c_str());
+            }
+            variant_idx = 0;
+            for (size_t i = 0; i < variant_names.size(); ++i)
+                if (variant_names[i] == settings.font_variant) variant_idx = (int)i;
+        }
+        ImGui::SameLine();
+        float style_w = 125.0f;
+        if (variant_cstrs.empty()) {
+            ImGui::SetNextItemWidth(style_w);
+            ImGui::TextDisabled("(no styles)");
+        } else {
+            if ((size_t)variant_idx >= variant_names.size()) variant_idx = 0;
+            ImGui::SetNextItemWidth(style_w);
+            if (ImGui::Combo("##fstyle", &variant_idx, variant_cstrs.data(), (int)variant_cstrs.size())) {
+                settings.font_variant = variant_names[variant_idx];
+                // Bold/italic flags for the ASS style come from the variant's
+                // OS/2 weight class and fsSelection bit.
+                settings.font_bold = 0;
+                settings.font_italic = 0;
+                for (const auto& v : enumerate_font_variants(settings.font_family)) {
+                    if (v.style == settings.font_variant) {
+                        settings.font_bold = (v.weight >= 600) ? 1 : 0;
+                        settings.font_italic = v.italic ? 1 : 0;
+                        break;
+                    }
+                }
+            }
         }
 
         ImGui::Text("Font Size");

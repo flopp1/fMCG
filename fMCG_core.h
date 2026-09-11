@@ -1133,7 +1133,8 @@ inline std::string utf16be_to_utf8(const uint8_t* s, size_t len) {
     return out;
 }
 
-inline bool extract_family_from_sfnt(std::ifstream& f, uint64_t base, std::string& out_family) {
+// Extract one string from the sfnt 'name' table by name ID.
+inline bool extract_sfnt_name_id(std::ifstream& f, uint64_t base, uint16_t want_id, std::string& out) {
     f.clear();
     f.seekg((std::streamoff)base, std::ios::beg);
     uint8_t hdr[12];
@@ -1162,7 +1163,6 @@ inline bool extract_family_from_sfnt(std::ifstream& f, uint64_t base, std::strin
 
     uint16_t count = read_be16(nt.data() + 2);
     uint16_t str_off = read_be16(nt.data() + 4);
-    std::string fam16, fam1;
     size_t rec_pos = 6;
     for (uint32_t i = 0; i < count && rec_pos + 12 <= nt.size(); ++i, rec_pos += 12) {
         const uint8_t* rec = nt.data() + rec_pos;
@@ -1171,25 +1171,25 @@ inline bool extract_family_from_sfnt(std::ifstream& f, uint64_t base, std::strin
         uint16_t name_id = read_be16(rec + 6);
         uint16_t length = read_be16(rec + 8);
         uint16_t offset = read_be16(rec + 10);
-        if (name_id != 1 && name_id != 16) continue;
+        if (name_id != want_id) continue;
 
         uint32_t off = (uint32_t)str_off + offset;
         if (length == 0 || off + length > nt.size()) continue;
 
-        std::string name;
         if ((platform == 3 && (encoding == 1 || encoding == 10)) || platform == 0)
-            name = utf16be_to_utf8(nt.data() + off, length);
+            out = utf16be_to_utf8(nt.data() + off, length);
         else if (platform == 3 || platform == 1)
-            name.assign((const char*)nt.data() + off, length);
+            out.assign((const char*)nt.data() + off, length);
         else continue;
-
-        if (name.empty()) continue;
-        if (name_id == 16) { if (fam16.empty()) fam16 = name; }
-        else               { if (fam1.empty()) fam1 = name; }
-        if (!fam16.empty() && !fam1.empty()) break;
+        if (!out.empty()) return true;
     }
-    out_family = !fam16.empty() ? fam16 : fam1;
-    return !out_family.empty();
+    return false;
+}
+
+// Family name: prefer the typographic family (ID 16), fall back to ID 1.
+inline bool extract_family_from_sfnt(std::ifstream& f, uint64_t base, std::string& out_family) {
+    if (extract_sfnt_name_id(f, base, 16, out_family) && !out_family.empty()) return true;
+    return extract_sfnt_name_id(f, base, 1, out_family) && !out_family.empty();
 }
 
 inline std::string read_font_family(const std::string& path) {
@@ -1296,6 +1296,111 @@ inline std::vector<std::string> enumerate_system_fonts() {
 // Resolve a font family name (as returned by enumerate_system_fonts) to a concrete
 // font file that can be loaded for the preview. Falls back to the first font file
 // found; returns "" if no font files exist at all.
+// One concrete variant (weight/slant) of a font family: a single file.
+struct FontVariant {
+    std::string file;        // full path to the ttf/otf/ttc
+    std::string style;       // human-readable subfamily, e.g. "Bold", "Light Italic"
+    int         weight = 400; // OS/2 usWeightClass (100..900), 0 if unknown
+    bool        italic = false;
+};
+
+// All files belonging to a family (style name read from ID 17, falling back
+// to ID 2; weight/italic from the OS/2 table when present).
+inline std::vector<FontVariant> enumerate_font_variants(const std::string& family) {
+    std::vector<FontVariant> out;
+    std::set<std::string> seen_files;
+    for (const std::string& dir : get_font_directories()) {
+        std::vector<std::string> files;
+        collect_font_files(dir, files, 0);
+        for (const auto& path : files) {
+            if (!seen_files.insert(path).second) continue;
+            std::ifstream f(path, std::ios::binary);
+            if (!f) continue;
+            uint8_t hdr[12];
+            if (!f.read((char*)hdr, 12)) continue;
+            uint32_t version = read_be32(hdr);
+
+            std::vector<uint64_t> bases;   // sfnt offsets (TTC: several)
+            if (version == 0x74746366) {
+                uint32_t num = read_be32(hdr + 8);
+                if (num == 0 || num > 64) continue;
+                for (uint32_t i = 0; i < num; ++i) {
+                    uint8_t ob[4];
+                    if (!f.read((char*)ob, 4)) break;
+                    bases.push_back(read_be32(ob));
+                }
+            } else if (version == 0x00010000 || version == 0x4F54544F || version == 0x74727565) {
+                bases.push_back(0);
+            } else continue;
+
+            for (uint64_t base : bases) {
+                std::string fam;
+                if (!extract_family_from_sfnt(f, base, fam) || fam.empty()) continue;
+                if (ci_less_str(fam, family) || ci_less_str(family, fam)) continue;
+
+                FontVariant v;
+                v.file = path;
+                if (!extract_sfnt_name_id(f, base, 17, v.style) || v.style.empty())
+                    extract_sfnt_name_id(f, base, 2, v.style);
+                if (v.style.empty()) v.style = "Regular";
+
+                // OS/2 table: usWeightClass at offset 4, fsSelection at 62
+                // (bit 0 = italic).
+                f.clear();
+                f.seekg(0, std::ios::end);
+                std::streamoff fsize = f.tellg();
+                f.seekg((std::streamoff)base, std::ios::beg);
+                uint8_t h2[12];
+                if (f.read((char*)h2, 12)) {
+                    uint16_t num_tables = read_be16(h2 + 4);
+                    std::vector<uint8_t> dir((size_t)num_tables * 16);
+                    if (num_tables > 0 && num_tables <= 512 && f.read((char*)dir.data(), (std::streamsize)dir.size())) {
+                        for (uint16_t i = 0; i < num_tables; ++i) {
+                            const uint8_t* rec = dir.data() + (size_t)i * 16;
+                            if (read_be32(rec) != 0x4F532F32) continue;   // "OS/2"
+                            uint64_t os2 = base + read_be32(rec + 8);
+                            if (os2 + 64 > (uint64_t)fsize) break;
+                            f.clear(); f.seekg((std::streamoff)os2, std::ios::beg);
+                            uint8_t t[64];
+                            if (f.read((char*)t, 64)) {
+                                v.weight = read_be16(t + 4);
+                                v.italic = (read_be16(t + 62) & 1) != 0;
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                bool dup = false;
+                for (const auto& e : out) if (e.file == v.file && e.style == v.style) { dup = true; break; }
+                if (!dup) out.push_back(std::move(v));
+            }
+        }
+    }
+    // Stable presentation: Regular first, then by weight, then by style name.
+    std::stable_sort(out.begin(), out.end(), [](const FontVariant& a, const FontVariant& b) {
+        auto is_reg = [](const std::string& s) {
+            return !ci_less_str(s, "regular") && !ci_less_str("regular", s);
+        };
+        bool ra = is_reg(a.style), rb = is_reg(b.style);
+        if (ra != rb) return ra > rb;   // Regular first
+        if (a.weight != b.weight) return a.weight < b.weight;
+        return a.style < b.style;
+    });
+    return out;
+}
+
+// Resolve a family + style (subfamily) to a concrete font file. Empty style
+// matches the Regular variant / first file of the family.
+inline std::string find_font_file_for_family(const std::string& family);
+
+inline std::string find_font_file_for_variant(const std::string& family, const std::string& style) {
+    if (style.empty()) return find_font_file_for_family(family);
+    for (const auto& v : enumerate_font_variants(family))
+        if (v.style == style) return v.file;
+    return find_font_file_for_family(family);   // style vanished: graceful fallback
+}
+
 inline std::string find_font_file_for_family(const std::string& family) {
     std::string first_file;
     for (const std::string& dir : get_font_directories()) {
@@ -1323,6 +1428,8 @@ struct AssConfig {
     double fps = 60.0;
     int font_size = 36;
     std::string font_family = "Arial";
+    int bold = 0;               // ASS Style Bold flag (from the chosen variant)
+    int italic_flag = 0;        // ASS Style Italic flag
     std::string text_color_ass = "&H00FFFFFF";
     std::string bg_color_ass = "&H00000000";   // video background (&HAABBGGRR)
     int ass_alignment = 7;
@@ -1343,7 +1450,7 @@ inline void generate_ass(const std::string& ass_filename, const std::vector<Fram
     std::ofstream ass(ass_filename);
     ass << "[Script Info]\nScriptType: v4.00+\nPlayResX: " << cfg.width << "\nPlayResY: " << cfg.height << "\n\n";
     ass << "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n";
-    ass << "Style: Default," << cfg.font_family << "," << cfg.font_size << "," << cfg.text_color_ass << "," << cfg.text_color_ass << ",&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,1,0," << cfg.ass_alignment << ",30,30,30,1\n\n";
+    ass << "Style: Default," << cfg.font_family << "," << cfg.font_size << "," << cfg.text_color_ass << "," << cfg.text_color_ass << ",&H00000000,&H80000000," << cfg.bold << "," << cfg.italic_flag << ",0,0,100,100,0,0,1,1,0," << cfg.ass_alignment << ",30,30,30,1\n\n";
     ass << "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n";
 
     int pos_x = 30, pos_y = 30;
