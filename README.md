@@ -1,0 +1,117 @@
+# fMCG
+
+**Fast MIDI Counter Generator** — renders a video overlay of live note statistics for any MIDI file, from small piano rolls to multi-gigabyte black MIDIs.
+
+It's fast! Renders a notecounter of a 2.3 billion note MIDI in 3 minutes on a Ryzen 5 5500. Has constant RAM usage, so it will NOT load the entire file in memory!
+
+## Features
+
+- **Single-pass streaming engine** — the file is walked exactly once (mmap for plain files, chunked libarchive streaming for compressed archives). Memory scales with song *duration*, never with event count.
+- **Compressed input** — `.7z`, `.xz`, `.rar` (including double-compressed `.rar.xz`) are decompressed on the fly via libarchive; the decompressed image is never materialized on disk or RAM. Decode is pipelined with parsing on a separate thread.
+- **Dear ImGui GUI** — process, preview the video live, and render with FFmpeg.
+- **Customizable stats overlay** — one line per stat, any text around tokens, per-stat comma separators, optional leading-zero padding that auto-sizes to each stat's own maximum, corner alignment or an exact x/y position, text and background colours.
+- **Start delay** — black lead-in where all stats sit at zero and the current-time fields count up from negative to zero.
+- **Processing stats** — live event counter, events/second and elapsed time during the scan, with a smooth progress bar.
+
+## Building
+
+### Windows
+
+1. Install a MinGW-w64 toolchain ([w64devkit](https://github.com/skeeto/w64devkit/releases)) and put `g++` on PATH.
+2. Run `bootstrap.bat` once — it downloads the pinned dependencies (Dear ImGui, GLFW 3.4, libarchive 3.8.9) into `vendor/`.
+3. Run `build.bat`. This produces `fMCG_gui.exe` and copies `libarchive.dll` next to it.
+
+Both scripts are idempotent; re-run `build.bat` after changing sources.
+
+### Linux / macOS
+
+GLFW and libarchive are resolved via pkg-config (i.e. your system package manager):
+
+```bash
+# Debian/Ubuntu
+sudo apt install build-essential pkg-config libglfw3-dev libarchive-dev libgl1-mesa-dev
+# Fedora
+sudo dnf install gcc-c++ make pkgconf-pkg-config glfw-devel libarchive-devel mesa-libGL-devel
+# Arch
+sudo pacman -S base-devel pkgconf glfw libarchive mesa
+# macOS
+brew install pkg-config glfw libarchive
+
+make            # builds ./fMCG_gui
+```
+
+Dear ImGui is compiled from `vendor/imgui` (no standard distro package); fetch it with:
+
+```bash
+make get-imgui
+```
+
+or point the build at a system copy: `make IMGUI_CFLAGS=-I/usr/include/imgui IMGUI_SOURCES=`.
+
+## Rendering requirement
+
+Rendering uses **FFmpeg** (the `subtitles` filter, i.e. a build with libass) and must be on PATH: `ffmpeg -version`. Any recent [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) full build works on Windows.
+
+## Usage
+
+1. Pick a MIDI file (plain `.mid`, or `.7z`/`.xz`/`.rar`/`.rar.xz` containing one).
+2. Adjust settings (see below), then **Process** — the file is scanned and the stats overlay is generated.
+3. **Preview** plays the video live in-app; **Render Video** encodes the final MP4 next to the MIDI.
+
+The output is `<midi name>_fMCG.mp4` in the MIDI's folder (editable).
+
+## Layout configuration
+
+The layout textbox (one line per stat row) defines the overlay. A default is present on startup; **Load from file...** reads a `.txt` layout. The following tokens are substituted per frame:
+
+### Notes
+| Token | Meaning |
+|---|---|
+| `{nc}` | Current notes played |
+| `{nc-total}` | Total notes |
+| `{nc-rem}` | Notes remaining |
+
+### Control changes (enable "Count CC events" to populate)
+| Token | Meaning |
+|---|---|
+| `{cc}` | Current CC events |
+| `{cc-total}` | Total CC events |
+| `{cc-rem}` | CC events remaining |
+
+### Time
+| Token | Meaning |
+|---|---|
+| `{sec}` / `{sec-max}` / `{sec-rem}` | Time in seconds (current / total / remaining) |
+| `{time}` / `{time-max}` / `{time-rem}` | Time as `mm:ss` (rolls over to `h:mm:ss`) |
+| `{time-milli}` / `{time-milli-max}` / `{time-milli-rem}` | Time as `mm:ss.mmm` |
+
+During the start delay, `{sec}`/`{time}`/`{time-milli}` run from negative and count up to zero.
+
+### Other
+| Token | Meaning |
+|---|---|
+| `{bpm}` | Tempo / beats per minute |
+| `{plph}` / `{plph-max}` | Polyphony / maximum polyphony so far |
+| `{ppqn}` | PPQ(N) of the file |
+| `{nps}` / `{nps-max}` | Notes per second (1s window) / maximum so far |
+
+## Options
+
+- **Comma separators** — per-stat toggles (Notes / Poly / NPS / CC) to format numbers like `1,234,567`.
+- **Leading zeros** — pads every number with zeros so digits line up; each stat pads toward its own maximum (notes → total notes, polyphony → peak polyphony, seconds → total seconds), so no width needs to be set.
+- **Vel-0 as Note-Off** — treat `note-on` with velocity 0 as a note-off (standard MIDI behaviour; disable for unusual files).
+- **Count CC events** — enables the `{cc}` stats. Disabled costs nothing; the scanner skips CC tracking entirely.
+- **Counter position** — *Corners* places the block in a screen corner via the Alignment dropdown; *Custom x,y* places the **top-left of the text block** at exact video pixels.
+- **Start delay (seconds)** — black lead-in before the song, with stats at zero and a negative time countdown.
+- **Text / Background colour** — presets or a custom `RRGGBB` value each.
+- **Resolution / FPS / Font** — output video size, frame rate, and overlay font family + size.
+
+## Implementation notes
+
+- Single sequential pass over the input; tick-space accumulation with an anchor-interpolated sweep converts events to per-frame stats in O(ticks + frames).
+- The FFmpeg invocation writes a `.bat`/shell script and renders the ASS from a fixed bare filename (`temp_stats.ass`), because ffmpeg's filter-argument parser mangles backslashes, apostrophes and colons — a user path can never be passed through `subtitles=` safely.
+- `test/` holds the regression harness (35 checks, including `.7z`/`.tar.xz` ≡ plain-parse equivalence) and forensic probes. On Linux: `make test`; on Windows, compile `test/test_harness.cpp` against `fMCG_core.h` with the libarchive import library.
+
+## License
+
+GPL-3.0 — see [LICENSE](LICENSE).

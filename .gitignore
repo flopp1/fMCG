@@ -1,0 +1,33 @@
+# --- build output -----------------------------------------------------------
+*.exe
+*.o
+*.obj
+*.a
+fMCG_gui
+fMCG
+test_harness
+test_newopts
+
+# --- third-party dependencies (populated by bootstrap.bat / make get-imgui) --
+vendor/
+build_cache/
+lib/
+
+# --- runtime artifacts -------------------------------------------------------
+libarchive.dll
+glfw3.dll
+imgui.ini
+*_fMCG.ass
+temp_stats.ass
+*_fMCG_ffmpeg.bat
+*_fMCG_progress.txt
+
+# --- OS / editor noise --------------------------------------------------------
+Thumbs.db
+Desktop.ini
+.DS_Store
+.vscode/
+.freebuff/
+
+# --- leftover build experiment (safe to delete) -----------------------------
+deps/
