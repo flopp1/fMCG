@@ -28,12 +28,6 @@ test/*.mid
 test/*.midi
 test/*.7z
 test/*.tar.xz
-!test/desync.mid
-!test/short.mid
-!test/tempo2.mid
-!test/test.mid
-!test/test.mid.7z
-!test/test.mid.tar.xz
 
 # --- OS / editor noise --------------------------------------------------------
 Thumbs.db
