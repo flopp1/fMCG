@@ -287,6 +287,8 @@ struct ProgressCallbacks {
     // a stream fraction 0..1 (negative when the total size is unknown).
     std::function<void(uint64_t events, double elapsed_sec, double ev_per_s, double frac)> on_scan_progress;
     bool cc_stats = false;   // count control-change events (hot path stays free when false)
+    // Set (from another thread) to abort the scan at the next progress ping.
+    std::atomic<bool>* cancel_flag = nullptr;
 };
 
 // ---------------------------------------------------------------------------
@@ -722,6 +724,10 @@ static bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
                 ev_count = 0;
                 ev_total += 1000000;
                 ping();
+                if (cb.cancel_flag && cb.cancel_flag->load()) {
+                    emit(cb, "  Cancelled.\n");
+                    return false;
+                }
             }
         }
 

@@ -9,6 +9,11 @@
 #include <mutex>
 #include <atomic>
 #include <sstream>
+#if !defined(_WIN32)
+#include <sys/wait.h>
+#include <signal.h>
+#include <unistd.h>
+#endif
 
 // ---------------------------------------------------------------------------
 // Globals
@@ -19,6 +24,7 @@ static std::vector<std::string> g_log_lines;
 static std::atomic<float>       g_progress{0.0f};
 static std::atomic<bool>        g_busy{false};
 static std::atomic<bool>        g_done{false};
+static std::atomic<bool>        g_cancel{false};   // user-requested abort of process/render
 static std::string              g_result_path;
 static std::atomic<int>         g_result_ret{-1};
 
@@ -101,6 +107,17 @@ static void gui_scan_progress(uint64_t events, double elapsed_sec, double ev_per
     g_scan_evps = ev_per_s;
     g_scan_frac = frac;
     g_scan_active = true;
+}
+
+// End-of-operation bookkeeping shared by process and render: hide the live
+// scan stats (progress bar returns to percentage-only) and mark completion.
+static void finish_op() {
+    {
+        std::lock_guard<std::mutex> lock(g_scan_mutex);
+        g_scan_active = false;
+    }
+    g_busy = false;
+    g_done = true;
 }
 
 // Progress fraction for the bar: the ffmpeg/render side drives g_progress
@@ -316,6 +333,8 @@ static void run_process(GuiSettings s) {
     cb.on_log = gui_log;
     cb.on_scan_progress = gui_scan_progress;
     cb.cc_stats = s.cc_stats;
+    cb.cancel_flag = &g_cancel;
+    g_cancel = false;
 
     {
         std::lock_guard<std::mutex> lock(g_scan_mutex);
@@ -328,10 +347,10 @@ static void run_process(GuiSettings s) {
     auto frames = ScaleMidiProcessor::process_midi(s.midi_file, s.fps, ppqn, total_notes,
                                                     s.vel0_note_off, cb);
     if (frames.empty()) {
-        gui_log("Error: Could not parse MIDI file.", true);
-        g_busy = false;
-        g_done = true;
+        gui_log(g_cancel.load() ? "Processing cancelled." : "Error: Could not parse MIDI file.",
+                g_cancel.load() ? false : true);
         g_result_ret = 1;
+        finish_op();
         return;
     }
 
@@ -384,17 +403,79 @@ static void run_process(GuiSettings s) {
     g_font_family = s.font_family;
     g_preview_font_reload = true;   // preview font must match the (possibly new) family
 
-    g_progress.store(1.0f);
     gui_log("Processing complete. Ready for preview/render.", false);
     g_processed = true;
-    g_busy = false;
-    g_done = true;
     g_result_ret = 0;
+    finish_op();
 }
 
 // ---------------------------------------------------------------------------
 // Rendering wrapper (FFmpeg full video render)
 // ---------------------------------------------------------------------------
+
+// Run a command, letting the user cancel it mid-flight via g_cancel.
+// Windows: the command runs in its own process tree, killed with taskkill /T.
+// POSIX: the child gets its own process group, killed with SIGKILL.
+static int run_command_cancellable(const std::string& cmd) {
+#if defined(_WIN32)
+    std::wstring wcmd = L"cmd.exe /c \"";
+    {
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, cmd.c_str(), -1, nullptr, 0);
+        std::wstring arg(static_cast<size_t>(wlen) - 1, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, cmd.c_str(), -1, &arg[0], wlen);
+        wcmd += arg;
+        wcmd += L"\"";
+    }
+    STARTUPINFOW si{}; si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, FALSE,
+                        CREATE_NEW_PROCESS_GROUP, nullptr, nullptr, &si, &pi))
+        return -1;
+    int ret = -1;
+    while (true) {
+        DWORD w = WaitForSingleObject(pi.hProcess, 500);
+        if (w == WAIT_OBJECT_0) {
+            DWORD code = 0;
+            GetExitCodeProcess(pi.hProcess, &code);
+            ret = (int)code;
+            break;
+        }
+        if (g_cancel.load()) {
+            std::string kill = "taskkill /PID " + std::to_string(pi.dwProcessId) + " /T /F >nul 2>&1";
+            std::system(kill.c_str());
+            WaitForSingleObject(pi.hProcess, 10000);
+            ret = -2;   // cancelled
+            break;
+        }
+    }
+    CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+    return ret;
+#else
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        setpgid(0, 0);
+        execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)nullptr);
+        _exit(127);
+    }
+    setpgid(pid, pid);
+    int ret = -1;
+    while (true) {
+        int status = 0;
+        pid_t r = waitpid(pid, &status, WNOHANG);
+        if (r == pid) { ret = WIFEXITED(status) ? WEXITSTATUS(status) : -1; break; }
+        if (r < 0) break;
+        if (g_cancel.load()) {
+            kill(-pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            ret = -2;   // cancelled
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    return ret;
+#endif
+}
 
 struct RenderSettings {
     std::string output_video;
@@ -440,13 +521,18 @@ static void run_render(RenderSettings s) {
     std::string cmd = "\"" + bat_file + "\"";
     std::atomic<bool> render_done{false};
     std::thread render_thread([cmd, bat_file, progress_file, s, &render_done]() {
-        int ret = std::system(cmd.c_str());
-        if (ret == 0) std::remove(bat_file.c_str());   // keep bat + log on failure for diagnosis
+        int ret = run_command_cancellable(cmd);
+        if (g_cancel.load()) {
+            gui_log("Rendering cancelled.", false);
+            std::remove(bat_file.c_str());
+            std::remove(progress_file.c_str());
+            ret = -2;
+        } else if (ret == 0) std::remove(bat_file.c_str());   // keep bat + log on failure for diagnosis
         g_result_ret = ret;
         g_result_path = s.output_video;
         if (ret == 0)
             gui_log(("Video rendered to: " + s.output_video).c_str(), false);
-        else
+        else if (ret != -2)
             gui_log(("FFmpeg rendering failed (exit " + std::to_string(ret)
                      + "). Full log kept in: " + progress_file).c_str(), true);
         render_done = true;
@@ -480,8 +566,7 @@ static void run_render(RenderSettings s) {
     // On failure the .ass, the generated .bat and the ffmpeg log are kept so
     // the exact cause remains inspectable.
     g_progress.store(1.0f);
-    g_busy = false;
-    g_done = true;
+    finish_op();
 }
 
 // ---------------------------------------------------------------------------
@@ -753,7 +838,7 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-    GLFWwindow* window = glfwCreateWindow(1100, 800, "fMCG - MIDI Video Statistics Generator", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(1100, 800, "fMCG - Fast MIDI Counter Generator", nullptr, nullptr);
     if (!window) { glfwTerminate(); return 1; }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
@@ -822,7 +907,7 @@ int main() {
             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
             ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-        ImGui::Text("fMCG - MIDI Video Statistics Generator");
+        ImGui::Text("fMCG - Fast MIDI Counter Generator");
         ImGui::Separator();
         ImGui::Spacing();
 
@@ -877,9 +962,6 @@ int main() {
         ImGui::Spacing();
 
         // --- Settings ---
-        ImGui::Columns(2, "settings_cols", true);
-
-        // Left column
         ImGui::Text("Font Family");
         ImGui::SetNextItemWidth(-1);
         if (!font_list_loaded && !font_cstrs.empty()) font_list_loaded = true;
@@ -916,9 +998,6 @@ int main() {
         if (ImGui::InputDouble("##fps", &fps_input, 0, 0, "%.1f"))
             if (fps_input > 0) settings.fps = fps_input;
 
-        ImGui::NextColumn();
-
-        // Right column
         ImGui::Text("Text Colour");
         ImGui::Spacing();
         for (int i = 0; i < num_colour_presets; ++i) {
@@ -1076,7 +1155,6 @@ int main() {
             }
         }
 
-        ImGui::Columns(1);
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
@@ -1101,6 +1179,19 @@ int main() {
                 std::thread(run_process, settings).detach();
             }
             if (!can_process) ImGui::PopStyleVar();
+
+            ImGui::SameLine();
+            // Cancel while processing or rendering (checked at ~1M-event pings
+            // in the scan; within 500ms in the ffmpeg wait loop).
+            if (g_busy.load()) {
+                ImGui::Button("Cancel", ImVec2(140, 30));
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Abort the current operation");
+                if (ImGui::IsItemClicked()) {
+                    g_cancel = true;
+                    if (g_render_active) gui_log("Cancelling ffmpeg...", false);
+                }
+            }
 
             ImGui::SameLine();
             if (!can_preview) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
@@ -1158,7 +1249,9 @@ int main() {
             std::string overlay;
             {
                 std::lock_guard<std::mutex> lock(g_scan_mutex);
-                if (g_scan_active)
+                // Scan stats belong on the bar only while processing, never
+                // during an ffmpeg render.
+                if (g_scan_active && !g_render_active)
                     overlay = compose_scan_line();
             }
             char pct[32];
