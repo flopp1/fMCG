@@ -58,6 +58,16 @@ struct ProgressCallbacks {
     bool cc_stats = false;   // count control-change events (hot path stays free when false)
     // Set (from another thread) to abort the scan at the next progress ping.
     std::atomic<bool>* cancel_flag = nullptr;
+    // MIDI spec guard: a running tick beyond the 28-bit VLQ range (1 << 28)
+    // breaks the spec and forces gigantic per-tick arrays. When first crossed,
+    // the scanner invokes on_spec_violation (on the worker thread) with the
+    // tick and the bytes already allocated; it returns 0 = proceed anyway,
+    // 1 = abort and restart in the low-memory two-pass mode, 2 = cancel.
+    // Unset => proceed (keeps CLI/tests non-interactive).
+    // spec_tick_limit overrides the threshold (tests lower it to exercise the
+    // path); 0 = the spec default of 1 << 28.
+    std::function<int(uint64_t tick, size_t dense_bytes)> on_spec_violation;
+    uint64_t spec_tick_limit = 0;
 };
 
 // Buffered (default) or memory-mapped binary reader.

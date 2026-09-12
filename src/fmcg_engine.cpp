@@ -555,8 +555,8 @@ public:
 // ---- accumulation targets ---------------------------------------------------
 
 struct TickData {
-    std::vector<uint64_t> dense_ons;     // per-tick note-on counts
-    std::vector<int64_t>  dense_deltas;  // per-tick polyphony deltas (+1 on, -1 off)
+    std::vector<uint32_t> dense_ons;     // per-tick note-on counts (>=2^31 on ONE tick is impossible in practice: a note-on is >=2 bytes, so it needs ~4 GB of pure 0x9x pairs on a single tick)
+    std::vector<int32_t>  dense_deltas;  // per-tick polyphony deltas (+1 on, -1 off)
     uint64_t max_tick = 0;
     uint64_t total_ons = 0;
     size_t ntracks = 0;
@@ -573,9 +573,9 @@ struct TickData {
         }
     }
     void note_on(uint64_t t) { ensure(t); dense_ons[t]++; dense_deltas[t]++; total_ons++; }
-    void delta_at(uint64_t t, int64_t d) { ensure(t); dense_deltas[t] += d; }
+    void delta_at(uint64_t t, int64_t d) { ensure(t); dense_deltas[t] += (int32_t)d; }
     // CC accumulation (only touched when CC stats are enabled).
-    std::vector<uint64_t> dense_cc;      // per-tick control-change counts
+    std::vector<uint32_t> dense_cc;      // per-tick control-change counts
     uint64_t total_cc = 0;
     void cc_at(uint64_t t) {
         ensure(t);
@@ -583,15 +583,38 @@ struct TickData {
         dense_cc[t]++;
         total_cc++;
     }
+    // Current footprint of the dense arrays (bytes).
+    size_t memory_bytes() const {
+        return dense_ons.size() * (sizeof(uint32_t) + sizeof(int32_t))
+             + dense_cc.size() * sizeof(uint32_t);
+    }
+    void reset() {
+        std::vector<uint32_t>().swap(dense_ons);
+        std::vector<int32_t>().swap(dense_deltas);
+        std::vector<uint32_t>().swap(dense_cc);
+        max_tick = 0; total_ons = 0; ntracks = 0; desync_tracks = 0;
+        total_events_seen = 0; total_cc = 0;
+    }
 };
 
 // ---- single sequential walk over the image -----------------------------------
 
+// Result of a single walk over the image.
+enum class ScanMode { ACCUMULATE, TEMPO_ONLY };
+
+// Aborted via the MIDI-spec guard; the caller restarts the walk in TEMPO_ONLY
+// mode (two-pass fallback for spec-breaking tick spans).
+struct SpecAbort {};
+
 bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
                        std::vector<TempoChange>& tempo_raw, uint16_t& out_division,
-                       const ProgressCallbacks& cb) {
+                       const ProgressCallbacks& cb, ScanMode mode = ScanMode::ACCUMULATE) {
     ByteStream bs(src);
-    const bool count_cc = cb.cc_stats;   // CC stats off => zero extra work in the event loop
+    const bool accumulate = (mode == ScanMode::ACCUMULATE);
+    // In TEMPO_ONLY mode the accumulation arrays are never touched (that is
+    // the point) and CC counting is meaningless.
+    const bool count_cc = cb.cc_stats && accumulate;
+    if (!accumulate) td.reset();
 
     // Continuous progress bookkeeping (checked once per ~1M events).
     using clock = std::chrono::steady_clock;
@@ -599,6 +622,8 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
     uint64_t ev_total = 0;
     uint64_t ev_count = 0;
     const uint64_t total_bytes = src.total_bytes();   // 0 = unknown fraction
+    const uint64_t spec_limit = cb.spec_tick_limit ? cb.spec_tick_limit : ((uint64_t)1 << 28);
+    bool spec_warned = false;              // one-shot: ask at most once per scan
 
     auto ping = [&]() {
         if (!cb.on_scan_progress) return;
@@ -645,6 +670,19 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
 
         while (bs.at_end() == false) {
             tick += bs.vlq();
+            // MIDI spec guard: delta times are at most 28-bit VLQs, so a tick
+            // beyond 1<<28 cannot be represented within the spec. At that
+            // point the per-tick arrays also grow toward gigabytes. Fire the
+            // callback once (proceed / restart-in-2-pass / cancel); without a
+            // callback we proceed (CLI/tests, historic behaviour).
+            if (accumulate && tick > spec_limit && !spec_warned) {
+                const int choice = cb.on_spec_violation
+                    ? cb.on_spec_violation(tick, td.memory_bytes())
+                    : 0;
+                if (choice == 2) { emit(cb, "  Cancelled.\n"); return false; }
+                if (choice == 1) throw SpecAbort{};   // caller restarts in TEMPO_ONLY mode
+                spec_warned = true;              // 0 (or absent cb): ask only once
+            }
             int st = bs.get();
             if (st < 0) break;
             uint8_t status;
@@ -684,9 +722,9 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
                     uint8_t ch = status & 0x0F, note = (uint8_t)n1, vel = (uint8_t)n2;
                     if (et == 0x90 && (vel > 0 || !vel0_as_note_off)) {
                         refcount[ch][note]++;
-                        td.note_on(tick);
+                        if (accumulate) td.note_on(tick);
                     } else if (et == 0x90 || et == 0x80) {
-                        if (refcount[ch][note] > 0) { refcount[ch][note]--; td.delta_at(tick, -1); }
+                        if (refcount[ch][note] > 0) { refcount[ch][note]--; if (accumulate) td.delta_at(tick, -1); }
                     } else if (et == 0xB0 && count_cc) {
                         td.cc_at(tick);   // control change: counted only when the CC stat is on
                     }
@@ -710,8 +748,8 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
         // Close held notes at the track's final tick (parallel-engine end-of-track flush).
         for (int ch = 0; ch < 16; ++ch)
             for (int n = 0; n < 128; ++n)
-                if (refcount[ch][n] > 0) td.delta_at(tick, -(int64_t)refcount[ch][n]);
-        if (tick > td.max_tick) td.max_tick = tick;
+                if (refcount[ch][n] > 0 && accumulate) td.delta_at(tick, -(int64_t)refcount[ch][n]);
+        if (accumulate && tick > td.max_tick) td.max_tick = tick;
 
         size_t consumed = bs.consumed();
         bs.set_limit((size_t)-1);
@@ -730,34 +768,37 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
 
 // ---- anchor-interpolated sweep: tick buckets -> FrameStats --------------------
 
-std::vector<FrameStats> sweep_to_frames(TickData& td,
-                                               std::vector<TempoChange>& tempo_raw,
-                                               uint16_t ppqn, double fps, bool with_cc = false) {
-    // Build the tempo map exactly like the parallel engine: default entry,
-    // stable sort by tick, dedup keeping the LAST change at each tick (the
-    // track-major walk order makes this identical to the parallel engine's
-    // stable_sort over per-track collections), then anchor times.
+// Build the tempo map exactly like the parallel engine: default entry,
+// stable sort by tick, dedup keeping the LAST change at each tick, then
+// anchor times. Shared by the tick-space sweep and the frame-bucket path.
+static std::vector<TempoChange> build_tempo_map(const std::vector<TempoChange>& tempo_raw,
+                                                uint16_t ppqn) {
     std::vector<TempoChange> tm;
     tm.reserve(tempo_raw.size() + 1);
     tm.push_back({0, 0.0, 500000, 120.0});
     for (const auto& tc : tempo_raw) if (tc.us_per_quarter > 0) tm.push_back(tc);
     std::stable_sort(tm.begin(), tm.end(),
                      [](const TempoChange& a, const TempoChange& b) { return a.tick < b.tick; });
-    {
-        size_t w = 0;
-        for (size_t i = 0; i < tm.size(); ++i)
-            if (i + 1 == tm.size() || tm[i + 1].tick != tm[i].tick) tm[w++] = tm[i];
-        tm.resize(w);
-    }
+    size_t w = 0;
+    for (size_t i = 0; i < tm.size(); ++i)
+        if (i + 1 == tm.size() || tm[i + 1].tick != tm[i].tick) tm[w++] = tm[i];
+    tm.resize(w);
     for (size_t i = 1; i < tm.size(); ++i) {
         uint64_t dtk = tm[i].tick - tm[i - 1].tick;
         tm[i].time_sec = tm[i - 1].time_sec
                        + (double)dtk * (double)tm[i - 1].us_per_quarter / ((double)ppqn * 1e6);
     }
+    return tm;
+}
+
+std::vector<FrameStats> sweep_to_frames(TickData& td,
+                                               std::vector<TempoChange>& tempo_raw,
+                                               uint16_t ppqn, double fps, bool with_cc = false) {
+    std::vector<TempoChange> tm = build_tempo_map(tempo_raw, ppqn);
 
     const uint64_t nticks = td.max_tick + 1;
-    std::vector<uint64_t>& ons = td.dense_ons;
-    std::vector<int64_t>& deltas = td.dense_deltas;
+    std::vector<uint32_t>& ons = td.dense_ons;
+    std::vector<int32_t>& deltas = td.dense_deltas;
     // Track tails can extend past the last written tick; size arrays to cover
     // the whole tick span (also covers the no-events-at-all case).
     if (ons.size() < nticks) {
@@ -820,6 +861,206 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
     return out;
 }
 
+// ---- two-pass fallback: tempo map, then frame-bucketed accumulation ---------
+// For MIDI files whose tick span breaks the spec (a 28-bit VLQ delta caps
+// ticks at 1<<28). Pass 1 collects only the tempo map (no accumulation, so
+// memory stays O(tempo events)); pass 2 re-walks and, with the COMPLETE tempo
+// map available up front, buckets every event straight into the video frame
+// it lands in via the anchor-interpolated tick->second map. Memory becomes
+// O(frames) instead of O(ticks) -- a ~1000x reduction on extreme files -- at
+// the cost of a second decode+parse walk over the stream.
+
+struct FrameBuckets {
+    std::vector<uint32_t> ons, cc;
+    std::vector<int32_t> deltas;   // signed: transient negatives must not wrap
+    uint64_t total_ons = 0, total_cc = 0;
+    uint64_t total_events_seen = 0;   // one walk's worth, same metric as the pings
+    uint64_t max_tick = 0;            // highest tick seen (song-horizon source)
+    size_t nframes = 0;
+
+    void ensure(size_t fi) {
+        if (fi >= nframes) {
+            size_t n = nframes ? nframes : 4096;
+            while (n <= fi) n *= 2;
+            ons.resize(n, 0); deltas.resize(n, 0);
+            if (!cc.empty()) cc.resize(n, 0);
+            nframes = n;
+        }
+    }
+    // Bucket growth is on demand; guarantee capacity for the final sizing.
+    void reserve_exact(size_t n) {
+        ons.resize(n, 0); deltas.resize(n, 0);
+        if (!cc.empty()) cc.resize(n, 0);
+        if (nframes < n) nframes = n;
+    }
+    void note_on(size_t fi)  { ensure(fi); ons[fi]++;    deltas[fi]++;    total_ons++; }
+    void note_off(size_t fi) { ensure(fi); deltas[fi]--; }
+    void add_cc(size_t fi)   { ensure(fi); cc[fi]++;     total_cc++; }
+};
+
+// Pass 2 walk: same event grammar as scan_image, but events land in frame
+// buckets through the precomputed tempo map. Tick-space is never materialized.
+bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
+                       const std::vector<TempoChange>& tm, uint16_t ppqn, double fps,
+                       const ProgressCallbacks& cb) {
+    ByteStream bs(src);
+    const bool count_cc = cb.cc_stats;
+
+    using clock = std::chrono::steady_clock;
+    const clock::time_point t_start = clock::now();
+    uint64_t ev_total = 0, ev_count = 0;
+    const uint64_t total_bytes = src.total_bytes();
+
+    auto ping = [&]() {
+        if (!cb.on_scan_progress) return;
+        double el = std::chrono::duration<double>(clock::now() - t_start).count();
+        double frac = total_bytes > 0 ? (double)bs.bytes_pulled() / (double)total_bytes : -1.0;
+        cb.on_scan_progress(ev_total + ev_count, el,
+                            el > 0.0 ? (double)(ev_total + ev_count) / el : 0.0, frac);
+    };
+
+    auto rd32 = [&]() -> int64_t {
+        int a = bs.get(), b = bs.get(), c = bs.get(), d = bs.get();
+        if (a < 0 || b < 0 || c < 0 || d < 0) return -1;
+        return ((int64_t)a << 24) | ((int64_t)b << 16) | ((int64_t)c << 8) | (int64_t)d;
+    };
+
+    if (rd32() != 0x4D546864) {
+        emit(cb, "Error: not a MIDI file (missing MThd header).\n", true);
+        return false;
+    }
+    int64_t hlen = rd32();
+    if (hlen < 0) { emit(cb, "Error: truncated MIDI header.\n", true); return false; }
+    int f2 = bs.get(), f1 = bs.get();
+    int n2 = bs.get(), n1 = bs.get();
+    int d2 = bs.get(), d1 = bs.get();
+    if (f2 < 0 || f1 < 0 || n2 < 0 || n1 < 0 || d2 < 0 || d1 < 0) {
+        emit(cb, "Error: truncated MIDI header.\n", true); return false;
+    }
+    if (hlen > 6) bs.skip((size_t)hlen - 6);
+
+    const double inv = 1.0 / ((double)ppqn * 1e6);
+    size_t conv = 0;   // tempo anchor walked forward with the events
+
+    // Maps a tick to its frame index using the anchor at tm[conv]; conv must
+    // already cover the tick (advanced below in lockstep with the event walk).
+    auto frame_of = [&](uint64_t t) -> size_t {
+        const double sec = tm[conv].time_sec
+                         + (double)(t - tm[conv].tick) * (double)tm[conv].us_per_quarter * inv;
+        double f = sec * fps;
+        return f <= 0.0 ? 0 : (size_t)f;
+    };
+
+    while (true) {
+        int64_t tag = rd32();
+        if (tag < 0) break;
+        int64_t len = rd32();
+        if (len < 0) { emit(cb, "Error: truncated chunk header.\n", true); return false; }
+        if (tag != 0x4D54726B) { bs.skip((size_t)len); continue; }
+
+        bs.set_limit((size_t)len);
+        uint64_t tick = 0;
+        uint8_t running = 0;
+        uint32_t refcount[16][128] = {};
+        conv = 0;   // tick restarts at 0 for each track: rewind the tempo anchor too
+
+        while (bs.at_end() == false) {
+            tick += bs.vlq();
+            while (conv + 1 < tm.size() && tm[conv + 1].tick <= tick) conv++;
+            int st = bs.get();
+            if (st < 0) break;
+            uint8_t status;
+            if (st < 0x80) { bs.skip_back_one(); status = running; }
+            else { status = (uint8_t)st; running = (status < 0xF0) ? status : 0; }
+
+            if (status == 0xFF) {
+                int type = bs.get();
+                if (type < 0) break;
+                uint64_t mlen = bs.vlq();
+                bs.skip((size_t)mlen);   // tempo map is already complete
+            } else if (status == 0xF0 || status == 0xF7) {
+                bs.skip((size_t)bs.vlq());
+            } else if (status >= 0xF1 && status <= 0xF6) {
+                if (status == 0xF1 || status == 0xF3) bs.skip(1);
+                else if (status == 0xF2) bs.skip(2);
+            } else if (status >= 0x80) {
+                uint8_t et = status & 0xF0;
+                int n1e = bs.get();
+                if (n1e < 0) break;
+                if (et != 0xC0 && et != 0xD0) {
+                    int n2e = bs.get();
+                    if (n2e < 0) break;
+                    uint8_t ch = status & 0x0F, note = (uint8_t)n1e, vel = (uint8_t)n2e;
+                    if (et == 0x90 && (vel > 0 || !vel0_as_note_off)) {
+                        refcount[ch][note]++;
+                        fb.note_on(frame_of(tick));
+                    } else if (et == 0x90 || et == 0x80) {
+                        if (refcount[ch][note] > 0) { refcount[ch][note]--; fb.note_off(frame_of(tick)); }
+                    } else if (et == 0xB0 && count_cc) {
+                        fb.add_cc(frame_of(tick));
+                    }
+                }
+            }
+
+            if (++ev_count >= 1000000) {
+                ev_count = 0;
+                ev_total += 1000000;
+                ping();
+                if (cb.cancel_flag && cb.cancel_flag->load()) {
+                    emit(cb, "  Cancelled.\n");
+                    return false;
+                }
+            }
+        }
+
+        // Held notes close at the track's final tick.
+        for (int ch = 0; ch < 16; ++ch)
+            for (int n = 0; n < 128; ++n)
+                if (refcount[ch][n] > 0) fb.note_off(frame_of(tick));
+        if (tick > fb.max_tick) fb.max_tick = tick;
+
+        size_t consumed = bs.consumed();
+        bs.set_limit((size_t)-1);
+        if (consumed < (size_t)len) bs.skip((size_t)len - consumed);
+    }
+
+    ping();
+    fb.total_events_seen = ev_total + ev_count;   // identical metric to the live pings
+    return true;
+}
+
+// Convert frame buckets to FrameStats. Pass-1-style semantics: running sums
+// and extrema accumulate in frame order (buckets already hold exactly the
+// per-frame values the sweep would have produced).
+std::vector<FrameStats> buckets_to_frames(FrameBuckets& fb, double fps,
+                                          const std::vector<TempoChange>& tm,
+                                          double max_time_sec, bool with_cc) {
+    const size_t total_frames = (size_t)std::ceil(max_time_sec * fps) + 1;
+    fb.reserve_exact(total_frames);   // grow (or zero-extend) to the horizon
+
+    std::vector<FrameStats> out;
+    out.reserve(total_frames);
+    uint64_t cum = 0, cum_cc = 0;
+    int64_t poly = 0, peak_poly = 0;
+    double peak_nps = 0.0;
+    size_t bpmw = 0;
+    const size_t W = (size_t)std::round(fps);
+
+    for (size_t k = 0; k < total_frames; ++k) {
+        while (bpmw + 1 < tm.size() && tm[bpmw + 1].time_sec <= (double)k / fps) bpmw++;
+        cum  += fb.ons[k];
+        poly += fb.deltas[k];
+        if (with_cc) cum_cc += fb.cc[k];
+        uint64_t prev_cum = (k >= W) ? out[k - W].cumulative_notes : 0;
+        double nps = (double)(cum - prev_cum);
+        peak_nps = std::max(peak_nps, nps);
+        peak_poly = std::max(peak_poly, poly);
+        out.push_back({k, (double)k / fps, cum, cum_cc, nps, peak_nps,
+                       std::max<int64_t>(0, poly), peak_poly, tm[bpmw].bpm});
+    }
+    return out;
+}
+
 // ---- entry point --------------------------------------------------------------
 
 std::vector<FrameStats> process_streaming(
@@ -852,24 +1093,90 @@ std::vector<FrameStats> process_streaming(
         std::vector<TempoChange> tempo_raw;
         uint16_t division = 480;
 
-        emit(cb, "  Single sequential pass (" + std::string(src->kind()) + " stream)...\n");
+        // Fresh input stream for each walk. Plain files are mmap'd (rewind =
+        // re-open, free); compressed archives rebuild the whole libarchive
+        // decode stack, which restarts the decode from the first byte.
+        auto open_src = [&]() -> std::unique_ptr<DataSrc> {
+            if (compressed) {
+                std::unique_ptr<PipelinedSrc> p(new PipelinedSrc(filename));
+                p->start();
+                return std::unique_ptr<DataSrc>(p.release());
+            }
+            return std::unique_ptr<DataSrc>(new FileSrc(filename));
+        };
+
+        emit(cb, "  Single sequential pass (" + std::string(compressed ? "libarchive" : "mmap") + " stream)...\n");
         const clock::time_point t_scan = clock::now();
-        if (!scan_image(*src, vel0_as_note_off, td, tempo_raw, division, cb)) return {};
-        const clock::time_point t_sweep = clock::now();
-        out_division = division;
+        bool two_pass = false;
+        {
+            src = open_src();
+            if (!src->ok()) {
+                emit(cb, compressed ? "Error: failed to open archive with libarchive.\n"
+                                    : "Error: cannot open file.\n", true);
+                return {};
+            }
+            try {
+                if (!scan_image(*src, vel0_as_note_off, td, tempo_raw, division, cb)) return {};
+            } catch (const SpecAbort&) {
+                // User chose the low-memory path at the spec-violation prompt:
+                // re-walk collecting the tempo map only (no per-tick arrays),
+                // then walk again bucketing events into video frames.
+                two_pass = true;
+                td.reset();
+                tempo_raw.clear();
+            }
+            src.reset();   // release before any re-open
+        }
 
-        emit(cb, "  " + std::to_string(td.ntracks) + " tracks\n");
-        if (td.desync_tracks > 0)
-            emit(cb, "Warning: " + std::to_string(td.desync_tracks)
-                     + " track(s) consumed a different number of bytes than declared (possible parser desync).\n", true);
+        std::vector<FrameStats> frames;
+        uint64_t nev = 0;
+        clock::time_point t_sweep;
 
-        auto frames = sweep_to_frames(td, tempo_raw, division, fps, cb.cc_stats);
-        out_total_notes = td.total_ons;
+        if (!two_pass) {
+            t_sweep = clock::now();
+            out_division = division;
+            emit(cb, "  " + std::to_string(td.ntracks) + " tracks\n");
+            if (td.desync_tracks > 0)
+                emit(cb, "Warning: " + std::to_string(td.desync_tracks)
+                         + " track(s) consumed a different number of bytes than declared (possible parser desync).\n", true);
+            frames = sweep_to_frames(td, tempo_raw, division, fps, cb.cc_stats);
+            out_total_notes = td.total_ons;
+            nev = td.total_events_seen;   // all events walked, same as the live counter
+        } else {
+            // Pass 1: tempo map only. Memory stays O(tempo events).
+            emit(cb, "  Restarting in low-memory two-pass mode (pass 1/2: tempo map)...\n");
+            src = open_src();
+            if (!src->ok()) { emit(cb, "Error: failed to re-open input for pass 1.\n", true); return {}; }
+            if (!scan_image(*src, vel0_as_note_off, td, tempo_raw, division, cb, ScanMode::TEMPO_ONLY))
+                return {};
+            out_division = division;
+            const std::vector<TempoChange> tm = build_tempo_map(tempo_raw, division);
 
-        // Processing statistics.
+            emit(cb, "  Pass 2/2: accumulating into frame buckets...\n");
+            src = open_src();
+            if (!src->ok()) { emit(cb, "Error: failed to re-open input for pass 2.\n", true); return {}; }
+            FrameBuckets fb;
+            if (cb.cc_stats) fb.cc.resize(4096, 0);
+            if (!scan_image_frames(*src, vel0_as_note_off, fb, tm, division, fps, cb))
+                return {};
+            src.reset();
+            t_sweep = clock::now();
+
+            // Song horizon from the last tempo anchor + the highest tick seen.
+            {
+                size_t conv = 0;
+                while (conv + 1 < tm.size() && tm[conv + 1].tick <= fb.max_tick) conv++;
+                const double max_time = tm[conv].time_sec
+                    + (double)(fb.max_tick - tm[conv].tick)
+                      * (double)tm[conv].us_per_quarter / ((double)division * 1e6);
+                frames = buckets_to_frames(fb, fps, tm, max_time, cb.cc_stats);
+            }
+            out_total_notes = fb.total_ons;
+            nev = fb.total_events_seen;
+        }
+
         const double t_scan_s   = std::chrono::duration<double>(t_sweep - t_scan).count();
         const double t_sweep_s  = std::chrono::duration<double>(clock::now() - t_sweep).count();
-        const uint64_t nev = td.total_events_seen;   // all events walked, same as the live counter
         auto rate = [](uint64_t n, double s) {
             return (s > 0.0) ? (double)n / s : 0.0;
         };

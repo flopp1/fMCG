@@ -29,6 +29,7 @@ test/*.mid
 test/*.midi
 test/*.7z
 test/*.tar.xz
+test/*.ass
 
 # --- OS / editor noise --------------------------------------------------------
 Thumbs.db

@@ -668,10 +668,13 @@ static void draw_frame(GLFWwindow* window) {
         // the live render-progress view.
         bool can_preview = (!g_app.busy.load()) || g_app.render_active;
         bool preview_starts_render_view = g_app.render_active && g_app.busy.load();
-        g_app.preview_watching_render = preview_starts_render_view;
         ImGui::SameLine();
         if (!can_preview) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
         if (ImGui::Button("Preview", ImVec2(140, 30)) && can_preview) {
+            // Stamp the watch flag on the click itself only -- assigning it
+            // every frame would clobber it the instant the render finishes,
+            // and the watching popup would miss its close window.
+            g_app.preview_watching_render = preview_starts_render_view;
             {
                 // Snap the live mirror to the current pattern so Preview
                 // (with or without a processed MIDI) shows the edited look.
@@ -784,6 +787,40 @@ static void draw_frame(GLFWwindow* window) {
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
+
+    // MIDI spec-violation modal: the processing worker crossed the 28-bit
+    // tick limit and is blocked on the user's choice. Answer propagates
+    // through app state back to the worker.
+    if (g_app.spec_prompt_open.load()) {
+        if (!g_app.spec_popup_started) {
+            ImGui::OpenPopup("MIDI exceeds spec");
+            g_app.spec_popup_started = true;
+        }
+        if (ImGui::BeginPopupModal("MIDI exceeds spec", nullptr,
+                                   ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("This MIDI's tick count breaks the MIDI spec (28-bit delta-time limit).\n"
+                        "The normal single-pass engine would need many gigabytes of RAM.");
+            ImGui::Spacing();
+            ImGui::TextWrapped("Proceed anyway (high memory use, may fail), or restart in\n"
+                               "low-memory two-pass mode (uses the decode+parse time twice,\n"
+                               "but RAM stays small regardless of tick count)?");
+            ImGui::Spacing();
+            if (ImGui::Button("Proceed (single-pass)", ImVec2(190, 0))) {
+                g_app.spec_choice.store(0);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Two-pass (low memory)", ImVec2(190, 0))) {
+                g_app.spec_choice.store(1);
+                ImGui::CloseCurrentPopup();
+            }
+            if (ImGui::Button("Cancel", ImVec2(190, 0))) {
+                g_app.spec_choice.store(2);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+    }
 
     // Unload confirmation modal (opened from the action row above).
     if (ImGui::BeginPopupModal("Unload file?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {

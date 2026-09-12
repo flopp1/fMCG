@@ -110,14 +110,17 @@ gui/%.o: gui/%.cpp $(wildcard gui/*.h) $(wildcard src/*.h) fMCG_core.h
 run: fMCG_gui
 	./fMCG_gui
 
-test: test/test_newopts test/test_harness
-	cd test && ./test_newopts && ./test_harness
+test: test/test_newopts test/test_harness test/test_twopass
+	cd test && ./test_newopts && ./test_harness && ./test_twopass test/test.mid
 
 test/test_newopts: test/test_newopts.cpp $(CORE_OBJECTS) $(wildcard src/*.h) fMCG_core.h
 	$(CXX) $(CXXFLAGS) -Isrc -I. -o $@ test/test_newopts.cpp $(CORE_OBJECTS) $(ARCH_CFLAGS) $(LDFLAGS) $(ARCH_LIBS) -lpthread
 
 test/test_harness: test/test_harness.cpp $(CORE_OBJECTS) $(wildcard src/*.h) fMCG_core.h
 	$(CXX) $(CXXFLAGS) -Isrc -I. -o $@ test/test_harness.cpp $(CORE_OBJECTS) $(ARCH_CFLAGS) $(LDFLAGS) $(ARCH_LIBS) -lpthread
+
+test/test_twopass: test/test_twopass.cpp $(CORE_OBJECTS) $(wildcard src/*.h) fMCG_core.h
+	$(CXX) $(CXXFLAGS) -Isrc -I. -o $@ test/test_twopass.cpp $(CORE_OBJECTS) $(ARCH_CFLAGS) $(LDFLAGS) $(ARCH_LIBS) -lpthread
 
 clean:
 	rm -rf fMCG_gui $(CORE_OBJECTS) $(GUI_OBJECTS) test/test_newopts test/test_harness dist

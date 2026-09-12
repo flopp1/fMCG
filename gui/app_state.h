@@ -109,6 +109,13 @@ struct AppState {
     // otherwise race away the "render just ended" window the popup watches
     // for). The preview consumes it to close a watching popup.
     std::atomic<bool>         render_watch_done{false};
+
+    // MIDI spec-violation prompt: the processing worker hits a tick beyond the
+    // spec's 28-bit delta limit, asks the user (proceed / two-pass / cancel)
+    // through this flag-and-answer pair, and blocks until the UI answers.
+    std::atomic<bool>         spec_prompt_open{false};
+    std::atomic<int>          spec_choice{-1};      // -1 pending, 0 proceed, 1 two-pass, 2 cancel
+    bool                      spec_popup_started{false};   // UI-thread only: OpenPopup once
     bool                      preview_playing{false};
     double                    preview_time{0.0};
     double                    start_delay{0.0};   // black lead-in before the song starts
