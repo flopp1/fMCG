@@ -795,9 +795,13 @@ static void draw_frame(GLFWwindow* window) {
 
     // MIDI spec-violation modal: the processing worker crossed the 28-bit
     // tick limit and is blocked on the user's choice. Answer propagates
-    // through app state back to the worker.
+    // through app state back to the worker. Spawned at the exact center of
+    // the window so it is unmissable.
     if (g_app.spec_prompt_open.load()) {
         if (!g_app.spec_popup_started) {
+            ImVec2 dsp = ImGui::GetIO().DisplaySize;
+            ImGui::SetNextWindowPos(ImVec2(dsp.x * 0.5f, dsp.y * 0.5f),
+                                    ImGuiCond_Always, ImVec2(0.5f, 0.5f));
             ImGui::OpenPopup("MIDI exceeds spec");
             g_app.spec_popup_started = true;
         }
@@ -806,9 +810,15 @@ static void draw_frame(GLFWwindow* window) {
             ImGui::Text("This MIDI's tick count breaks the MIDI spec (28-bit delta-time limit).\n"
                         "The normal single-pass engine would need many gigabytes of RAM.");
             ImGui::Spacing();
-            ImGui::TextWrapped("Proceed anyway (high memory use, may fail), or restart in\n"
-                               "low-memory two-pass mode (uses the decode+parse time twice,\n"
-                               "but RAM stays small regardless of tick count)?");
+            ImGui::TextWrapped("Proceeding with the single-pass engine will try to allocate\n"
+                               "memory proportional to the song's tick count. On a file like\n"
+                               "this that can reach tens of gigabytes; if RAM runs out the\n"
+                               "system will stutter, swap (thrash) heavily, and the operation\n"
+                               "may fail or freeze the whole PC -- not just this program.");
+            ImGui::Spacing();
+            ImGui::TextWrapped("Two-pass mode re-reads the file (roughly doubling the\n"
+                               "decode/parse time) but keeps RAM small regardless of tick\n"
+                               "count. Cancel aborts now.");
             ImGui::Spacing();
             if (ImGui::Button("Proceed (single-pass)", ImVec2(190, 0))) {
                 g_app.spec_choice.store(0);
