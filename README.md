@@ -125,6 +125,17 @@ During the start delay, `{sec}`/`{time}`/`{time-milli}` run from negative and co
 - **Text / Background colour** — presets or a custom `RRGGBB` value each.
 - **Resolution / FPS / Font** — output video size, frame rate, and overlay font family + size.
 
+## Project layout
+
+```text
+src/         core library modules (fmcg_path, fmcg_util, fmcg_midi, fmcg_engine,
+             fmcg_format, fmcg_fonts, fmcg_render) -- one .h/.cpp pair each
+gui/         Dear ImGui application (app_state, dialogs, jobs, preview, main)
+fMCG_core.h  umbrella header: includes every src/ module, nothing else
+test/        self-contained test suites + fixture tooling
+vendor/      third-party deps fetched by bootstrap.bat (imgui submodule, GLFW, libarchive)
+```
+
 ## Implementation notes
 
 - Single sequential pass over the input; tick-space accumulation with an anchor-interpolated sweep converts events to per-frame stats in O(ticks + frames).
@@ -134,7 +145,7 @@ During the start delay, `{sec}`/`{time}`/`{time-milli}` run from negative and co
     - `test_newopts.cpp` — formatting-layer checks (auto-padding, per-stat commas, CC tokens, negative countdown, ASS lead-in, colour conversion).
     - `gen_midi.py` regenerates all fixtures (run it after cloning — the binary `.mid` files are not committed).
     - `ref_csv.py` + `compare_csv.py` diff fMCG's output against an independent Python SMF parser; `check_full_csv.py` validates invariants of a full CSV dump; `extract_tracks.py` slices tracks off huge MIDIs for spot checks.
-  On Linux/macOS: `make test` builds and runs both suites. On Windows, compile either `.cpp` against `fMCG_core.h` and link `vendor\libarchive\lib\libarchive.dll.a` (see `build.bat`'s flags); keep `libarchive.dll` beside the exe.
+  On Linux/macOS: `make test` builds and runs both suites. On Windows, compile each `src/*.cpp` to objects (flags in `build.bat`), compile the suite `.cpp`, and link them together against `vendor\libarchive\lib\libarchive.dll.a`; keep `libarchive.dll` beside the exe.
 
 ## License
 

@@ -1,0 +1,134 @@
+// app_state.h -- shared GUI state: operation lifecycle, processed data,
+// preview mirror, and the live scan-progress snapshot.
+//
+// Everything here is written from worker threads (process/render/dialog) and
+// read from the UI thread, so mutable cross-thread fields are atomic or
+// mutex-guarded.
+#pragma once
+#include "fMCG_core.h"
+
+#include <imgui.h>
+
+#include <atomic>
+#include <mutex>
+#include <string>
+#include <vector>
+
+// Options snapshot handed to the processing worker thread.
+struct GuiSettings {
+    std::string midi_file;
+    std::string output_video;
+    std::string layout_text;
+    std::string font_family;
+    std::string font_variant;   // subfamily/style within the family ("" = default)
+    int         font_bold = 0;
+    int         font_italic = 0;
+    int         font_size = 36;
+    int         alignment = 1;
+    int         width = 1920;
+    int         height = 1080;
+    double      fps = 60.0;
+    CommaOpts   commas;
+    PadOpts     pad;
+    bool        cc_stats = false;
+    double      start_delay = 3.0;
+    // 0 = corner alignment dropdown, 1 = explicit x/y (top-left of text block)
+    int         pos_mode = 0;
+    int         pos_x = 30;
+    int         pos_y = 30;
+    bool        vel0_note_off = true;
+    std::string text_color_aabbggrr = "&H00FFFFFF";
+    std::string bg_color_aabbggrr = "&H00000000";
+};
+
+// Options snapshot handed to the render worker thread.
+struct RenderSettings {
+    std::string output_video;
+    std::string midi_dir;
+    std::string midi_stem;
+    int width, height;
+    double fps, total_duration;
+    std::string bg_color_aabbggrr = "&H00000000";
+};
+
+struct AppState {
+    // ---- operation lifecycle -------------------------------------------------
+    std::mutex                log_mutex;
+    std::vector<std::string>  log_lines;
+    std::atomic<float>        progress{0.0f};
+    std::atomic<bool>         busy{false};
+    std::atomic<bool>         done{false};
+    std::atomic<bool>         cancel{false};   // user-requested abort of process/render
+    std::string               result_path;
+    std::atomic<int>          result_ret{-1};
+
+    // ---- processed state ------------------------------------------------------
+    std::atomic<bool>         processed{false};
+    std::string               ass_path;
+    std::string               midi_dir;
+    std::string               midi_stem;
+    double                    total_duration{0.0};
+    double                    fps{60.0};
+    int                       vid_width{1920};
+    int                       vid_height{1080};
+    uint16_t                  ppqn{480};
+    uint64_t                  total_notes{0};
+
+    // ---- preview data ---------------------------------------------------------
+    std::vector<FrameStats>   frames_data;
+    std::string               layout_text;         // template editor content (persistent)
+    std::vector<std::string>  template_lines;
+    std::string               text_colour_ass{"&H00FFFFFF"};
+    int                       ass_alignment{7};
+    int                       font_size{36};       // video-resolution font size (ASS Fontsize)
+    std::string               font_family;         // family used for the last processed render
+    std::string               font_variant;        // subfamily/style, e.g. "Bold"
+    int                       font_bold = 0;
+    int                       font_italic = 0;
+    bool                      show_preview{false};
+    bool                      render_active{false};  // true while FFmpeg render is in progress
+    bool                      preview_playing{false};
+    double                    preview_time{0.0};
+    double                    start_delay{0.0};   // black lead-in before the song starts
+    int                       pos_mode{0};        // 0 = corners, 1 = explicit x/y
+    int                       pos_x{30};
+    int                       pos_y{30};
+    int                       alignment{1};       // corner dropdown (GUI index)
+    double                    preview_start_time{0.0};
+    double                    preview_start_pos{0.0};
+
+    // Preview font (same TTF family as the rendered video, drawn at a size
+    // scaled to match: preview_px = font_size * preview_width / video_width)
+    ImFont*                   preview_font{nullptr};
+    std::string               preview_baked_family;
+    std::atomic<bool>         preview_font_reload{false};
+
+    // Preview mirror of the options the last Process ran with.
+    CommaOpts                 preview_commas;
+    PadOpts                   preview_pad;
+    std::string               bg_colour_ass{"&H00000000"};
+
+    // ---- async file dialog state ---------------------------------------------
+    std::atomic<bool>         dialog_busy{false};
+    std::atomic<bool>         dialog_done{false};
+    std::string               dialog_result;
+    std::string               dialog_kind;   // which UI element opened the dialog
+
+    // ---- live scan-progress snapshot (written by the processing thread) -------
+    std::mutex                scan_mutex;
+    uint64_t                  scan_events = 0;
+    double                    scan_elapsed = 0.0;
+    double                    scan_evps = 0.0;
+    double                    scan_frac = -1.0;   // stream fraction 0..1, <0 unknown
+    bool                      scan_active = false;
+
+    // ---- methods ---------------------------------------------------------------
+    void gui_log(const char* msg, bool is_error);
+    void gui_progress(const char* pass_name, int percent);
+    void gui_scan_progress(uint64_t events, double elapsed_sec, double ev_per_s, double frac);
+    std::string compose_scan_line();     // caller holds scan_mutex
+    void finish_op();                    // end-of-operation bookkeeping
+    float display_progress();            // smooth progress fraction for the bar
+};
+
+extern AppState g_app;   // single global instance (defined in app_state.cpp)

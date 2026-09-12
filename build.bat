@@ -77,8 +77,11 @@ if "%NEED_REBUILD%"=="1" (
 )
 
 echo [2/2] Building fMCG_gui (GUI)...
-g++ -std=c++17 -O3 -o fMCG_gui.exe fMCG_gui.cpp ^
-    -Ivendor\imgui -Ivendor\imgui\backends -Ivendor\GLFW -I. -Ivendor\libarchive ^
+for %%f in (fmcg_path fmcg_util fmcg_midi fmcg_engine fmcg_format fmcg_fonts fmcg_render) do call :compile_core %%f
+for %%f in (app_state dialogs jobs preview main) do call :compile_gui %%f
+g++ -std=c++17 -O3 -o fMCG_gui.exe lib\gui\app_state.o lib\gui\dialogs.o lib\gui\jobs.o lib\gui\preview.o lib\gui\main.o ^
+    lib\src\fmcg_path.o lib\src\fmcg_util.o lib\src\fmcg_midi.o lib\src\fmcg_engine.o lib\src\fmcg_format.o lib\src\fmcg_fonts.o lib\src\fmcg_render.o ^
+    -Ivendor\imgui -Ivendor\imgui\backends -Ivendor\GLFW -I. -Isrc -Igui -Ivendor\libarchive ^
     -Lvendor\GLFW -Lvendor\libarchive\lib ^
     lib\libimgui.a vendor\libarchive\lib\libarchive.dll.a ^
     -lglfw3 -lbcrypt -lopengl32 -lgdi32 -luser32 -lkernel32 -lpthread
@@ -87,6 +90,19 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 echo   OK: fMCG_gui.exe
+goto :eof
+
+:compile_core
+echo   compiling src\%1.cpp
+g++ -std=c++17 -O3 -c src\%1.cpp -I. -Isrc -Ivendor\libarchive -o lib\src\%1.o
+if %ERRORLEVEL% NEQ 0 exit /b 1
+goto :eof
+
+:compile_gui
+echo   compiling gui\%1.cpp
+g++ -std=c++17 -O3 -c gui\%1.cpp -Ivendor\imgui -Ivendor\imgui\backends -Ivendor\GLFW -I. -Isrc -Igui -o lib\gui\%1.o
+if %ERRORLEVEL% NEQ 0 exit /b 1
+goto :eof
 
 copy /y vendor\libarchive\bin\libarchive.dll libarchive.dll >nul
 
