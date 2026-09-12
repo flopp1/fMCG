@@ -27,6 +27,11 @@
 
 #include <GL/gl.h>
 
+#if defined(_WIN32)
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
+
 static const char* k_alignment_items[] = {
     "Top Left", "Top Right", "Bottom Left", "Bottom Right", "Top Center", "Bottom Center"
 };
@@ -871,6 +876,40 @@ static void draw_frame(GLFWwindow* window) {
 
 // --- startup ----------------------------------------------------------------
 
+#if defined(_WIN32)
+// Windows runs border-drag/title-bar-move inside a modal loop buried in
+// DefWindowProc that blocks glfwPollEvents(). GLFW repaints via the window-
+// refresh callback, but the OS only delivers WM_PAINT once the message queue
+// goes idle -- so a fast drag can end with DWM holding no presented frame for
+// the re-exposed region, which then shows black. This subclass starts a
+// periodic timer for the duration of the modal loop; each tick invalidates
+// the window, producing the WM_PAINT that drives the refresh callback and a
+// fresh swap. KillTimer on exit lets normal pacing resume.
+static WNDPROC s_glfw_prev_proc = nullptr;
+static constexpr UINT_PTR k_modal_paint_timer = 1;
+
+static LRESULT CALLBACK fmcg_modal_paint_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+        case WM_ENTERSIZEMOVE:
+            SetTimer(hwnd, k_modal_paint_timer, USER_TIMER_MINIMUM, nullptr);
+            break;
+        case WM_EXITSIZEMOVE:
+        case WM_DESTROY:
+            KillTimer(hwnd, k_modal_paint_timer);
+            break;
+        case WM_TIMER:
+            if (wp == k_modal_paint_timer) {
+                InvalidateRect(hwnd, nullptr, FALSE);
+                UpdateWindow(hwnd);
+                return 0;
+            }
+            break;
+        default: break;
+    }
+    return CallWindowProc(s_glfw_prev_proc, hwnd, msg, wp, lp);
+}
+#endif
+
 int main() {
     if (!glfwInit()) return 1;
 
@@ -882,6 +921,16 @@ int main() {
     if (!window) { glfwTerminate(); return 1; }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
+
+#if defined(_WIN32)
+    // Chain onto GLFW's window proc to keep frames flowing during the OS
+    // modal move/resize loop (see fmcg_modal_paint_proc above).
+    {
+        HWND hwnd = glfwGetWin32Window(window);
+        s_glfw_prev_proc = (WNDPROC)SetWindowLongPtrW(hwnd, GWLP_WNDPROC,
+                                                      (LONG_PTR)fmcg_modal_paint_proc);
+    }
+#endif
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
