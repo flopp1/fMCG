@@ -1083,7 +1083,24 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-    GLFWwindow* window = glfwCreateWindow(1100, 800, "fMCG - Fast MIDI Counter Generator", nullptr, nullptr);
+    // Default size: fit the whole UI vertically so no scrollbar is needed on
+    // a typical desktop. Take the monitor's work area (excludes the
+    // taskbar), capped at a sane height; the window stays user-resizable.
+    int win_w = 1100, win_h = 800;
+    if (GLFWmonitor* mon = glfwGetPrimaryMonitor()) {
+        const GLFWvidmode* vm = glfwGetVideoMode(mon);
+        int wx, wy, ww, wh;
+        glfwGetMonitorWorkarea(mon, &wx, &wy, &ww, &wh);
+        if (vm && wh > 0) {
+            win_w = (ww > 0) ? ww : vm->width;
+            win_h = wh - 80;                       // headroom: title bar + margins
+            if (win_w > 1400) win_w = 1400;
+            if (win_h > 900)  win_h = 900;
+            if (win_h < 600) win_h = 600;
+        }
+    }
+
+    GLFWwindow* window = glfwCreateWindow(win_w, win_h, "fMCG - Fast MIDI Counter Generator", nullptr, nullptr);
     if (!window) { glfwTerminate(); return 1; }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
