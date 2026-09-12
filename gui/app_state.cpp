@@ -80,7 +80,10 @@ void AppState::finish_op() {
     }
     if (render_active) render_watch_done = true;   // popup closes on next frame
     render_active = false;
-    progress.store(1.0f);
+    // Cancelled operations reset the bar to empty; completed ones show 100%.
+    int r = op_result.load();
+    bool cancelled = (r == OP_PROCESS_CANCELLED || r == OP_RENDER_CANCELLED);
+    progress.store(cancelled ? 0.0f : 1.0f);
     busy = false;
     done = true;
 }
