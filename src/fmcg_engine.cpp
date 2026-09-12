@@ -1074,20 +1074,6 @@ std::vector<FrameStats> process_streaming(
 
     try {
         std::unique_ptr<DataSrc> src;
-        std::unique_ptr<PipelinedSrc> psrc;
-        if (compressed) {
-            psrc.reset(new PipelinedSrc(filename));
-            psrc->start();   // no-op -> synchronous fallback if open or spawn failed
-            src.reset(psrc.release());   // single owner: src; psrc left empty
-        } else {
-            src.reset(new FileSrc(filename));
-        }
-
-        if (!src->ok()) {
-            emit(cb, compressed ? "Error: failed to open archive with libarchive.\n"
-                                : "Error: cannot open file.\n", true);
-            return {};
-        }
 
         TickData td;
         std::vector<TempoChange> tempo_raw;
@@ -1106,8 +1092,10 @@ std::vector<FrameStats> process_streaming(
         };
 
         emit(cb, "  Single sequential pass (" + std::string(compressed ? "libarchive" : "mmap") + " stream)...\n");
-        const clock::time_point t_scan = clock::now();
+        clock::time_point t_scan = clock::now();
         bool two_pass = false;
+        uint64_t dec_bytes = 0;
+        bool dec_err = false;
         {
             src = open_src();
             if (!src->ok()) {
@@ -1125,6 +1113,8 @@ std::vector<FrameStats> process_streaming(
                 td.reset();
                 tempo_raw.clear();
             }
+            dec_bytes = src->bytes_read();
+            dec_err = src->errored();
             src.reset();   // release before any re-open
         }
 
@@ -1145,6 +1135,7 @@ std::vector<FrameStats> process_streaming(
         } else {
             // Pass 1: tempo map only. Memory stays O(tempo events).
             emit(cb, "  Restarting in low-memory two-pass mode (pass 1/2: tempo map)...\n");
+            t_scan = clock::now();   // restart the clock: the stats line should reflect the two passes, not the aborted attempt
             src = open_src();
             if (!src->ok()) { emit(cb, "Error: failed to re-open input for pass 1.\n", true); return {}; }
             if (!scan_image(*src, vel0_as_note_off, td, tempo_raw, division, cb, ScanMode::TEMPO_ONLY))
@@ -1159,6 +1150,8 @@ std::vector<FrameStats> process_streaming(
             if (cb.cc_stats) fb.cc.resize(4096, 0);
             if (!scan_image_frames(*src, vel0_as_note_off, fb, tm, division, fps, cb))
                 return {};
+            dec_bytes = src->bytes_read();
+            dec_err = src->errored();
             src.reset();
             t_sweep = clock::now();
 
@@ -1184,11 +1177,10 @@ std::vector<FrameStats> process_streaming(
         st << "  Stats: " << format_with_commas(nev) << " events in " << std::fixed << std::setprecision(2)
            << t_scan_s << "s scan (" << format_with_commas((uint64_t)rate(nev, t_scan_s)) << " ev/s)";
         if (compressed) {
-            const uint64_t dec = src->bytes_read();
-            if (dec > 0) st << ", " << (dec >> 20) << " MB decoded in "
+            if (dec_bytes > 0) st << ", " << (dec_bytes >> 20) << " MB decoded in "
                             << std::setprecision(2) << t_scan_s << "s ("
-                            << std::setprecision(1) << rate(dec, t_scan_s) / 1e6 << " MB/s)";
-            if (src->errored()) st << "\n  Warning: archive stream reported an error before EOF.";
+                            << std::setprecision(1) << rate(dec_bytes, t_scan_s) / 1e6 << " MB/s)";
+            if (dec_err) st << "\n  Warning: archive stream reported an error before EOF.";
         }
         st << ", " << std::setprecision(2) << t_sweep_s << "s sweep\n";
         emit(cb, st.str());
