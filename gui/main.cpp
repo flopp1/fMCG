@@ -650,6 +650,7 @@ static void draw_frame(GLFWwindow* window) {
         bool has_data = g_app.processed.load();
         bool can_preview = (!g_app.busy.load()) || g_app.render_active;
         bool preview_starts_render_view = g_app.render_active && g_app.busy.load();
+        g_app.preview_watching_render = preview_starts_render_view;
         ImGui::SameLine();
         if (!can_preview) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
         if (ImGui::Button("Preview", ImVec2(140, 30)) && can_preview) {
@@ -698,6 +699,7 @@ static void draw_frame(GLFWwindow* window) {
         if (ImGui::Button("Render Video", ImVec2(140, 30)) && can_render) {
             g_app.show_preview = true;
             g_app.render_active = true;
+            g_app.preview_watching_render = true;   // popup closes when render ends
             g_app.preview_playing = false;
             g_app.preview_time = 0.0;
             ImGui::OpenPopup("Preview");

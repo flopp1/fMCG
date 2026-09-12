@@ -99,6 +99,10 @@ struct AppState {
     int                       font_italic = 0;
     bool                      show_preview{false};
     bool                      render_active{false};  // true while FFmpeg render is in progress
+    // The Preview popup was opened to watch a render (Render Video click, or
+    // Preview while a render runs). Such a popup closes itself when the render
+    // ends instead of degrading into a regular timeline preview.
+    bool                      preview_watching_render{false};
     bool                      preview_playing{false};
     double                    preview_time{0.0};
     double                    start_delay{0.0};   // black lead-in before the song starts

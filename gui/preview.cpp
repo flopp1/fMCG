@@ -422,13 +422,15 @@ void render_preview_popup() {
             snprintf(overlay, sizeof(overlay), "Rendering %d%%", (int)(p * 100));
             ImGui::ProgressBar(p, ImVec2(-1, 0), overlay);
         } else {
-            // Render finished in the background: clear the flag once. The popup
-            // stays open (unless it was opened for the render itself) so Preview
-            // can always bring it back.
+            // Render finished: a popup opened to watch the render closes
+            // itself; one opened via Preview stays as a regular timeline view.
             if (g_app.render_active && !g_app.busy.load()) {
                 g_app.render_active = false;
                 g_app.preview_playing = false;
-                ImGui::CloseCurrentPopup();
+                if (g_app.preview_watching_render) {
+                    g_app.preview_watching_render = false;
+                    ImGui::CloseCurrentPopup();
+                }
             }
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 120);
             float tp = (float)g_app.preview_time;
