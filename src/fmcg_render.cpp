@@ -12,8 +12,9 @@
 // therefore never be passed through the subtitles= filter safely. Like the
 // original fMCG (which rendered a fixed "temp_stats.ass" from the working
 // directory), we move the ASS next to its own directory under a fixed bare
-// name and cd there in the batch file, so the filter argument is a simple
-// name no parser can mangle. Returns the renamed file's full path.
+// name and spawn ffmpeg with that directory as its working directory, so the
+// filter argument is a simple name no parser can mangle. Returns the renamed
+// file's full path.
 std::string prepare_ass_for_filter(const std::string& ass_filename) {
     size_t sep = ass_filename.find_last_of("/\\");
     std::string dir = (sep != std::string::npos) ? ass_filename.substr(0, sep + 1) : std::string("./");
@@ -45,33 +46,27 @@ std::string ffmpeg_color_spec(const std::string& ass_col) {
     return "0x000000";
 }
 
-int render_video(const std::string& ass_filename, const std::string& output_video,
-                         const std::string& midi_dir, const std::string& midi_stem,
-                         int width, int height, double fps, double total_duration,
-                         const std::string& bg_color_ass) {
-    std::string safe_ass = prepare_ass_for_filter(ass_filename);
-    size_t sep = safe_ass.find_last_of("/\\");
-    std::string dir_cd = (sep != std::string::npos) ? safe_ass.substr(0, sep) : std::string(".");
+std::vector<std::string> ffmpeg_args(const std::string& output_video,
+                                     int width, int height, double fps,
+                                     double total_duration,
+                                     const std::string& bg_color_ass,
+                                     bool progress_to_stdout) {
     std::string out_fwd = output_video;
     std::replace(out_fwd.begin(), out_fwd.end(), '\\', '/');
 
-    std::string bat_file = midi_dir + midi_stem + "_fMCG_ffmpeg.bat";
-    {
-        std::ofstream bat(bat_file);
-        bat << "@echo off\ncd /d \"" << dir_cd << "\" || exit /b 1\n";
-        bat << "ffmpeg -y -f lavfi -i \"color=c=" << ffmpeg_color_spec(bg_color_ass)
-            << ":s=" << width << "x" << height
-            << ":r=" << fps << ":d=" << total_duration
-            << "\" -vf \"subtitles=temp_stats.ass\""
-            << " -c:v libx264 -pix_fmt yuv420p \"" << out_fwd << "\"\n";
+    std::vector<std::string> a;
+    a.push_back("-y");
+    a.push_back("-f");            a.push_back("lavfi");
+    a.push_back("-i");            a.push_back("color=c=" + ffmpeg_color_spec(bg_color_ass)
+                                                + ":s=" + std::to_string(width) + "x" + std::to_string(height)
+                                                + ":r=" + std::to_string(fps)
+                                                + ":d=" + std::to_string(total_duration));
+    a.push_back("-vf");           a.push_back("subtitles=temp_stats.ass");
+    a.push_back("-c:v");          a.push_back("libx264");
+    a.push_back("-pix_fmt");      a.push_back("yuv420p");
+    if (progress_to_stdout) {
+        a.push_back("-progress"); a.push_back("pipe:1");
     }
-
-    std::string cmd = "\"" + bat_file + "\"";
-    int ret = std::system(cmd.c_str());
-
-    std::remove(safe_ass.c_str());
-    std::remove(ass_filename.c_str());
-    std::remove(bat_file.c_str());
-
-    return ret;
+    a.push_back(out_fwd);
+    return a;
 }

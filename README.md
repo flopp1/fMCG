@@ -23,6 +23,8 @@ It's fast! Renders a notecounter of a 2.3 billion note MIDI in 3 minutes on a Ry
 
 Both scripts are idempotent; re-run `build.bat` after changing sources.
 
+`build.bat debug` (or `make debug` on Linux/macOS) builds with `FMCG_DEBUG=1`: ffmpeg's stderr log is kept in `<name>_fMCG_progress.txt` next to the output for diagnosis. Release builds (the default) discard it — end users never see progress artifacts, and a clean render leaves no files behind.
+
 ### Linux / macOS
 
 GLFW and libarchive are resolved via pkg-config (i.e. your system package manager):
@@ -39,6 +41,7 @@ brew install pkg-config glfw libarchive
 
 git submodule update --init   # fetch Dear ImGui (pinned v1.92.9b)
 make                          # builds ./fMCG_gui (default target)
+make debug                    # variant: keeps ffmpeg's stderr log in <name>_fMCG_progress.txt
 ```
 
 Dear ImGui is a git submodule compiled from `vendor/imgui` (no standard distro package). To use a system copy instead: `make IMGUI_CFLAGS=-I/usr/include/imgui IMGUI_SOURCES=`.
@@ -67,6 +70,7 @@ So a shareable release is just: `fMCG_gui.exe` + `libarchive.dll` + a licence no
 ```bat
 release.bat            :: -> dist\fMCG-windows\ and dist\fMCG-windows.zip
 release.bat v1.2       :: -> dist\fMCG-v1.2-windows\ ... (name suffix)
+debug build            :: build.bat debug (Windows) or make debug (Linux/macOS)
 ```
 
 The script builds first (so the exe is current), assembles the folder with `fMCG_gui.exe`, `libarchive.dll`, `THIRD_PARTY_LICENSES.txt` and `README.md`, verifies nothing is missing, and zips it via PowerShell. On Linux/macOS the equivalent is `make release` → `dist/fMCG-linux.tar.gz`.
@@ -156,7 +160,7 @@ vendor/      third-party deps fetched by bootstrap.bat (imgui submodule, GLFW, l
 ## Implementation notes
 
 - Single sequential pass over the input; tick-space accumulation with an anchor-interpolated sweep converts events to per-frame stats in O(ticks + frames).
-- The FFmpeg invocation writes a `.bat`/shell script and renders the ASS from a fixed bare filename (`temp_stats.ass`), because ffmpeg's filter-argument parser mangles backslashes, apostrophes and colons — a user path can never be passed through `subtitles=` safely.
+- FFmpeg is spawned directly (no shell, no batch file), with its working directory set to the ASS's folder and a fixed bare filename (`temp_stats.ass`) passed to `subtitles=`. This is still required because ffmpeg's filter-argument parser mangles backslashes, apostrophes and colons — a user path can never be passed through `subtitles=` safely — but no `.bat` script is created and no temp files are left behind.
 - `test/` holds two self-contained suites plus fixture tooling:
     - `test_harness.cpp` — parse-correctness regression suite (note/poly/NPS/BPM/tempo-map checks on generated fixtures, compressed-vs-plain equivalence for `.7z`/`.tar.xz`, CC counting, vel-0 handling). Run standalone: `test_harness.exe <file.mid>` prints a parse summary; `test_harness.exe --csv` also dumps a comparison CSV.
     - `test_newopts.cpp` — formatting-layer checks (auto-padding, per-stat commas, CC tokens, negative countdown, ASS lead-in, colour conversion).

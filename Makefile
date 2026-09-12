@@ -17,6 +17,9 @@
 # Targets:
 #   make              build ./fMCG_gui (default)
 #   make run          build and launch the GUI
+#   make debug        build with FMCG_DEBUG=1 (keeps ffmpeg's stderr log in
+#                     <name>_fMCG_progress.txt next to the output; release
+#                     builds discard it)
 #   make test         build and run both test suites (test/)
 #   make release      build + test + package dist/fMCG-linux.tar.gz
 #   make clean
@@ -88,9 +91,12 @@ GUI_SOURCES  := gui/app_state.cpp gui/dialogs.cpp gui/jobs.cpp gui/preview.cpp g
 GUI_OBJECTS  := $(GUI_SOURCES:.cpp=.o)
 
 # 'all' must stay the FIRST target -- GNU Make treats it as the default.
-.PHONY: all run test release clean
+.PHONY: all run debug test release clean
 
 all: fMCG_gui
+
+debug: CXXFLAGS += -DFMCG_DEBUG=1
+debug: fMCG_gui
 
 fMCG_gui: $(GUI_OBJECTS) $(CORE_OBJECTS) $(IMGUI_SOURCES)
 	$(CXX) $(ALL_CFLAGS) -o $@ $(GUI_OBJECTS) $(CORE_OBJECTS) $(IMGUI_SOURCES) $(LDFLAGS) $(ALL_LIBS)

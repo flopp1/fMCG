@@ -13,7 +13,17 @@ REM
 REM Run bootstrap.bat first on a fresh clone; it fetches the imgui submodule
 REM and downloads the rest.
 REM Output: fMCG_gui.exe (needs libarchive.dll next to it at runtime).
+REM
+REM "build.bat debug" adds -DFMCG_DEBUG=1: ffmpeg's stderr log is kept in
+REM <name>_fMCG_progress.txt next to the output for diagnosis. Release builds
+REM (default) discard it -- end users never see progress artifacts.
 REM ===========================================================================
+
+set EXTRA_CFLAGS=
+if /i "%1"=="debug" (
+    set EXTRA_CFLAGS=-DFMCG_DEBUG=1
+    echo [debug build] ffmpeg stderr log enabled.
+)
 
 if not exist vendor\imgui\imgui.h (
     echo ERROR: vendor\imgui not found. Run bootstrap.bat first ^(or:
@@ -94,13 +104,13 @@ goto :eof
 
 :compile_core
 echo   compiling src\%1.cpp
-g++ -std=c++17 -O3 -c src\%1.cpp -I. -Isrc -Ivendor\libarchive -o lib\src\%1.o
+g++ -std=c++17 -O3 %EXTRA_CFLAGS% -c src\%1.cpp -I. -Isrc -Ivendor\libarchive -o lib\src\%1.o
 if %ERRORLEVEL% NEQ 0 exit /b 1
 goto :eof
 
 :compile_gui
 echo   compiling gui\%1.cpp
-g++ -std=c++17 -O3 -c gui\%1.cpp -Ivendor\imgui -Ivendor\imgui\backends -Ivendor\GLFW -I. -Isrc -Igui -o lib\gui\%1.o
+g++ -std=c++17 -O3 %EXTRA_CFLAGS% -c gui\%1.cpp -Ivendor\imgui -Ivendor\imgui\backends -Ivendor\GLFW -I. -Isrc -Igui -o lib\gui\%1.o
 if %ERRORLEVEL% NEQ 0 exit /b 1
 goto :eof
 
