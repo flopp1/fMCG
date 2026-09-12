@@ -515,7 +515,38 @@ public:
         if (lo == hi) { fill(); if (lo == hi) return -1; }
         return data[lo];
     }
-    void skip_back_one() { if (lo > 0 && limit_remaining < limit_total) { lo--; limit_remaining++; } }
+
+    // ---- pointer-batched fast path ---------------------------------------
+    // A window into `data` with a guaranteed number of readable bytes,
+    // clamped to the active track-chunk limit. The scanner bursts over
+    // ordinary channel events straight from this window; commit_window()
+    // makes the consumption official. A burst that speculatively parsed an
+    // event it does not want to handle simply commits fewer bytes -- the
+    // un-handled event stays in the stream for the byte-wise loop. No
+    // slow-path call may happen between acquire and commit (it would move
+    // lo/hi and invalidate fast_p); the scanner obeys that.
+    uint8_t* fast_p = nullptr;
+
+    size_t acquire_window() {
+        size_t run = hi - lo;
+        if (run < CAP / 2 && !eof) {
+            if (lo > 0) {                     // reclaim the drained head
+                std::memmove(data, data + lo, run);
+                lo = 0; hi = run;
+            }
+            fill();                           // top up (no-op at EOF)
+            run = hi - lo;
+        }
+        size_t n = run;
+        if (limit_remaining < n) n = limit_remaining;
+        fast_p = data + lo;
+        return n;
+    }
+    void commit_window(size_t used) {         // used <= acquire_window()'s return
+        lo += used;
+        limit_remaining -= used;
+        fast_p = nullptr;
+    }
 
     void skip(size_t n) {
         if (n > limit_remaining) n = limit_remaining;
@@ -693,6 +724,74 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
                 if (choice == 1) throw SpecAbort{};   // caller restarts in TEMPO_ONLY mode
                 spec_warned = true;              // 0 (or absent cb): ask only once
             }
+#ifndef FMCG_NO_BURST
+            // ---- pointer-batched fast path --------------------------------
+            // Consumes a run of ordinary two-data-byte channel events chained
+            // by zero deltas, straight from the stream's own buffer (bounds
+            // and state checks once per burst instead of per byte). Deltas --
+            // including the zero ones chaining the run -- always stay in the
+            // stream: this block never touches `tick`; the byte-wise code
+            // below remains the sole owner of time and of every edge case.
+            // The run stops at the first event it cannot fully classify
+            // (meta/system family, 1-data-byte message, or a window tail
+            // without both data bytes); that event is then handled by the
+            // normal slow path via fall-through.
+            bool burst_at_event = false;   // stopped on an unclassified event?
+            {
+                size_t win = bs.acquire_window();
+                const uint8_t* p = bs.fast_p;
+                const uint8_t* const pend = bs.fast_p + win;
+                while (p < pend) {
+                    const uint8_t* q = p;                  // classification cursor
+                    uint8_t status;
+                    bool explicit_status = false;
+                    if (*q < 0x80) {
+                        status = running;                  // running status
+                    } else {
+                        status = *q++;                     // explicit status byte
+                        explicit_status = true;
+                    }
+                    if (status < 0x80) { burst_at_event = true; break; }   // running == 0
+                    const uint8_t et = status & 0xF0;
+                    if (et == 0xC0 || et == 0xD0) { burst_at_event = true; break; }
+                    if (et != 0x80 && et != 0x90 && et != 0xA0 && et != 0xB0 && et != 0xE0) {
+                        burst_at_event = true; break;      // meta/system family
+                    }
+                    if (pend - q < 2) { burst_at_event = true; break; }    // both data bytes must be in-window
+                    const uint8_t n1 = *q++, n2 = *q++;
+                    p = q;                                 // event fully consumed
+                    if (explicit_status) running = status; // 0xFx never reaches here
+                    if (et == 0x90 && (n2 > 0 || !vel0_as_note_off)) {
+                        refcount[status & 0x0F][n1]++;
+                        if (accumulate) td.note_on(tick);
+                    } else if (et == 0x90 || et == 0x80) {
+                        if (refcount[status & 0x0F][n1] > 0) {
+                            refcount[status & 0x0F][n1]--;
+                            if (accumulate) td.delta_at(tick, -1);
+                        }
+                    } else if (et == 0xB0 && count_cc) {
+                        td.cc_at(tick);
+                    }
+                    // 0xA0/0xE0 and uncounted CC consume 3 bytes, touch nothing.
+                    if (++ev_count >= 1000000) {
+                        ev_count = 0;
+                        ev_total += 1000000;
+                        ping();
+                        if (cb.cancel_flag && cb.cancel_flag->load()) {
+                            bs.commit_window(p - bs.fast_p);
+                            emit(cb, "  Cancelled.\n");
+                            return false;
+                        }
+                    }
+                    if (p == pend) break;                  // window boundary: delta beyond it
+                    if (*p != 0) break;                    // nonzero delta: loop top reads it
+                    ++p;                                   // zero delta: consume it and chain
+                }
+                bs.commit_window(p - bs.fast_p);
+            }
+            if (!burst_at_event) continue;   // stream sits at a delta: back to loop top
+            // Fall through: the event at the stream head goes through the slow path.
+#endif   // FMCG_NO_BURST
             // Peek the next byte: if it is a data byte, this event uses the
             // held running status and the byte stays in the stream (it will
             // be re-read below as data). No unread round-trip needed.
@@ -738,9 +837,9 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
                         refcount[ch][note]++;
                         if (accumulate) td.note_on(tick);
                     } else if (et == 0x90 || et == 0x80) {
-                        if (refcount[ch][note] > 0) { refcount[ch][note]--; if (accumulate) td.delta_at(tick, -1); }
+                        if (refcount[ch][note] > 0) { refcount[ch][note]--;                             if (accumulate) td.delta_at(tick, -1); }
                     } else if (et == 0xB0 && count_cc) {
-                        td.cc_at(tick);   // control change: counted only when the CC stat is on
+                                                td.cc_at(tick);   // control change: counted only when the CC stat is on
                     }
                 }
             }
@@ -1003,6 +1102,74 @@ bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
         while (bs.at_end() == false) {
             tick += bs.vlq();
             advance_conv(tick);
+#ifndef FMCG_NO_BURST
+            // ---- pointer-batched fast path --------------------------------
+            // Consumes a run of ordinary two-data-byte channel events chained
+            // by zero deltas, straight from the stream's own buffer (bounds
+            // and state checks once per burst instead of per byte). Deltas --
+            // including the zero ones chaining the run -- always stay in the
+            // stream: this block never touches `tick`; the byte-wise code
+            // below remains the sole owner of time and of every edge case.
+            // The run stops at the first event it cannot fully classify
+            // (meta/system family, 1-data-byte message, or a window tail
+            // without both data bytes); that event is then handled by the
+            // normal slow path via fall-through.
+            bool burst_at_event = false;   // stopped on an unclassified event?
+            {
+                size_t win = bs.acquire_window();
+                const uint8_t* p = bs.fast_p;
+                const uint8_t* const pend = bs.fast_p + win;
+                while (p < pend) {
+                    const uint8_t* q = p;                  // classification cursor
+                    uint8_t status;
+                    bool explicit_status = false;
+                    if (*q < 0x80) {
+                        status = running;                  // running status
+                    } else {
+                        status = *q++;                     // explicit status byte
+                        explicit_status = true;
+                    }
+                    if (status < 0x80) { burst_at_event = true; break; }   // running == 0
+                    const uint8_t et = status & 0xF0;
+                    if (et == 0xC0 || et == 0xD0) { burst_at_event = true; break; }
+                    if (et != 0x80 && et != 0x90 && et != 0xA0 && et != 0xB0 && et != 0xE0) {
+                        burst_at_event = true; break;      // meta/system family
+                    }
+                    if (pend - q < 2) { burst_at_event = true; break; }    // both data bytes must be in-window
+                    const uint8_t n1 = *q++, n2 = *q++;
+                    p = q;                                 // event fully consumed
+                    if (explicit_status) running = status; // 0xFx never reaches here
+                    if (et == 0x90 && (n2 > 0 || !vel0_as_note_off)) {
+                        refcount[status & 0x0F][n1]++;
+                        fb.note_on(frame_of(tick));
+                    } else if (et == 0x90 || et == 0x80) {
+                        if (refcount[status & 0x0F][n1] > 0) {
+                            refcount[status & 0x0F][n1]--;
+                            fb.note_off(frame_of(tick));
+                        }
+                    } else if (et == 0xB0 && count_cc) {
+                        fb.add_cc(frame_of(tick));
+                    }
+                    // 0xA0/0xE0 and uncounted CC consume 3 bytes, touch nothing.
+                    if (++ev_count >= 1000000) {
+                        ev_count = 0;
+                        ev_total += 1000000;
+                        ping();
+                        if (cb.cancel_flag && cb.cancel_flag->load()) {
+                            bs.commit_window(p - bs.fast_p);
+                            emit(cb, "  Cancelled.\n");
+                            return false;
+                        }
+                    }
+                    if (p == pend) break;                  // window boundary: delta beyond it
+                    if (*p != 0) break;                    // nonzero delta: loop top reads it
+                    ++p;                                   // zero delta: consume it and chain
+                }
+                bs.commit_window(p - bs.fast_p);
+            }
+            if (!burst_at_event) continue;   // stream sits at a delta: back to loop top
+            // Fall through: the event at the stream head goes through the slow path.
+#endif   // FMCG_NO_BURST
             // Peek-based running-status handling (mirrors scan_image).
             int st = bs.peek();
             if (st < 0) break;
@@ -1034,7 +1201,7 @@ bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
                         refcount[ch][note]++;
                         fb.note_on(frame_of(tick));
                     } else if (et == 0x90 || et == 0x80) {
-                        if (refcount[ch][note] > 0) { refcount[ch][note]--; fb.note_off(frame_of(tick)); }
+                        if (refcount[ch][note] > 0) { refcount[ch][note]--;                             fb.note_off(frame_of(tick)); }
                     } else if (et == 0xB0 && count_cc) {
                         fb.add_cc(frame_of(tick));
                     }
@@ -1055,7 +1222,7 @@ bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
         // Held notes close at the track's final tick.
         for (int ch = 0; ch < 16; ++ch)
             for (int n = 0; n < 128; ++n)
-                if (refcount[ch][n] > 0) fb.note_off(frame_of(tick));
+                if (refcount[ch][n] > 0)                             fb.note_off(frame_of(tick));
         if (tick > fb.max_tick) fb.max_tick = tick;
 
         size_t consumed = bs.consumed();
