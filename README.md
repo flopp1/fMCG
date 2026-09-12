@@ -72,7 +72,6 @@ release.bat v1.2       :: -> dist\fMCG-v1.2-windows\ ... (name suffix)
 The script builds first (so the exe is current), assembles the folder with `fMCG_gui.exe`, `libarchive.dll`, `THIRD_PARTY_LICENSES.txt` and `README.md`, verifies nothing is missing, and zips it via PowerShell. On Linux/macOS the equivalent is `make release` → `dist/fMCG-linux.tar.gz`.
 
 ## Usage
-
 1. Pick a MIDI file (plain `.mid`, or `.7z`/`.xz`/`.rar`/`.rar.xz` containing one).
 2. Adjust settings (see below), then **Process** — the file is scanned and the stats overlay is generated.
 3. **Preview** plays the video live in-app; **Render Video** encodes the final MP4 next to the MIDI.
@@ -81,7 +80,7 @@ The output is `<midi name>_fMCG.mp4` in the MIDI's folder (editable).
 
 ## Layout configuration
 
-The layout textbox (one line per stat row) defines the overlay. A default is present on startup; **Load from file...** reads a `.txt` layout. The following tokens are substituted per frame:
+The layout textbox defines the overlay. **Each line becomes one overlay row**, and a row can contain any mix of tokens and literal text -- so you can put several stats side by side (e.g. `Notes: {nc}  Poly: {plph}  NPS: {nps}`) or keep one stat per line. A default layout is present on startup; **Load from file...** reads a `.txt` layout. The following tokens are substituted per frame:
 
 ### Notes
 | Token | Meaning |
@@ -120,17 +119,35 @@ During the start delay, `{sec}`/`{time}`/`{time-milli}` run from negative and co
 - **Leading zeros** — pads every number with zeros so digits line up; each stat pads toward its own maximum (notes → total notes, polyphony → peak polyphony, seconds → total seconds), so no width needs to be set.
 - **Vel-0 as Note-Off** — treat `note-on` with velocity 0 as a note-off (standard MIDI behaviour; disable for unusual files).
 - **Count CC events** — enables the `{cc}` stats. Disabled costs nothing; the scanner skips CC tracking entirely.
-- **Counter position** — *Corners* places the block in a screen corner via the Alignment dropdown; *Custom x,y* places the **top-left of the text block** at exact video pixels.
+- **Counter position** — *Corners* places the block via the Alignment dropdown (**Top/Bottom Left/Right/Center**); *Custom x,y* places the **top-left of the text block** at exact video pixels. The valid ranges (`0..width`, `0..height`) are shown next to the fields, and out-of-range values are clamped so the anchor can never leave the frame.
 - **Start delay (seconds)** — black lead-in before the song, with stats at zero and a negative time countdown.
-- **Text / Background colour** — presets or a custom `RRGGBB` value each.
+- **Text / Background colour** — click the swatch to open a compact picker with R/G/B sliders and a live preview; the hex value updates in real time.
 - **Resolution / FPS / Font** — output video size, frame rate, and overlay font family + size.
+- **Preview without a MIDI** — the Preview button always works: with no file processed it shows the current pattern (layout, font, colours, position) with all stats at zero over the chosen background, including the start-delay countdown.
+
+### Patterns and persistent settings
+
+A **pattern** bundles the overlay look: layout text, alignment/position, font family + style + size, text colour, background colour, comma options and padding. Pick one from the dropdown, **Save** to update it, **Save As...** to create a new one (saving over an existing name asks for confirmation first), **Delete** to remove. Patterns live in the per-user settings folder and survive program updates; switching patterns with unsaved edits asks before discarding.
+
+Everything **not** in a pattern — resolution, FPS, CC counting, vel-0 handling, start delay — is a global setting: saved automatically as you change it (debounced to at most one disk write per second) and restored on the next launch.
+
+All persistent state lives in the per-user config directory (created on first run):
+
+| Platform | Location |
+|---|---|
+| Windows | `%APPDATA%\fMCG\` |
+| Linux | `$XDG_CONFIG_HOME/fMCG/` or `~/.config/fMCG/` |
+| macOS | `~/Library/Application Support/fMCG/` |
+
+Inside: `settings.ini` (global settings) and `patterns/<name>.ini` (one file per pattern). The files are plain `key = value` INI — hand-editable, and never touched by program updates. Deleting the folder resets everything; the `Default` pattern is recreated on next launch.
 
 ## Project layout
 
 ```text
 src/         core library modules (fmcg_path, fmcg_util, fmcg_midi, fmcg_engine,
              fmcg_format, fmcg_fonts, fmcg_render) -- one .h/.cpp pair each
-gui/         Dear ImGui application (app_state, dialogs, jobs, preview, main)
+gui/         Dear ImGui application (app_state, dialogs, jobs, preview,
+             main, colour_edit, settings_store)
 fMCG_core.h  umbrella header: includes every src/ module, nothing else
 test/        self-contained test suites + fixture tooling
 vendor/      third-party deps fetched by bootstrap.bat (imgui submodule, GLFW, libarchive)

@@ -33,11 +33,7 @@ void run_process(GuiSettings s) {
     app.result_path.clear();
     app.processed = false;
 
-    int ass_alignment;
-    if (s.alignment == 0)      ass_alignment = 7;
-    else if (s.alignment == 1) ass_alignment = 9;
-    else if (s.alignment == 2) ass_alignment = 1;
-    else                       ass_alignment = 3;
+    int ass_alignment = gui_alignment_to_ass(s.alignment);
 
     std::string text_color_ass = s.text_color_aabbggrr;
 
@@ -119,6 +115,7 @@ void run_process(GuiSettings s) {
     acfg.commas = s.commas;
     acfg.pad = s.pad;
     acfg.bg_color_ass = s.bg_color_aabbggrr;
+    acfg.start_delay = s.start_delay;
 
     generate_ass(ass_filename, frames, template_lines, total_notes, total_cc, ppqn, acfg);
 

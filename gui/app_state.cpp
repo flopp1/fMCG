@@ -4,6 +4,37 @@
 #include <iomanip>
 
 AppState g_app;
+UiState  g_ui;
+
+// ---------------------------------------------------------------------------
+// Alignment + font-variant helpers
+// ---------------------------------------------------------------------------
+
+int gui_alignment_to_ass(int idx) {
+    switch (idx) {
+        case 0: return 7;    // Top Left
+        case 1: return 9;    // Top Right
+        case 2: return 1;    // Bottom Left
+        case 3: return 3;    // Bottom Right
+        case 4: return 8;    // Top Center
+        case 5: return 2;    // Bottom Center
+        default: return 7;
+    }
+}
+
+void apply_font_variant(GuiSettings& s, const std::string& family, const std::string& variant) {
+    s.font_family = family;
+    s.font_variant = variant;
+    s.font_bold = 0;
+    s.font_italic = 0;
+    for (const auto& v : enumerate_font_variants(family)) {
+        if (v.style == variant) {
+            s.font_bold = (v.weight >= 600) ? 1 : 0;
+            s.font_italic = v.italic ? 1 : 0;
+            break;
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Logging + progress plumbing

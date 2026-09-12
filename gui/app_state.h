@@ -6,6 +6,7 @@
 // mutex-guarded.
 #pragma once
 #include "fMCG_core.h"
+#include "settings_store.h"   // GlobalSettings, PatternData
 
 #include <imgui.h>
 
@@ -131,4 +132,50 @@ struct AppState {
     float display_progress();            // smooth progress fraction for the bar
 };
 
+// All UI-editable state, hoisted out of main() so the pattern manager,
+// colour editor and persistence layer can read/write it alongside the
+// settings widgets.
+struct UiState {
+    GuiSettings     s;              // snapshot handed to the Process worker
+    GlobalSettings  globals;        // non-pattern persistent settings
+    bool            globals_dirty = false;      // autosave pending
+    double          last_globals_save = 0.0;    // seconds (glfwGetTime)
+
+    // editing buffers (ImGui InputText needs char arrays)
+    char midi_buf[1024] = "";
+    char output_buf[1024] = "";
+    char layout_buf[8192] = "";
+    int  alignment_idx = 0;         // corner/center dropdown index
+    int  selected_font_idx = 0;
+    std::vector<std::string> system_fonts;
+    std::vector<const char*> font_cstrs;        // refreshed after list changes
+
+    // font-variant combo cache (rebuilt when the family changes)
+    std::vector<std::string> variant_names;
+    std::vector<const char*> variant_cstrs;
+    std::string variants_for;
+    int  variant_idx = 0;
+
+    // pattern management
+    std::vector<std::string> pattern_names;
+    int          active_pattern_idx = 0;
+    std::string  active_pattern;    // "" = unsaved new pattern
+    PatternData  pattern_baseline;  // last loaded/saved state (modified check)
+    bool         show_save_as = false;
+    bool         show_switch_confirm = false;
+    std::string  pending_switch_to;
+    char         save_as_name[128] = "";
+    bool         save_as_warn = false;
+};
+extern UiState g_ui;   // single instance (defined in app_state.cpp)
+
 extern AppState g_app;   // single global instance (defined in app_state.cpp)
+
+// GUI corner dropdown index -> ASS \an numpad alignment
+// (0 TL,1 TR,2 BL,3 BR,4 Top Center,5 Bottom Center -> 7,9,1,3,8,2)
+int gui_alignment_to_ass(int idx);
+
+// Recompute font_bold/font_italic from the variant's OS/2 metrics and refresh
+// the variant combo cache for `family`. Shared by the family combo and the
+// pattern loader.
+void apply_font_variant(GuiSettings& s, const std::string& family, const std::string& variant);

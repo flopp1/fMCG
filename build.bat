@@ -78,8 +78,8 @@ if "%NEED_REBUILD%"=="1" (
 
 echo [2/2] Building fMCG_gui (GUI)...
 for %%f in (fmcg_path fmcg_util fmcg_midi fmcg_engine fmcg_format fmcg_fonts fmcg_render) do call :compile_core %%f
-for %%f in (app_state dialogs jobs preview main) do call :compile_gui %%f
-g++ -std=c++17 -O3 -o fMCG_gui.exe lib\gui\app_state.o lib\gui\dialogs.o lib\gui\jobs.o lib\gui\preview.o lib\gui\main.o ^
+for %%f in (app_state dialogs jobs preview main colour_edit settings_store) do call :compile_gui %%f
+g++ -std=c++17 -O3 -o fMCG_gui.exe lib\gui\app_state.o lib\gui\dialogs.o lib\gui\jobs.o lib\gui\preview.o lib\gui\main.o lib\gui\colour_edit.o lib\gui\settings_store.o ^
     lib\src\fmcg_path.o lib\src\fmcg_util.o lib\src\fmcg_midi.o lib\src\fmcg_engine.o lib\src\fmcg_format.o lib\src\fmcg_fonts.o lib\src\fmcg_render.o ^
     -Ivendor\imgui -Ivendor\imgui\backends -Ivendor\GLFW -I. -Isrc -Igui -Ivendor\libarchive ^
     -Lvendor\GLFW -Lvendor\libarchive\lib ^

@@ -1,11 +1,14 @@
 // main.cpp -- fMCG GUI entry point: GLFW/OpenGL3 bootstrap, the settings UI,
-// action buttons, progress bar and log view. Worker operations live in jobs.cpp,
-// the preview popup in preview.cpp, dialogs in dialogs.cpp, shared state in
-// app_state.h/cpp.
+// pattern manager, colour editors, action buttons, progress bar and log view.
+// Worker operations live in jobs.cpp, the preview popup in preview.cpp,
+// dialogs in dialogs.cpp, shared state in app_state.h/cpp, persistence in
+// settings_store.cpp.
 #include "app_state.h"
 #include "jobs.h"
 #include "dialogs.h"
 #include "preview.h"
+#include "colour_edit.h"
+#include "settings_store.h"
 
 #include "fMCG_core.h"
 #include "imgui.h"
@@ -23,6 +26,99 @@
 #include <cstdio>
 
 #include <GL/gl.h>
+
+static const char* k_alignment_items[] = {
+    "Top Left", "Top Right", "Bottom Left", "Bottom Right", "Top Center", "Bottom Center"
+};
+static const int k_alignment_count = 6;
+
+static const char* k_default_layout =
+    "Time: {time-milli}/{time-milli-max}\n"
+    "Notes: {nc}/{nc-total}/{nc-rem}\n"
+    "NPS: {nps}/{nps-max}\n"
+    "Polyphony: {plph}/{plph-max}\n"
+    "BPM: {bpm}";
+
+// --- persistence glue -------------------------------------------------------
+
+static void save_globals_now() {
+    g_ui.globals_dirty = false;
+    g_ui.last_globals_save = ImGui::GetTime();
+    save_global_settings(g_ui.globals);
+}
+
+// Globals autosave: debounced to at most one write/second while dragging.
+static void maybe_autosave_globals() {
+    if (!g_ui.globals_dirty) return;
+    double now = ImGui::GetTime();
+    if (now - g_ui.last_globals_save >= 1.0) save_globals_now();
+}
+
+static void mark_globals_dirty() { g_ui.globals_dirty = true; }
+
+// Copy the current pattern-defining fields into a PatternData snapshot.
+static PatternData current_pattern_from_ui() {
+    PatternData p;
+    p.layout_text = g_ui.layout_buf;
+    p.alignment = g_ui.s.alignment;
+    p.pos_mode = g_ui.s.pos_mode;
+    p.pos_x = g_ui.s.pos_x;
+    p.pos_y = g_ui.s.pos_y;
+    p.font_family = g_ui.s.font_family;
+    p.font_variant = g_ui.s.font_variant;
+    p.font_size = g_ui.s.font_size;
+    p.text_color_aabbggrr = g_ui.s.text_color_aabbggrr;
+    p.bg_color_aabbggrr = g_ui.s.bg_color_aabbggrr;
+    p.commas = g_ui.s.commas;
+    p.pad = g_ui.s.pad;
+    return p;
+}
+
+static void apply_pattern_to_ui(const PatternData& p) {
+    strncpy(g_ui.layout_buf, p.layout_text.c_str(), sizeof(g_ui.layout_buf) - 1);
+    g_ui.layout_buf[sizeof(g_ui.layout_buf) - 1] = '\0';
+    g_ui.s.alignment = p.alignment;
+    if (g_ui.s.alignment < 0 || g_ui.s.alignment >= k_alignment_count) g_ui.s.alignment = 0;
+    g_ui.alignment_idx = g_ui.s.alignment;
+    g_ui.s.pos_mode = p.pos_mode;
+    g_ui.s.pos_x = p.pos_x;
+    g_ui.s.pos_y = p.pos_y;
+    g_ui.s.font_size = p.font_size;
+    g_ui.s.text_color_aabbggrr = p.text_color_aabbggrr;
+    g_ui.s.bg_color_aabbggrr = p.bg_color_aabbggrr;
+    g_ui.s.commas = p.commas;
+    g_ui.s.pad = p.pad;
+    // Family: prefer an exact match in the enumerated list; else keep the name
+    // (custom-input fallback path still renders it if the file exists).
+    apply_font_variant(g_ui.s, p.font_family, p.font_variant);
+    int idx = -1;
+    for (size_t i = 0; i < g_ui.system_fonts.size(); ++i)
+        if (g_ui.system_fonts[i] == p.font_family) { idx = (int)i; break; }
+    if (idx >= 0) g_ui.selected_font_idx = idx;
+}
+
+static bool pattern_dirty() {
+    return !(current_pattern_from_ui() == g_ui.pattern_baseline);
+}
+
+static void set_active_pattern(const std::string& name) {
+    g_ui.active_pattern = name;
+    PatternData p;
+    if (load_pattern(name, p)) {
+        apply_pattern_to_ui(p);
+        g_ui.pattern_baseline = p;
+    }
+}
+
+static void refresh_pattern_list() {
+    g_ui.pattern_names = list_patterns();
+    // keep the combo index pointing at the active pattern
+    g_ui.active_pattern_idx = 0;
+    for (size_t i = 0; i < g_ui.pattern_names.size(); ++i)
+        if (g_ui.pattern_names[i] == g_ui.active_pattern) g_ui.active_pattern_idx = (int)i;
+}
+
+// --- startup ----------------------------------------------------------------
 
 int main() {
     if (!glfwInit()) return 1;
@@ -50,40 +146,49 @@ int main() {
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 130");
 
-    std::vector<std::string> system_fonts = enumerate_system_fonts();
-    std::vector<const char*> font_cstrs;
-    for (auto& f : system_fonts) font_cstrs.push_back(f.c_str());
+    // --- persistent state -----------------------------------------------------
+    load_global_settings(g_ui.globals);
+    ensure_default_pattern();
 
-    GuiSettings settings;
-    settings.font_family = "Arial";
+    g_ui.system_fonts = enumerate_system_fonts();
+    for (auto& f : g_ui.system_fonts) g_ui.font_cstrs.push_back(f.c_str());
 
-    char midi_buf[1024] = "";
-    char layout_buf[4096] =
-        "Time: {time-milli}/{time-milli-max}\n"
-        "Notes: {nc}/{nc-total}/{nc-rem}\n"
-        "NPS: {nps}/{nps-max}\n"
-        "Polyphony: {plph}/{plph-max}\n"
-        "BPM: {bpm}";
-    char output_buf[1024] = "";
+    // Bootstrap the UI from the Default pattern (or first available).
+    {
+        auto names = list_patterns();
+        if (!names.empty()) set_active_pattern(names[0]);
+        else {
+            PatternData p;                 // no store available: in-memory defaults
+            p.layout_text = k_default_layout;
+            apply_pattern_to_ui(p);
+            g_ui.pattern_baseline = p;
+        }
+    }
+    g_ui.s.width = g_ui.globals.width;
+    g_ui.s.height = g_ui.globals.height;
+    g_ui.s.fps = g_ui.globals.fps;
+    g_ui.s.cc_stats = g_ui.globals.cc_stats;
+    g_ui.s.vel0_note_off = g_ui.globals.vel0_note_off;
+    g_ui.s.start_delay = g_ui.globals.start_delay;
 
-    int alignment_idx = 0;
-    const char* alignment_items[] = {"Top Left", "Top Right", "Bottom Left", "Bottom Right"};
+    // Refresh the variant cache for the bootstrapped family.
+    g_ui.variants_for = g_ui.s.font_family;
+    g_ui.variant_names.clear();
+    g_ui.variant_cstrs.clear();
+    for (const auto& v : enumerate_font_variants(g_ui.s.font_family)) {
+        g_ui.variant_names.push_back(v.style);
+        g_ui.variant_cstrs.push_back(g_ui.variant_names.back().c_str());
+    }
+    g_ui.variant_idx = 0;
+    for (size_t i = 0; i < g_ui.variant_names.size(); ++i)
+        if (g_ui.variant_names[i] == g_ui.s.font_variant) g_ui.variant_idx = (int)i;
 
-    struct ColourPreset { const char* name; const char* ass; };
-    ColourPreset colour_presets[] = {
-        {"White",  "&H00FFFFFF"},
-        {"Yellow", "&H0000FFFF"},
-        {"Cyan",   "&H00FFFF00"},
-        {"Green",  "&H0000FF00"},
-        {"Red",    "&H000000FF"},
-        {"Blue",   "&H00FF0000"},
-    };
-    int num_colour_presets = 6;
-    char custom_colour_buf[32] = "FFFFFF";
-    char custom_bg_buf[32] = "000000";   // RRGGBB for the video background
+    // Restore last MIDI/output paths if the files still exist.
+    if (!g_ui.globals.midi_dir.empty()) {
+        // stored as a directory hint only; the file itself is picked per-session
+    }
 
-    bool font_list_loaded = false;
-    int selected_font_idx = 0;
+    bool font_list_loaded = !g_ui.font_cstrs.empty();
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
@@ -108,7 +213,7 @@ int main() {
         ImGui::Text("MIDI File:");
         ImGui::SameLine(120);
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 80);
-        ImGui::InputText("##midi", midi_buf, sizeof(midi_buf), ImGuiInputTextFlags_ReadOnly);
+        ImGui::InputText("##midi", g_ui.midi_buf, sizeof(g_ui.midi_buf), ImGuiInputTextFlags_ReadOnly);
         ImGui::SameLine();
 
         {
@@ -140,13 +245,136 @@ int main() {
             if (!result.empty()) {
                 std::string err;
                 if (validate_midi(result, err)) {
-                    settings.midi_file = result;
-                    strncpy(midi_buf, result.c_str(), sizeof(midi_buf) - 1);
+                    g_ui.s.midi_file = result;
+                    strncpy(g_ui.midi_buf, result.c_str(), sizeof(g_ui.midi_buf) - 1);
                     std::string dir = extract_dir(result);
                     std::string stem = extract_stem(result);
-                    settings.output_video = dir + stem + "_fMCG.mp4";
-                    strncpy(output_buf, settings.output_video.c_str(), sizeof(output_buf) - 1);
+                    g_ui.s.output_video = dir + stem + "_fMCG.mp4";
+                    strncpy(g_ui.output_buf, g_ui.s.output_video.c_str(), sizeof(g_ui.output_buf) - 1);
+                    g_ui.globals.midi_dir = dir;
+                    mark_globals_dirty();
                 }
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // --- Pattern manager -------------------------------------------------
+        {
+            refresh_pattern_list();
+            ImGui::Text("Pattern:");
+            ImGui::SameLine(120);
+
+            std::vector<const char*> pat_cstrs;
+            for (auto& n : g_ui.pattern_names) pat_cstrs.push_back(n.c_str());
+            ImGui::SetNextItemWidth(200);
+            if (!pat_cstrs.empty() &&
+                ImGui::Combo("##pattern", &g_ui.active_pattern_idx, pat_cstrs.data(), (int)pat_cstrs.size())) {
+                std::string chosen = g_ui.pattern_names[g_ui.active_pattern_idx];
+                if (chosen != g_ui.active_pattern) {
+                    if (pattern_dirty()) {           // unsaved edits: confirm
+                        g_ui.pending_switch_to = chosen;
+                        g_ui.show_switch_confirm = true;
+                    } else {
+                        set_active_pattern(chosen);
+                    }
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Save##pat")) {
+                if (g_ui.active_pattern.empty()) {   // never-named new pattern
+                    g_ui.show_save_as = true;
+                    g_ui.save_as_warn = false;
+                    g_ui.save_as_name[0] = '\0';
+                } else {
+                    save_pattern(g_ui.active_pattern, current_pattern_from_ui());
+                    g_ui.pattern_baseline = current_pattern_from_ui();
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Save As...##pat")) {
+                g_ui.show_save_as = true;
+                g_ui.save_as_warn = false;
+                strncpy(g_ui.save_as_name, g_ui.active_pattern.c_str(), sizeof(g_ui.save_as_name) - 1);
+                g_ui.save_as_name[sizeof(g_ui.save_as_name) - 1] = '\0';
+            }
+            if (!g_ui.active_pattern.empty() && g_ui.active_pattern != "Default") {
+                ImGui::SameLine();
+                if (ImGui::Button("Delete##pat")) {
+                    delete_pattern(g_ui.active_pattern);
+                    g_ui.active_pattern.clear();
+                    refresh_pattern_list();
+                    if (!g_ui.pattern_names.empty()) set_active_pattern(g_ui.pattern_names[0]);
+                }
+            }
+            if (pattern_dirty()) {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f), "(modified)");
+            }
+
+            // Save As modal: empty name refused, existing name warns.
+            if (g_ui.show_save_as) {
+                ImGui::OpenPopup("Save pattern as");
+            }
+            if (ImGui::BeginPopupModal("Save pattern as", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+                if (!g_ui.show_save_as) ImGui::CloseCurrentPopup();   // closed elsewhere
+                ImGui::Text("Pattern name:");
+                ImGui::SetNextItemWidth(260);
+                bool enter = ImGui::InputText("##patname", g_ui.save_as_name, sizeof(g_ui.save_as_name),
+                                              ImGuiInputTextFlags_EnterReturnsTrue);
+                std::string clean = sanitize_pattern_name(g_ui.save_as_name);
+                bool name_ok = !clean.empty();
+                if (!name_ok)
+                    ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "A name is required.");
+                else if (g_ui.save_as_warn)
+                    ImGui::TextColored(ImVec4(1, 0.75f, 0.2f, 1), "'%s' already exists -- saving will overwrite it.", clean.c_str());
+                ImGui::Separator();
+                if (ImGui::Button("Save", ImVec2(120, 0)) || (enter && name_ok)) {
+                    if (name_ok) {
+                        bool existed = pattern_exists(clean);
+                        if (existed && !g_ui.save_as_warn) {
+                            g_ui.save_as_warn = true;    // first press: warn, don't save
+                        } else {
+                            save_pattern(clean, current_pattern_from_ui());
+                            g_ui.active_pattern = clean;
+                            g_ui.pattern_baseline = current_pattern_from_ui();
+                            refresh_pattern_list();
+                            g_ui.show_save_as = false;
+                            ImGui::CloseCurrentPopup();
+                        }
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+                    g_ui.show_save_as = false;
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            } else {
+                g_ui.show_save_as = false;
+            }
+
+            // Unsaved-changes confirmation when switching patterns.
+            if (g_ui.show_switch_confirm) ImGui::OpenPopup("Unsaved changes");
+            if (ImGui::BeginPopupModal("Unsaved changes", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+                if (!g_ui.show_switch_confirm) ImGui::CloseCurrentPopup();
+                ImGui::Text("The current pattern has unsaved changes.\nSwitch anyway and discard them?");
+                ImGui::Separator();
+                if (ImGui::Button("Discard & switch", ImVec2(140, 0))) {
+                    set_active_pattern(g_ui.pending_switch_to);
+                    g_ui.show_switch_confirm = false;
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(140, 0))) {
+                    g_ui.show_switch_confirm = false;
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            } else {
+                g_ui.show_switch_confirm = false;
             }
         }
 
@@ -157,196 +385,158 @@ int main() {
         // --- Settings ---
         // Font family + weight/variant share one row to stay compact.
         ImGui::Text("Font Family");
-        if (!font_list_loaded && !font_cstrs.empty()) font_list_loaded = true;
+        if (!font_list_loaded && !g_ui.font_cstrs.empty()) font_list_loaded = true;
         bool fam_changed = false;
-        if (!font_cstrs.empty()) {
+        if (!g_ui.font_cstrs.empty()) {
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 130);
-            if (ImGui::Combo("##font", &selected_font_idx, font_cstrs.data(), (int)font_cstrs.size()))
+            if (ImGui::Combo("##font", &g_ui.selected_font_idx, g_ui.font_cstrs.data(), (int)g_ui.font_cstrs.size()))
                 fam_changed = true;
-            settings.font_family = system_fonts[selected_font_idx];
+            if (fam_changed) g_ui.s.font_family = g_ui.system_fonts[g_ui.selected_font_idx];
         } else {
             char font_buf[256];
-            strncpy(font_buf, settings.font_family.c_str(), sizeof(font_buf) - 1);
+            strncpy(font_buf, g_ui.s.font_family.c_str(), sizeof(font_buf) - 1);
             font_buf[sizeof(font_buf) - 1] = '\0';
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 130);
-            if (ImGui::InputText("##font_custom", font_buf, sizeof(font_buf)))
+            if (ImGui::InputText("##font_custom", font_buf, sizeof(font_buf))) {
+                g_ui.s.font_family = font_buf;
                 fam_changed = true;
-            settings.font_family = font_buf;
+            }
         }
 
         // Style/weight combo on the same row, populated from the family's files.
-        static std::vector<std::string> variant_names;
-        static std::vector<const char*> variant_cstrs;
-        static std::string variants_for;
-        static int variant_idx = 0;
-        if (fam_changed || variants_for != settings.font_family) {
-            variants_for = settings.font_family;
-            variant_names.clear();
-            variant_cstrs.clear();
-            for (const auto& v : enumerate_font_variants(settings.font_family)) {
-                variant_names.push_back(v.style);
-                variant_cstrs.push_back(variant_names.back().c_str());
+        if (fam_changed || g_ui.variants_for != g_ui.s.font_family) {
+            g_ui.variants_for = g_ui.s.font_family;
+            g_ui.variant_names.clear();
+            g_ui.variant_cstrs.clear();
+            for (const auto& v : enumerate_font_variants(g_ui.s.font_family)) {
+                g_ui.variant_names.push_back(v.style);
+                g_ui.variant_cstrs.push_back(g_ui.variant_names.back().c_str());
             }
-            variant_idx = 0;
-            for (size_t i = 0; i < variant_names.size(); ++i)
-                if (variant_names[i] == settings.font_variant) variant_idx = (int)i;
+            g_ui.variant_idx = 0;
+            for (size_t i = 0; i < g_ui.variant_names.size(); ++i)
+                if (g_ui.variant_names[i] == g_ui.s.font_variant) g_ui.variant_idx = (int)i;
         }
         ImGui::SameLine();
         float style_w = 125.0f;
-        if (variant_cstrs.empty()) {
+        if (g_ui.variant_cstrs.empty()) {
             ImGui::SetNextItemWidth(style_w);
             ImGui::TextDisabled("(no styles)");
         } else {
-            if ((size_t)variant_idx >= variant_names.size()) variant_idx = 0;
+            if ((size_t)g_ui.variant_idx >= g_ui.variant_names.size()) g_ui.variant_idx = 0;
             ImGui::SetNextItemWidth(style_w);
-            if (ImGui::Combo("##fstyle", &variant_idx, variant_cstrs.data(), (int)variant_cstrs.size())) {
-                settings.font_variant = variant_names[variant_idx];
-                // Bold/italic flags for the ASS style come from the variant's
-                // OS/2 weight class and fsSelection bit.
-                settings.font_bold = 0;
-                settings.font_italic = 0;
-                for (const auto& v : enumerate_font_variants(settings.font_family)) {
-                    if (v.style == settings.font_variant) {
-                        settings.font_bold = (v.weight >= 600) ? 1 : 0;
-                        settings.font_italic = v.italic ? 1 : 0;
-                        break;
-                    }
-                }
-            }
+            if (ImGui::Combo("##fstyle", &g_ui.variant_idx, g_ui.variant_cstrs.data(), (int)g_ui.variant_cstrs.size()))
+                apply_font_variant(g_ui.s, g_ui.s.font_family, g_ui.variant_names[g_ui.variant_idx]);
         }
 
         ImGui::Text("Font Size");
         ImGui::SameLine(120);
         ImGui::SetNextItemWidth(120);
-        ImGui::InputInt("##fsize", &settings.font_size, 1, 10);
+        ImGui::InputInt("##fsize", &g_ui.s.font_size, 1, 10);
+        if (g_ui.s.font_size < 1) g_ui.s.font_size = 1;
 
         ImGui::Text("Resolution");
         ImGui::SameLine(120);
         ImGui::SetNextItemWidth(100);
-        ImGui::InputInt("##w", &settings.width, 0, 0);
+        if (ImGui::InputInt("##w", &g_ui.s.width, 0, 0)) { mark_globals_dirty(); }
         ImGui::SameLine();
         ImGui::Text("x");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(100);
-        ImGui::InputInt("##h", &settings.height, 0, 0);
+        if (ImGui::InputInt("##h", &g_ui.s.height, 0, 0)) { mark_globals_dirty(); }
+        if (g_ui.s.width < 16) g_ui.s.width = 16;
+        if (g_ui.s.height < 16) g_ui.s.height = 16;
 
         ImGui::Text("FPS");
         ImGui::SameLine(120);
         ImGui::SetNextItemWidth(120);
-        double fps_input = settings.fps;
-        if (ImGui::InputDouble("##fps", &fps_input, 0, 0, "%.1f"))
-            if (fps_input > 0) settings.fps = fps_input;
-
-        ImGui::Text("Text Colour");
-        ImGui::Spacing();
-        for (int i = 0; i < num_colour_presets; ++i) {
-            ImGui::PushID(i);
-            ImVec4 cols[] = {
-                {1,1,1,1}, {1,1,0,1}, {0,1,1,1}, {0,1,0,1}, {1,0,0,1}, {0,0,1,1}
-            };
-            if (ImGui::ColorButton(("##cpreset" + std::to_string(i)).c_str(),
-                    cols[i], 0, ImVec2(24, 24))) {
-                settings.text_color_aabbggrr = colour_presets[i].ass;
-            }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", colour_presets[i].name);
-            ImGui::SameLine();
-            ImGui::PopID();
-        }
-        ImGui::Spacing();
-        ImGui::Text("Custom (RRGGBB):");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(160);
-        if (ImGui::InputText("##ccol", custom_colour_buf, sizeof(custom_colour_buf))) {
-            std::string hex(custom_colour_buf);
-            if (hex.size() == 6) {
-                // User enters RRGGBB; ASS stores &H00BBGGRR
-                std::string bbggrr = hex.substr(4, 2) + hex.substr(2, 2) + hex.substr(0, 2);
-                settings.text_color_aabbggrr = "&H00" + bbggrr;
-            }
+        double fps_input = g_ui.s.fps;
+        if (ImGui::InputDouble("##fps", &fps_input, 0, 0, "%.1f")) {
+            if (fps_input > 0) { g_ui.s.fps = fps_input; mark_globals_dirty(); }
         }
 
-        ImGui::Spacing();
-        ImGui::Text("Background Colour");
-        ImGui::Spacing();
+        // --- Colours: swatch + RGB-slider popup, live preview ---------------
         {
-            static const char* bg_names[] = {"Black", "White", "Dark Grey", "Navy"};
-            static const char* bg_ass[]  = {"&H00000000", "&H00FFFFFF", "&H00202020", "&H00000080"};
-            static const ImVec4 bg_cols[] = {{0,0,0,1},{1,1,1,1},{0.125f,0.125f,0.125f,1},{0,0,0.5f,1}};
-            for (int i = 0; i < 4; ++i) {
-                ImGui::PushID(100 + i);
-                if (ImGui::ColorButton(("##bgpreset" + std::to_string(i)).c_str(),
-                        bg_cols[i], 0, ImVec2(24, 24))) {
-                    settings.bg_color_aabbggrr = bg_ass[i];
-                    strncpy(custom_bg_buf, bg_ass[i] + 4, 6);   // tail = BBGGRR
-                    custom_bg_buf[6] = '\0';
-                }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", bg_names[i]);
-                ImGui::SameLine();
-                ImGui::PopID();
+            std::string rgb;
+            if (fmcg_ui::ass_to_rrggbb(g_ui.s.text_color_aabbggrr, rgb)) {
+                ImGui::Text("Text Colour");
+                ImGui::SameLine(120);
+                if (fmcg_ui::EditColour("##textcol", rgb))
+                    g_ui.s.text_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
             }
-            ImGui::Spacing();
-            ImGui::Text("Custom (RRGGBB):");
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(160);
-            if (ImGui::InputText("##bcol", custom_bg_buf, sizeof(custom_bg_buf))) {
-                std::string hex(custom_bg_buf);
-                if (hex.size() == 6) {
-                    std::string bbggrr = hex.substr(4, 2) + hex.substr(2, 2) + hex.substr(0, 2);
-                    settings.bg_color_aabbggrr = "&H00" + bbggrr;
-                }
+            if (fmcg_ui::ass_to_rrggbb(g_ui.s.bg_color_aabbggrr, rgb)) {
+                ImGui::Text("Background");
+                ImGui::SameLine(120);
+                if (fmcg_ui::EditColour("##bgcol", rgb))
+                    g_ui.s.bg_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
             }
         }
 
-        ImGui::Spacing();
         ImGui::Text("Comma separators:");
         ImGui::SameLine();
-        ImGui::Checkbox("Notes##c", &settings.commas.notes);
+        ImGui::Checkbox("Notes##c", &g_ui.s.commas.notes);
         ImGui::SameLine();
-        ImGui::Checkbox("Poly##c", &settings.commas.polyphony);
+        ImGui::Checkbox("Poly##c", &g_ui.s.commas.polyphony);
         ImGui::SameLine();
-        ImGui::Checkbox("NPS##c", &settings.commas.nps);
+        ImGui::Checkbox("NPS##c", &g_ui.s.commas.nps);
         ImGui::SameLine();
-        ImGui::Checkbox("CC##c", &settings.commas.cc);
-        ImGui::Checkbox("Vel-0 as Note-Off", &settings.vel0_note_off);
-        ImGui::Checkbox("Count CC events (enables {cc} stats)", &settings.cc_stats);
-        ImGui::Checkbox("Leading zeros (pad each stat to its own maximum)", &settings.pad.enabled);
+        ImGui::Checkbox("CC##c", &g_ui.s.commas.cc);
+        if (ImGui::Checkbox("Vel-0 as Note-Off", &g_ui.s.vel0_note_off)) mark_globals_dirty();
+        if (ImGui::Checkbox("Count CC events (enables {cc} stats)", &g_ui.s.cc_stats)) mark_globals_dirty();
+        if (ImGui::Checkbox("Leading zeros (pad each stat to its own maximum)", &g_ui.s.pad.enabled)) {}
 
         ImGui::Text("Counter position:");
         ImGui::SameLine();
-        if (ImGui::RadioButton("Corners##pm", settings.pos_mode == 0)) settings.pos_mode = 0;
+        if (ImGui::RadioButton("Corners##pm", g_ui.s.pos_mode == 0)) g_ui.s.pos_mode = 0;
         ImGui::SameLine();
-        if (ImGui::RadioButton("Custom x,y##pm", settings.pos_mode == 1)) settings.pos_mode = 1;
-        if (settings.pos_mode == 0) {
+        if (ImGui::RadioButton("Custom x,y##pm", g_ui.s.pos_mode == 1)) g_ui.s.pos_mode = 1;
+        if (g_ui.s.pos_mode == 0) {
             ImGui::SetNextItemWidth(160);
-            ImGui::Combo("##align", &alignment_idx, alignment_items, 4);
-            settings.alignment = alignment_idx;
+            if (ImGui::Combo("##align", &g_ui.alignment_idx, k_alignment_items, k_alignment_count)) {
+                g_ui.s.alignment = g_ui.alignment_idx;
+            }
         } else {
+            // Valid ranges for the text-block anchor (top-left), shown so the
+            // user knows the boundaries; the generator clamps defensively too.
+            int max_x = g_ui.s.width, max_y = g_ui.s.height;
             ImGui::Text("x");
             ImGui::SameLine();
             ImGui::SetNextItemWidth(90);
-            ImGui::InputInt("##posx", &settings.pos_x, 0, 0);
+            int xin = g_ui.s.pos_x;
+            if (ImGui::InputInt("##posx", &xin, 0, 0)) {
+                if (xin < 0) xin = 0;
+                if (xin > max_x) xin = max_x;
+                g_ui.s.pos_x = xin;
+            }
             ImGui::SameLine();
             ImGui::Text("y");
             ImGui::SameLine();
             ImGui::SetNextItemWidth(90);
-            ImGui::InputInt("##posy", &settings.pos_y, 0, 0);
-            ImGui::TextDisabled("(top-left of the text block, video pixels)");
+            int yin = g_ui.s.pos_y;
+            if (ImGui::InputInt("##posy", &yin, 0, 0)) {
+                if (yin < 0) yin = 0;
+                if (yin > max_y) yin = max_y;
+                g_ui.s.pos_y = yin;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(top-left of text block)");
+            ImGui::TextDisabled("Valid x: 0..%d    Valid y: 0..%d", max_x, max_y);
         }
 
         ImGui::Text("Start delay (seconds): ");
         ImGui::SameLine(170);
         ImGui::SetNextItemWidth(100);
-        double delay_input = settings.start_delay;
-        if (ImGui::InputDouble("##delay", &delay_input, 0, 0, "%.2f"))
-            if (delay_input >= 0) settings.start_delay = delay_input;
+        double delay_input = g_ui.s.start_delay;
+        if (ImGui::InputDouble("##delay", &delay_input, 0, 0, "%.2f")) {
+            if (delay_input >= 0) { g_ui.s.start_delay = delay_input; mark_globals_dirty(); }
+        }
 
         ImGui::Spacing();
         ImGui::Text("Output Path");
         ImGui::SetNextItemWidth(-1);
-        ImGui::InputText("##output", output_buf, sizeof(output_buf));
+        ImGui::InputText("##output", g_ui.output_buf, sizeof(g_ui.output_buf));
 
-        ImGui::Text("Layout (one line per stat row; {nc}, {time-milli}, {bpm}, ...)");
-        ImGui::InputTextMultiline("##layout", layout_buf, sizeof(layout_buf), ImVec2(-1, 120));
+        ImGui::Text("Layout (one line per overlay row; {nc}, {time-milli}, {bpm}, ...)");
+        ImGui::InputTextMultiline("##layout", g_ui.layout_buf, sizeof(g_ui.layout_buf), ImVec2(-1, 120));
         {
             bool cfg_dialog_active = g_app.dialog_busy.load();
             if (cfg_dialog_active) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
@@ -370,13 +560,7 @@ int main() {
             if (cfg_dialog_active) ImGui::PopStyleVar();
             ImGui::SameLine();
             if (ImGui::Button("Reset to default##cfg")) {
-                strncpy(layout_buf,
-                        "Time: {time-milli}/{time-milli-max}\n"
-                        "Notes: {nc}/{nc-total}/{nc-rem}\n"
-                        "NPS: {nps}/{nps-max}\n"
-                        "Polyphony: {plph}/{plph-max}\n"
-                        "BPM: {bpm}",
-                        sizeof(layout_buf) - 1);
+                strncpy(g_ui.layout_buf, k_default_layout, sizeof(g_ui.layout_buf) - 1);
             }
         }
 
@@ -390,9 +574,11 @@ int main() {
                     content += line;
                     content += '\n';
                 }
-                strncpy(layout_buf, content.c_str(), sizeof(layout_buf) - 1);
+                strncpy(g_ui.layout_buf, content.c_str(), sizeof(g_ui.layout_buf) - 1);
             }
         }
+
+        maybe_autosave_globals();
 
         ImGui::Spacing();
         ImGui::Separator();
@@ -400,21 +586,21 @@ int main() {
 
         // --- Action Buttons ---
         {
-            bool can_process = (midi_buf[0] != '\0') && !g_app.busy.load();
+            bool can_process = (g_ui.midi_buf[0] != '\0') && !g_app.busy.load();
             bool can_render  = g_app.processed.load() && !g_app.busy.load();
 
             if (!can_process) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
             if (ImGui::Button("Process", ImVec2(140, 30)) && can_process) {
-                settings.midi_file = midi_buf;
-                settings.output_video = output_buf;
-                settings.layout_text = layout_buf;
+                g_ui.s.midi_file = g_ui.midi_buf;
+                g_ui.s.output_video = g_ui.output_buf;
+                g_ui.s.layout_text = g_ui.layout_buf;
                 g_app.processed = false;
                 g_app.done = false;
                 g_app.log_lines.clear();
                 g_app.preview_playing = false;
                 g_app.preview_time = 0.0;
                 g_app.busy = true;  // set before detach so the button disables immediately
-                std::thread(run_process, settings).detach();
+                std::thread(run_process, g_ui.s).detach();
             }
             if (!can_process) ImGui::PopStyleVar();
 
@@ -431,15 +617,49 @@ int main() {
                 }
             }
 
-            // Preview opens whenever data exists — also while an ffmpeg render
-            // runs (live progress view), and after the popup was closed.
-            bool can_preview = g_app.processed.load() && (!g_app.busy.load() || g_app.render_active);
+            // Preview: allowed even without a processed MIDI -- it then shows
+            // the current pattern with all stats at zero (and, during the start
+            // delay, the negative countdown). While a render runs it reopens
+            // the live render-progress view.
+            bool has_data = g_app.processed.load();
+            bool can_preview = (!g_app.busy.load()) || g_app.render_active;
             bool preview_starts_render_view = g_app.render_active && g_app.busy.load();
             ImGui::SameLine();
             if (!can_preview) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
             if (ImGui::Button("Preview", ImVec2(140, 30)) && can_preview) {
+                if (has_data) {
+                    // Snap the live mirror to the current pattern so a fresh
+                    // Preview without re-Process shows the edited look.
+                    g_app.template_lines.clear();
+                    {
+                        std::istringstream tstream(g_ui.layout_buf);
+                        std::string ln;
+                        while (std::getline(tstream, ln)) {
+                            while (!ln.empty() && ln.back() == '\r') ln.pop_back();
+                            if (!ln.empty()) g_app.template_lines.push_back(ln);
+                        }
+                    }
+                    g_app.preview_commas = g_ui.s.commas;
+                    g_app.preview_pad = g_ui.s.pad;
+                    g_app.text_colour_ass = g_ui.s.text_color_aabbggrr;
+                    g_app.bg_colour_ass = g_ui.s.bg_color_aabbggrr;
+                    g_app.font_size = g_ui.s.font_size;
+                    g_app.font_family = g_ui.s.font_family;
+                    g_app.font_variant = g_ui.s.font_variant;
+                    g_app.font_bold = g_ui.s.font_bold;
+                    g_app.font_italic = g_ui.s.font_italic;
+                    g_app.pos_mode = g_ui.s.pos_mode;
+                    g_app.pos_x = g_ui.s.pos_x;
+                    g_app.pos_y = g_ui.s.pos_y;
+                    g_app.alignment = g_ui.s.alignment;
+                    g_app.ass_alignment = gui_alignment_to_ass(g_ui.s.alignment);
+                    g_app.vid_width = g_ui.s.width;
+                    g_app.vid_height = g_ui.s.height;
+                    g_app.start_delay = g_ui.s.start_delay;
+                    g_app.preview_font_reload = true;
+                }
                 g_app.show_preview = true;
-                g_app.preview_playing = !preview_starts_render_view;
+                g_app.preview_playing = has_data && !preview_starts_render_view;
                 g_app.preview_start_time = glfwGetTime();
                 g_app.preview_start_pos = g_app.preview_time;
                 ImGui::OpenPopup("Preview");
@@ -456,7 +676,7 @@ int main() {
                 ImGui::OpenPopup("Preview");
 
                 RenderSettings rs;
-                rs.output_video = output_buf;
+                rs.output_video = g_ui.output_buf;
                 rs.midi_dir = g_app.midi_dir;
                 rs.midi_stem = g_app.midi_stem;
                 rs.width = g_app.vid_width;
@@ -559,6 +779,9 @@ int main() {
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(window);
     }
+
+    // Flush pending settings on exit.
+    if (g_ui.globals_dirty) save_globals_now();
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();

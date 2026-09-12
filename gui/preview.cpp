@@ -80,10 +80,142 @@ const FrameStats& find_frame(double time_sec) {
     return data[lo - 1];
 }
 
+// ---------------------------------------------------------------------------
+// Pattern-only preview: shown when no MIDI is processed. Renders the current
+// pattern with all stats at zero over the background colour; a short fixed
+// timeline lets the user see the start-delay countdown behaviour too.
+// ---------------------------------------------------------------------------
+
+void render_pattern_only_popup() {
+    ImVec2 display = ImGui::GetIO().DisplaySize;
+    float popup_w = display.x * 0.6f;
+    float popup_h = display.y * 0.6f;
+    if (popup_w < 480) popup_w = 480;
+    if (popup_h < 320) popup_h = 320;
+    double total_len = 10.0;
+
+    ImGui::SetNextWindowSize(ImVec2(popup_w, popup_h), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2((display.x - popup_w) / 2, (display.y - popup_h) / 2), ImGuiCond_FirstUseEver);
+
+    if (ImGui::BeginPopupModal("Preview", &g_app.show_preview,
+            ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
+
+        if (g_app.preview_playing) {
+            double elapsed = glfwGetTime() - g_app.preview_start_time;
+            g_app.preview_time = g_app.preview_start_pos + elapsed;
+            if (g_app.preview_time >= total_len) {
+                g_app.preview_time = total_len;
+                g_app.preview_playing = false;
+            }
+        }
+
+        ImGui::BeginChild("pattern_only", ImVec2(0, ImGui::GetContentRegionAvail().y - 34),
+                          ImGuiChildFlags_None,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        {
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            ImVec2 wp0 = ImGui::GetCursorScreenPos();
+            ImVec2 area0 = ImGui::GetContentRegionAvail();
+            dl->AddRectFilled(wp0, ImVec2(wp0.x + area0.x, wp0.y + area0.y),
+                              ass_colour_to_imcol32(g_app.bg_colour_ass));
+        }
+
+        float preview_scale = (g_app.vid_width > 0) ? ImGui::GetContentRegionAvail().x / (float)g_app.vid_width : 0.0f;
+        float desired_px = (float)g_app.font_size * preview_scale;
+        if (desired_px < 4.0f) desired_px = 4.0f;
+        if (desired_px > 256.0f) desired_px = 256.0f;
+        if (!g_app.preview_font && !g_app.preview_font_reload.load() && !g_app.font_family.empty())
+            g_app.preview_font_reload = true;
+
+        FrameStats zero_fs;
+        zero_fs.timestamp_sec = g_app.preview_time - g_app.start_delay;
+        std::string text = format_frame_text(zero_fs);
+        std::vector<std::string> lines;
+        {
+            std::istringstream stream(text);
+            std::string ln;
+            while (std::getline(stream, ln)) lines.push_back(ln);
+        }
+
+        ImGui::PushStyleColor(ImGuiCol_Text, ass_colour_to_imgui(g_app.text_colour_ass));
+        if (g_app.preview_font) ImGui::PushFont(g_app.preview_font, desired_px);
+        float line_h = ImGui::GetTextLineHeightWithSpacing();
+        float total_text_h = line_h * (float)lines.size();
+        float area_w = ImGui::GetContentRegionAvail().x;
+        float area_h = ImGui::GetContentRegionAvail().y;
+        float margin = 30.0f * preview_scale;
+        if (margin < 4.0f) margin = 4.0f;
+
+        float max_tw = 0;
+        for (auto& ln : lines) {
+            float w = ImGui::CalcTextSize(ln.c_str()).x;
+            if (w > max_tw) max_tw = w;
+        }
+
+        int a = g_app.ass_alignment;
+        bool left  = (a == 7 || a == 1 || a == 8 || a == 2);   // L, and centers
+        bool top   = (a == 7 || a == 9 || a == 8);
+        float x_off, y_off;
+        if (g_app.pos_mode == 1) {
+            x_off = (float)g_app.pos_x * preview_scale;
+            y_off = (float)g_app.pos_y * preview_scale;
+        } else {
+            x_off = left ? ((a == 8 || a == 2) ? area_w / 2 - max_tw / 2 : margin)
+                         : area_w - max_tw - margin;
+            y_off = top  ? margin : area_h - total_text_h - margin;
+            if (y_off < margin) y_off = margin;
+            if (x_off < margin) x_off = margin;
+        }
+
+        ImGui::SetCursorPos(ImVec2(x_off, y_off));
+        for (size_t i = 0; i < lines.size(); ++i) {
+            if (i > 0) ImGui::SetCursorPosX(x_off);
+            ImGui::TextUnformatted(lines[i].c_str());
+        }
+        if (g_app.preview_font) ImGui::PopFont();
+        ImGui::PopStyleColor();
+
+        ImGui::EndChild();
+
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 120);
+        float tp = (float)g_app.preview_time;
+        if (ImGui::SliderFloat("##ptime", &tp, 0.0f, (float)total_len, "%.2fs")) {
+            g_app.preview_time = tp;
+            if (g_app.preview_playing) {
+                g_app.preview_start_pos = tp;
+                g_app.preview_start_time = glfwGetTime();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(g_app.preview_playing ? "Pause" : "Play", ImVec2(50, 0))) {
+            if (g_app.preview_playing) g_app.preview_playing = false;
+            else {
+                g_app.preview_playing = true;
+                g_app.preview_start_time = glfwGetTime();
+                g_app.preview_start_pos = g_app.preview_time;
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Stop", ImVec2(50, 0))) {
+            g_app.preview_playing = false;
+            g_app.preview_time = 0.0;
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
 void render_preview_popup() {
     if (!g_app.show_preview) return;
 
     ImVec2 display = ImGui::GetIO().DisplaySize;
+
+    // No MIDI processed: pattern-only preview (stats at zero). The timeline
+    // is a fixed 10s so the user can still inspect placement/colours.
+    if (g_app.frames_data.empty()) {
+        render_pattern_only_popup();
+        return;
+    }
 
     // Compute popup size matching output aspect ratio
     double total_len = g_app.total_duration + g_app.start_delay;   // includes black lead-in

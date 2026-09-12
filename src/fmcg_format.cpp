@@ -109,12 +109,20 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
 
     int pos_x = 30, pos_y = 30;
     if (cfg.pos_mode == 1) {
-        // Explicit placement: \pos anchors the text block's top-left corner.
+        // Explicit placement: \pos anchors the text block's TOP-LEFT corner
+        // (alignment 7). Clamp so the anchor can never leave the frame.
         pos_x = cfg.pos_x;
         pos_y = cfg.pos_y;
-    } else if (cfg.ass_alignment == 9)      { pos_x = cfg.width - 30;  pos_y = 30; }
+        if (pos_x < 0) pos_x = 0;
+        if (pos_y < 0) pos_y = 0;
+        if (pos_x > cfg.width)  pos_x = cfg.width;
+        if (pos_y > cfg.height) pos_y = cfg.height;
+    }
+    else if (cfg.ass_alignment == 9) { pos_x = cfg.width - 30;  pos_y = 30; }
     else if (cfg.ass_alignment == 1) { pos_x = 30;              pos_y = cfg.height - 30; }
     else if (cfg.ass_alignment == 3) { pos_x = cfg.width - 30;  pos_y = cfg.height - 30; }
+    else if (cfg.ass_alignment == 8) { pos_x = cfg.width / 2;   pos_y = 30; }             // Top Center
+    else if (cfg.ass_alignment == 2) { pos_x = cfg.width / 2;   pos_y = cfg.height - 30; } // Bottom Center
 
     double total_duration = frames.empty() ? 0.0 : frames.back().timestamp_sec;
 

@@ -89,6 +89,36 @@ int main() {
         check("ffmpeg color spec", ffmpeg_color_spec("&H00FF8040"), "0x4080FF");
         check("ffmpeg color default", ffmpeg_color_spec("junk"), "0x000000");
     }
+    {   // Center alignments place the anchor mid-width; x/y clamp to the frame.
+        std::vector<FrameStats> frames(1);
+        frames[0].timestamp_sec = 0.0;
+        AssConfig ac; ac.width = 1000; ac.height = 500;
+        ac.ass_alignment = 8;   // Top Center
+        generate_ass("_t.ass", frames, {"X"}, 0, 0, 480, ac);
+        {
+            std::ifstream f("_t.ass");
+            std::string all((std::istreambuf_iterator<char>(f)), {});
+            std::remove("_t.ass");
+            check("top-center anchor", all.find("\\pos(500,30)") != std::string::npos ? "yes" : "no", "yes");
+        }
+        ac.ass_alignment = 2;   // Bottom Center
+        generate_ass("_t.ass", frames, {"X"}, 0, 0, 480, ac);
+        {
+            std::ifstream f("_t.ass");
+            std::string all((std::istreambuf_iterator<char>(f)), {});
+            std::remove("_t.ass");
+            check("bottom-center anchor", all.find("\\pos(500,470)") != std::string::npos ? "yes" : "no", "yes");
+        }
+        ac.ass_alignment = 7;
+        ac.pos_mode = 1; ac.pos_x = -50; ac.pos_y = 5000;   // both out of range
+        generate_ass("_t.ass", frames, {"X"}, 0, 0, 480, ac);
+        {
+            std::ifstream f("_t.ass");
+            std::string all((std::istreambuf_iterator<char>(f)), {});
+            std::remove("_t.ass");
+            check("pos clamped to frame", all.find("\\pos(0,500)") != std::string::npos ? "yes" : "no", "yes");
+        }
+    }
     printf("\n%s (%d failures)\n", fails ? "FAILURES" : "ALL OK", fails);
     return fails ? 1 : 0;
 }
