@@ -799,11 +799,16 @@ static void draw_frame(GLFWwindow* window) {
     // the window so it is unmissable.
     if (g_app.spec_prompt_open.load()) {
         if (!g_app.spec_popup_started) {
+            ImGui::OpenPopup("MIDI exceeds spec");
+            g_app.spec_popup_started = true;
+        }
+        // Assert the centered position on EVERY frame the modal is open:
+        // a one-shot set before OpenPopup can be overridden by the popup
+        // layer re-applying a stored position on the open frame.
+        {
             ImVec2 dsp = ImGui::GetIO().DisplaySize;
             ImGui::SetNextWindowPos(ImVec2(dsp.x * 0.5f, dsp.y * 0.5f),
                                     ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-            ImGui::OpenPopup("MIDI exceeds spec");
-            g_app.spec_popup_started = true;
         }
         if (ImGui::BeginPopupModal("MIDI exceeds spec", nullptr,
                                    ImGuiWindowFlags_AlwaysAutoResize)) {
