@@ -209,10 +209,28 @@ std::vector<std::string> enumerate_system_fonts() {
             // Skip names with glyphs outside the UI atlas's coverage
             // (ImGui default ranges: Basic Latin + Latin-1 Supplement,
             // 0x20..0xFF). CJK/Arabic/... family names would render as
-            // rows of '?' in the dropdown.
+            // rows of '?' in the dropdown. NOTE: decode UTF-8 -- a raw
+            // byte test can never reject CJK because multibyte UTF-8
+            // sequences are built entirely from bytes <= 0xFF.
             bool renderable = true;
-            for (unsigned char c : fam)
-                if (c < 0x20 || c > 0xFF) { renderable = false; break; }
+            for (size_t i = 0; i < fam.size(); ) {
+                unsigned char c = (unsigned char)fam[i];
+                uint32_t cp; size_t len;
+                if (c < 0x80) { cp = c; len = 1; }
+                else if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; len = 2; }
+                else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; len = 3; }
+                else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; len = 4; }
+                else { renderable = false; break; }   // invalid lead byte
+                if (i + len > fam.size()) { renderable = false; break; }
+                for (size_t k = 1; k < len; ++k) {
+                    unsigned char cc = (unsigned char)fam[i + k];
+                    if ((cc & 0xC0) != 0x80) { renderable = false; break; }
+                    cp = (cp << 6) | (cc & 0x3F);
+                }
+                if (!renderable) break;
+                if (cp < 0x20 || cp > 0xFF) { renderable = false; break; }
+                i += len;
+            }
             if (!renderable) continue;
             families.insert(fam);
         }
