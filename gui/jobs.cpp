@@ -119,6 +119,7 @@ void run_process(GuiSettings s) {
     acfg.pos_y = s.pos_y;
     acfg.commas = s.commas;
     acfg.pad = s.pad;
+    acfg.bpm = s.bpm;
     acfg.bg_color_ass = s.bg_color_aabbggrr;
     acfg.start_delay = s.start_delay;
 
@@ -136,6 +137,7 @@ void run_process(GuiSettings s) {
     app.start_delay = s.start_delay;
     app.preview_commas = s.commas;
     app.preview_pad = s.pad;
+    app.preview_bpm = s.bpm;
     app.bg_colour_ass = s.bg_color_aabbggrr;
     app.pos_mode = s.pos_mode;
     app.pos_x = s.pos_x;

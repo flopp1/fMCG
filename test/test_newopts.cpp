@@ -54,6 +54,20 @@ int main() {
         auto out3 = ProcessTemplateLine("C:{cc}/{cc-total}", fs, 0, 1205, tmax, ppqn, c4, p1);
         check("cc auto-pad", out3, "C:0,007/1,205");
     }
+    {   // BPM decimals: 0..6, default 2; out-of-range input is clamped by the caller.
+        FrameStats fs; fs.bpm = 123.456789;
+        auto b = [&](int d) {
+            BpmOpts bo; bo.decimals = d;
+            return ProcessTemplateLine("B:{bpm}", fs, 0, 0, tmax, ppqn, c, p0, bo);
+        };
+        check("bpm 0 decimals", b(0), "B:123");
+        check("bpm 2 decimals (default)", b(2), "B:123.46");
+        check("bpm 4 decimals", b(4), "B:123.4568");
+        check("bpm 6 decimals (cap)", b(6), "B:123.456789");
+        BpmOpts bover; bover.decimals = 99;   // formatting layer clamps too
+        auto outb = ProcessTemplateLine("B:{bpm}", fs, 0, 0, tmax, ppqn, c, p0, bover);
+        check("bpm clamped to 6", outb, "B:123.456789");
+    }
     {   // Start-delay countdown: negative times truncate toward zero and count UP.
         FrameStats z; z.bpm = 150; z.timestamp_sec = -2.5;
         auto out = ProcessTemplateLine("T:{time-milli} S:{sec}", z, 0, 0, tmax, ppqn, c, p0);

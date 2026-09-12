@@ -275,6 +275,10 @@ bool save_pattern(const std::string& name, const PatternData& p) {
     ss << "comma_nps = " << (p.commas.nps ? 1 : 0) << "\n";
     ss << "comma_cc = " << (p.commas.cc ? 1 : 0) << "\n";
     ss << "pad_enabled = " << (p.pad.enabled ? 1 : 0) << "\n";
+    int bpm_dec = p.bpm.decimals;
+    if (bpm_dec < 0) bpm_dec = 0;
+    if (bpm_dec > 6) bpm_dec = 6;
+    ss << "bpm_decimals = " << bpm_dec << "\n";
     return write_file_atomic(fs::path(pdir) / (name + ".ini"), ss.str());
 }
 
@@ -300,6 +304,9 @@ bool load_pattern(const std::string& name, PatternData& out) {
     out.commas.nps           = get_bool(kv, "comma_nps", true);
     out.commas.cc            = get_bool(kv, "comma_cc", false);
     out.pad.enabled          = get_bool(kv, "pad_enabled", false);
+    out.bpm.decimals         = get_int(kv, "bpm_decimals", 2);
+    if (out.bpm.decimals < 0) out.bpm.decimals = 0;
+    if (out.bpm.decimals > 6) out.bpm.decimals = 6;
     if (out.pos_mode < 0 || out.pos_mode > 1) out.pos_mode = 0;
     if (out.alignment < 0 || out.alignment > 5) out.alignment = 0;
     if (out.font_size <= 0) out.font_size = 36;

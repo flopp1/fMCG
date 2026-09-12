@@ -21,10 +21,17 @@ struct PadOpts {
     bool enabled = false;
 };
 
+// {bpm} formatting: number of decimal places, 0..6 (clamped). 0 renders a
+// whole number ("120"), the default 2 matches the long-standing output.
+struct BpmOpts {
+    int decimals = 2;
+};
+
 std::string ProcessTemplateLine(const std::string& line, const FrameStats& fs,
                                 uint64_t total_notes, uint64_t total_cc_events,
                                 double max_time_sec, uint16_t ppqn,
-                                const CommaOpts& commas = {}, PadOpts pad = {});
+                                const CommaOpts& commas = {}, PadOpts pad = {},
+                                BpmOpts bpm = {});
 
 struct AssConfig {
     int width = 1920;
@@ -45,6 +52,7 @@ struct AssConfig {
     int pos_y = 30;
     CommaOpts commas;
     PadOpts pad;
+    BpmOpts bpm;
     double start_delay = 0.0;   // lead-in seconds: zero stats, negative countdown
 };
 

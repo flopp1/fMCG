@@ -29,6 +29,7 @@ struct PatternData {
     std::string bg_color_aabbggrr = "&H00000000";
     CommaOpts   commas;
     PadOpts     pad;
+    BpmOpts     bpm;
 
     bool operator==(const PatternData& o) const {
         return layout_text == o.layout_text && alignment == o.alignment &&
@@ -37,7 +38,8 @@ struct PatternData {
                font_size == o.font_size &&
                text_color_aabbggrr == o.text_color_aabbggrr &&
                bg_color_aabbggrr == o.bg_color_aabbggrr &&
-               memcmp_commas(o) && pad.enabled == o.pad.enabled;
+               memcmp_commas(o) && pad.enabled == o.pad.enabled &&
+               bpm.decimals == o.bpm.decimals;
     }
 private:
     bool memcmp_commas(const PatternData& o) const {

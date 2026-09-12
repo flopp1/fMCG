@@ -43,7 +43,7 @@ static int block_height(int lines, int font_size) {
 std::string ProcessTemplateLine(const std::string& line, const FrameStats& fs,
                                        uint64_t total_notes, uint64_t total_cc_events,
                                        double max_time_sec, uint16_t ppqn,
-                                       const CommaOpts& commas, PadOpts pad) {
+                                       const CommaOpts& commas, PadOpts pad, BpmOpts bpm) {
     std::string result = line;
     auto replace = [&](const std::string& token, const std::string& val) {
         size_t pos = 0;
@@ -116,7 +116,10 @@ std::string ProcessTemplateLine(const std::string& line, const FrameStats& fs,
     replace("{time-milli-rem}", format_time(max_time_sec > fs.timestamp_sec ? max_time_sec - fs.timestamp_sec : 0, true));
 
     std::ostringstream bpm_ss;
-    bpm_ss << std::fixed << std::setprecision(2) << fs.bpm;
+    int bdec = bpm.decimals;
+    if (bdec < 0) bdec = 0;
+    if (bdec > 6) bdec = 6;   // cap: beyond 6 decimals is display noise
+    bpm_ss << std::fixed << std::setprecision(bdec) << fs.bpm;
 
     replace("{bpm}", bpm_ss.str());
     replace("{ppqn}", std::to_string(ppqn));
@@ -192,7 +195,7 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
             std::string text_block;
             std::vector<std::string> rendered;
             for (size_t i = 0; i < template_lines.size(); ++i) {
-                std::string row = ProcessTemplateLine(template_lines[i], zero_fs, total_notes, 0, total_duration, ppqn, cfg.commas, cfg.pad);
+                std::string row = ProcessTemplateLine(template_lines[i], zero_fs, total_notes, 0, total_duration, ppqn, cfg.commas, cfg.pad, cfg.bpm);
                 rendered.push_back(row);
                 text_block += row;
                 if (i + 1 < template_lines.size()) text_block += "\\N";
@@ -209,7 +212,7 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
         std::string text_block;
         std::vector<std::string> rendered;
         for (size_t i = 0; i < template_lines.size(); ++i) {
-            std::string row = ProcessTemplateLine(template_lines[i], f, total_notes, total_cc, total_duration, ppqn, cfg.commas, cfg.pad);
+            std::string row = ProcessTemplateLine(template_lines[i], f, total_notes, total_cc, total_duration, ppqn, cfg.commas, cfg.pad, cfg.bpm);
             rendered.push_back(row);
             text_block += row;
             if (i + 1 < template_lines.size()) text_block += "\\N";

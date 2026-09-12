@@ -85,6 +85,7 @@ static PatternData current_pattern_from_ui() {
     p.bg_color_aabbggrr = g_ui.s.bg_color_aabbggrr;
     p.commas = g_ui.s.commas;
     p.pad = g_ui.s.pad;
+    p.bpm = g_ui.s.bpm;
     return p;
 }
 
@@ -102,6 +103,7 @@ static void apply_pattern_to_ui(const PatternData& p) {
     g_ui.s.bg_color_aabbggrr = p.bg_color_aabbggrr;
     g_ui.s.commas = p.commas;
     g_ui.s.pad = p.pad;
+    g_ui.s.bpm = p.bpm;
     // Family: prefer an exact match in the enumerated list; else keep the name
     // (custom-input fallback path still renders it if the file exists).
     apply_font_variant(g_ui.s, p.font_family, p.font_variant);
@@ -457,6 +459,16 @@ static void draw_frame(GLFWwindow* window) {
     ImGui::Checkbox("CC##c", &g_ui.s.commas.cc);
     ImGui::Checkbox("Leading zeros (pad each stat to its own maximum)", &g_ui.s.pad.enabled);
 
+    ImGui::Text("BPM decimals:");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(70);
+    int bdec = g_ui.s.bpm.decimals;
+    if (ImGui::InputInt("##bpmdec", &bdec, 0, 0)) {
+        if (bdec < 0) bdec = 0;
+        if (bdec > 6) bdec = 6;   // beyond 6 is display noise
+        g_ui.s.bpm.decimals = bdec;
+    }
+
     ImGui::Text("Counter position:");
     ImGui::SameLine();
     if (ImGui::RadioButton("Corners##pm", g_ui.s.pos_mode == 0)) g_ui.s.pos_mode = 0;
@@ -675,6 +687,7 @@ static void draw_frame(GLFWwindow* window) {
                 }
                 g_app.preview_commas = g_ui.s.commas;
                 g_app.preview_pad = g_ui.s.pad;
+                g_app.preview_bpm = g_ui.s.bpm;
                 g_app.text_colour_ass = g_ui.s.text_color_aabbggrr;
                 g_app.bg_colour_ass = g_ui.s.bg_color_aabbggrr;
                 g_app.font_size = g_ui.s.font_size;

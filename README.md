@@ -121,6 +121,7 @@ During the start delay, `{sec}`/`{time}`/`{time-milli}` run from negative and co
 
 - **Comma separators** — per-stat toggles (Notes / Poly / NPS / CC) to format numbers like `1,234,567`.
 - **Leading zeros** — pads every number with zeros so digits line up; each stat pads toward its own maximum (notes → total notes, polyphony → peak polyphony, seconds → total seconds), so no width needs to be set.
+- **BPM decimals** — how many decimal places `{bpm}` renders (0 = whole numbers like `120`; default 2; capped at 6). Saved with the pattern.
 - **Vel-0 as Note-Off** — treat `note-on` with velocity 0 as a note-off (standard MIDI behaviour; disable for unusual files).
 - **Count CC events** — enables the `{cc}` stats. Disabled costs nothing; the scanner skips CC tracking entirely.
 - **Counter position** — *Corners* places the block via the Alignment dropdown (**Top/Bottom Left/Right/Center**); *Custom x,y* places the **top-left of the text block** at exact video pixels. The valid ranges (`0..width`, `0..height`) are shown next to the fields, and out-of-range values are clamped so the anchor can never leave the frame.

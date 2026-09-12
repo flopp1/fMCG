@@ -31,6 +31,7 @@ struct GuiSettings {
     double      fps = 60.0;
     CommaOpts   commas;
     PadOpts     pad;
+    BpmOpts     bpm;
     bool        cc_stats = false;
     double      start_delay = 3.0;
     // 0 = corner alignment dropdown, 1 = explicit x/y (top-left of text block)
@@ -127,6 +128,7 @@ struct AppState {
     // Preview mirror of the options the last Process ran with.
     CommaOpts                 preview_commas;
     PadOpts                   preview_pad;
+    BpmOpts                   preview_bpm;
     std::string               bg_colour_ass{"&H00000000"};
 
     // ---- async file dialog state ---------------------------------------------
