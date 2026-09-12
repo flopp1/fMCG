@@ -55,66 +55,254 @@ public:
 
 class ArchiveSrc : public DataSrc {
 public:
-    struct archive* a = nullptr;
-    struct archive_entry* entry = nullptr;
-    std::vector<uint8_t> staging;   // libarchive's block buffer is invalidated by
-    size_t s_lo = 0;                // the next call, so blocks are copied here
-    bool saw_error = false;
+    // One layer of the decode stack. An ArchiveFeeder reads entries out of a
+    // libarchive container; a DecompFeeder pushes its inner stream through
+    // libarchive again (filters + raw format), so compressed-inside-compressed
+    // inputs unwrap to arbitrary depth.
+    struct Feeder {
+        virtual ~Feeder() {}
+        virtual size_t pull(void* dst, size_t n) = 0;   // 0 = end of stream
+        virtual bool errored() const { return false; }
+    };
+
+    // Reads the selected entry's bytes out of a container via data blocks.
+    class ArchiveFeeder : public Feeder {
+    public:
+        struct archive* a = nullptr;
+        std::vector<uint8_t> staging;   // libarchive's block buffer is invalidated
+        size_t s_lo = 0;                // by the next call, so blocks are copied
+        bool saw_error = false;
+
+        explicit ArchiveFeeder(const std::string& path) {
+            a = archive_read_new();
+            archive_read_support_filter_all(a);
+            archive_read_support_format_all(a);
+            archive_read_support_format_raw(a);   // bare filter-compressed files
+            if (archive_read_open_filename(a, path.c_str(), 10240) != ARCHIVE_OK) {
+                archive_read_free(a); a = nullptr; return;
+            }
+            // First header; skip directory entries.
+            while (true) {
+                if (archive_read_next_header(a, &entry) != ARCHIVE_OK) {
+                    archive_read_free(a); a = nullptr; return;
+                }
+                if (archive_entry_filetype(entry) != AE_IFDIR) break;
+            }
+            staging.reserve(1 << 20);
+        }
+        ~ArchiveFeeder() override { if (a) archive_read_free(a); }
+
+        size_t pull(void* dst, size_t n) override {
+            uint8_t* d = (uint8_t*)dst;
+            size_t out = 0;
+            while (out < n) {
+                if (s_lo == staging.size()) {
+                    const void* buf; size_t bsz; la_int64_t off;
+                    int r = archive_read_data_block(a, &buf, &bsz, &off);
+                    if (r == ARCHIVE_EOF) break;
+                    if (r != ARCHIVE_OK) { saw_error = true; break; }
+                    if (bsz == 0) continue;   // zero-size OK blocks occur mid-stream (7z)
+                    const uint8_t* p = (const uint8_t*)buf;
+                    staging.assign(p, p + bsz);
+                    s_lo = 0;
+                }
+                size_t take = std::min(staging.size() - s_lo, n - out);
+                std::memcpy(d + out, staging.data() + s_lo, take);
+                s_lo += take;
+                out += take;
+            }
+            return out;
+        }
+        bool errored() const override { return saw_error; }
+
+    private:
+        struct archive_entry* entry = nullptr;
+    };
+
+    // Streams arbitrary bytes through libarchive decode (all filters, all
+    // formats + raw). Inner may itself be a container or a compressed stream.
+    // A full history of the consumed stream is buffered so a seek callback can
+    // be offered: some inner formats (7z, rar, zip) require seeking into their
+    // headers, which a plain unseekable stream cannot serve. The buffer holds
+    // this layer's *compressed* bytes, which for nested archives is far
+    // smaller than the decompressed payload.
+    class DecompFeeder : public Feeder {
+    public:
+        std::unique_ptr<Feeder> inner;
+        struct archive* a = nullptr;
+        std::vector<uint8_t> staging;
+        size_t s_lo = 0;
+        bool saw_error = false;
+        std::vector<uint8_t> buf;    // full history of the decoded-input stream
+        size_t lpos = 0;             // logical position within buf
+        bool inner_eof = false;
+        std::vector<uint8_t> rb;     // read-callback scratch buffer
+
+        size_t fill_more() {
+            if (inner_eof) return 0;
+            uint8_t tmp[1 << 18];
+            size_t n = inner->pull(tmp, sizeof(tmp));
+            buf.insert(buf.end(), tmp, tmp + n);
+            return n;
+        }
+
+        static la_ssize_t read_cb(struct archive*, void* self, const void** out) {
+            auto* f = (DecompFeeder*)self;
+            if (f->lpos == f->buf.size()) f->fill_more();
+            size_t avail = f->buf.size() - f->lpos;
+            size_t n = std::min(avail, f->rb.size());
+            if (n) std::memcpy(f->rb.data(), f->buf.data() + f->lpos, n);
+            f->lpos += n;
+            *out = f->rb.data();
+            return (la_ssize_t)n;
+        }
+        static la_int64_t seek_cb(struct archive*, void* self, la_int64_t off, int whence) {
+            auto* f = (DecompFeeder*)self;
+            la_int64_t target;
+            switch (whence) {
+                case SEEK_SET: target = off; break;
+                case SEEK_CUR: target = (la_int64_t)f->lpos + off; break;
+                case SEEK_END:
+                    while (f->fill_more()) {}
+                    target = (la_int64_t)f->buf.size() + off; break;
+                default: return -1;
+            }
+            if (target < 0) return -1;
+            while ((size_t)target > f->buf.size() && f->fill_more()) {}
+            if ((size_t)target > f->buf.size()) { f->lpos = f->buf.size(); return -1; }
+            f->lpos = (size_t)target;
+            return (la_int64_t)f->lpos;
+        }
+
+        explicit DecompFeeder(std::unique_ptr<Feeder> in, const uint8_t* hdr = nullptr, size_t hdr_n = 0)
+            : inner(std::move(in)), rb(1 << 18) {
+            if (hdr && hdr_n) buf.assign(hdr, hdr + hdr_n);   // peeked header bytes
+            fprintf(stderr, "DBG DecompFeeder ctor hdr_n=%zu\n", hdr_n);
+            a = archive_read_new();
+            archive_read_support_filter_all(a);
+            archive_read_support_format_all(a);
+            archive_read_support_format_raw(a);
+            // Callbacks (and their client data) must be registered BEFORE
+            // open: archive_read_open1 runs format bidding immediately, and
+            // the 7z/rar bidders ask for seekability at bid time.
+            archive_read_set_read_callback(a, read_cb);
+            archive_read_set_seek_callback(a, seek_cb);
+            archive_read_set_callback_data(a, this);
+            if (archive_read_open1(a) != ARCHIVE_OK) {
+                archive_read_free(a); a = nullptr; return;
+            }
+            if (archive_read_next_header(a, &entry) != ARCHIVE_OK) {
+                archive_read_free(a); a = nullptr; return;
+            }
+        }
+        ~DecompFeeder() override { if (a) archive_read_free(a); }
+
+        size_t pull(void* dst, size_t n) override {
+            uint8_t* d = (uint8_t*)dst;
+            size_t out = 0;
+            while (out < n) {
+                if (s_lo == staging.size()) {
+                    const void* buf; size_t bsz; la_int64_t off;
+                    int r = archive_read_data_block(a, &buf, &bsz, &off);
+                    if (r == ARCHIVE_EOF) break;
+                    if (r != ARCHIVE_OK) { saw_error = true; break; }
+                    if (bsz == 0) continue;
+                    const uint8_t* p = (const uint8_t*)buf;
+                    staging.assign(p, p + bsz);
+                    s_lo = 0;
+                }
+                size_t take = std::min(staging.size() - s_lo, n - out);
+                std::memcpy(d + out, staging.data() + s_lo, take);
+                s_lo += take;
+                out += take;
+            }
+            return out;
+        }
+        bool errored() const override { return saw_error || inner->errored(); }
+
+    private:
+        struct archive_entry* entry = nullptr;
+    };
+
+    std::vector<std::unique_ptr<Feeder>> stack;   // outermost first
+    std::vector<uint8_t> pending;                 // peeked bytes not yet served
     uint64_t served = 0;
+    std::string open_err;
+    static constexpr int MAX_LAYERS = 16;
 
-    // Returns the next full decompressed block, or nullptr at clean EOF / error.
-    // The pointer is valid until the next call (backed by the staging vector).
-    const uint8_t* next_block(size_t& sz) {
-        if (a == nullptr) return nullptr;
-        while (true) {
-            const void* buf; size_t bsz; la_int64_t off;
-            int r = archive_read_data_block(a, &buf, &bsz, &off);
-            if (r == ARCHIVE_EOF) return nullptr;
-            if (r != ARCHIVE_OK) { saw_error = true; return nullptr; }
-            if (bsz == 0) continue;   // zero-size OK blocks occur mid-stream (7z)
-            const uint8_t* p = (const uint8_t*)buf;
-            staging.assign(p, p + bsz);
-            s_lo = 0;
-            served += bsz;
-            sz = bsz;
-            return staging.data();
+    Feeder* top() { return stack.empty() ? nullptr : stack.back().get(); }
+
+    // Peek the next bytes off the top feeder; if they carry a compression
+    // signature, push a decoder layer and repeat. Peeked bytes are kept in
+    // `pending` so no data is lost (MIDI never starts with a compression
+    // signature, so this terminates at the innermost payload).
+    void unwrap() {
+        while ((int)stack.size() <= MAX_LAYERS) {
+            Feeder* t = top();
+            if (!t) return;
+            uint8_t hdr[10];
+            size_t got = 0;
+            while (got < sizeof(hdr)) {
+                size_t r = t->pull(hdr + got, sizeof(hdr) - got);
+                if (!r) break;
+                got += r;
+            }
+            fprintf(stderr, "DBG unwrap layer=%d got=%zu magic=%02x%02x%02x%02x\n", (int)stack.size(), got, hdr[0], hdr[1], hdr[2], hdr[3]);
+            if (!is_compressed_magic(hdr, got)) {
+                // Payload reached; the peeked bytes ARE the first payload bytes.
+                pending.insert(pending.end(), hdr, hdr + got);
+                return;
+            }
+            // Compressed layer: the peeked bytes are the header of the stream
+            // the new decoder must see -- hand them to it, not to the consumer.
+            // Ownership note: pop the old layer FIRST -- emplace_back-then-
+            // pop_back would remove the newly pushed layer instead, leaving
+            // the moved-from husk on top of the stack.
+            auto old_layer = std::move(stack.back());
+            stack.pop_back();
+            stack.emplace_back(new DecompFeeder(std::move(old_layer), hdr, got));
         }
     }
 
-public:
     explicit ArchiveSrc(const std::string& path) {
-        a = archive_read_new();
-        archive_read_support_filter_all(a);
-        archive_read_support_format_all(a);
-        if (archive_read_open_filename(a, path.c_str(), 10240) != ARCHIVE_OK) {
-            archive_read_free(a); a = nullptr; return;
+        auto f = std::unique_ptr<Feeder>(new ArchiveFeeder(path));
+        if (!static_cast<ArchiveFeeder*>(f.get())->a) {
+            open_err = "libarchive could not open the file";
+            return;   // stack stays empty -> ok() == false
         }
-        if (archive_read_next_header(a, &entry) != ARCHIVE_OK) {
-            archive_read_free(a); a = nullptr; return;
-        }
-        staging.reserve(1 << 20);
+        stack.push_back(std::move(f));
+        unwrap();
     }
-    ~ArchiveSrc() override { if (a) archive_read_free(a); }
-    bool ok() const override { return a != nullptr; }
+    bool ok() const override { return !stack.empty(); }
     size_t read(void* dst, size_t n) override {
-        if (a == nullptr) return 0;
         uint8_t* d = (uint8_t*)dst;
         size_t out = 0;
         while (out < n) {
-            if (s_lo == staging.size()) {
-                size_t sz = 0;
-                if (!next_block(sz)) break;
+            if (!pending.empty()) {
+                size_t take = std::min(pending.size(), n - out);
+                std::memcpy(d + out, pending.data(), take);
+                pending.erase(pending.begin(), pending.begin() + take);
+                out += take;
+                served += take;
+                continue;
             }
-            size_t take = std::min(staging.size() - s_lo, n - out);
-            std::memcpy(d + out, staging.data() + s_lo, take);
-            s_lo += take;
-            out += take;
+            Feeder* t = top();
+            if (!t) break;
+            size_t r = t->pull(d + out, n - out);
+            if (r == 0) break;
+            out += r;
+            served += r;
         }
         return out;
     }
-    const char* kind() const override { return "libarchive"; }
+    const char* kind() const override {
+        return stack.size() > 1 ? "libarchive, nested decode" : "libarchive";
+    }
     uint64_t bytes_read() const override { return served; }
-    bool errored() const override { return saw_error; }
+    bool errored() const override {
+        for (auto& f : stack) if (f->errored()) return true;
+        return false;
+    }
 };
 
 // ---- pipelined archive source: decode on a producer thread --------------------
@@ -143,13 +331,13 @@ class PipelinedSrc : public DataSrc {
         try {
             while (true) {
                 lk.unlock();
-                size_t sz = 0;
-                const uint8_t* p = arc.next_block(sz);   // decode outside the lock
+                uint8_t blk[1 << 16];
+                size_t n = arc.read(blk, sizeof(blk));          // decode outside the lock
                 lk.lock();
-                if (!p) { done = true; cv_data.notify_all(); return; }
-                q.emplace_back(p, p + sz);
-                q_bytes += sz;
-                decoded += sz;
+                if (n == 0) { done = true; cv_data.notify_all(); return; }
+                q.emplace_back(blk, blk + n);
+                q_bytes += n;
+                decoded += n;
                 cv_data.notify_one();
                 while (q_bytes >= Q_CAP && !closed)
                     cv_slot.wait(lk);

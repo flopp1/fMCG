@@ -42,6 +42,9 @@ struct TempoChange {
 bool is_7z_magic(const uint8_t* m);
 bool is_xz_magic(const uint8_t* m);
 bool is_rar_magic(const uint8_t* m);
+// Compression signature check over the first bytes of any stream (file header
+// or decoded archive content). Covers 7z, xz, rar, gzip, bzip2, zstd, lz4.
+bool is_compressed_magic(const uint8_t* m, size_t n);
 bool is_compressed_file(const std::string& path);
 
 // Continuous progress / logging callbacks (used by both CLI and GUI).

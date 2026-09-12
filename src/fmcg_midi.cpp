@@ -18,6 +18,20 @@ bool is_xz_magic(const uint8_t* m) {
 bool is_rar_magic(const uint8_t* m) {
     return m[0]==0x52 && m[1]==0x61 && m[2]==0x72 && m[3]==0x21 && m[4]==0x1A && m[5]==0x07;
 }
+bool is_compressed_magic(const uint8_t* m, size_t n) {
+    if (n < 6) return false;
+    if (is_7z_magic(m) || is_xz_magic(m) || is_rar_magic(m)) return true;
+    // gzip: 1f 8b
+    if (m[0]==0x1F && m[1]==0x8B) return true;
+    // bzip2: 'BZh' + level digit ('1'..'9') + pi digits 31 41 59 26
+    if (m[0]=='B' && m[1]=='Z' && m[2]=='h' && m[3]>='1' && m[3]<='9'
+        && n >= 10 && m[4]==0x31 && m[5]==0x41) return true;
+    // zstd: 28 b5 2f fd (frame magic, little-endian 0xFD2FB528)
+    if (m[0]==0x28 && m[1]==0xB5 && m[2]==0x2F && m[3]==0xFD) return true;
+    // lz4 frame: 04 22 4D 18
+    if (m[0]==0x04 && m[1]==0x22 && m[2]==0x4D && m[3]==0x18) return true;
+    return false;
+}
 static size_t read_file_header(const std::string& path, uint8_t* out, size_t n) {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return 0;
@@ -26,9 +40,9 @@ static size_t read_file_header(const std::string& path, uint8_t* out, size_t n) 
     return r;
 }
 bool is_compressed_file(const std::string& path) {
-    uint8_t magic[6];
-    return read_file_header(path, magic, 6) == 6
-        && (is_7z_magic(magic) || is_xz_magic(magic) || is_rar_magic(magic));
+    uint8_t magic[10];
+    size_t n = read_file_header(path, magic, sizeof(magic));
+    return is_compressed_magic(magic, n);
 }
 
 // ---------------------------------------------------------------------------

@@ -89,6 +89,7 @@ void run_process(GuiSettings s) {
         app.gui_log(app.cancel.load() ? "Processing cancelled." : "Error: Could not parse MIDI file.",
                     app.cancel.load() ? false : true);
         app.result_ret = 1;
+        app.op_result = app.cancel.load() ? AppState::OP_PROCESS_CANCELLED : AppState::OP_PROCESS_FAIL;
         app.finish_op();
         return;
     }
@@ -151,6 +152,7 @@ void run_process(GuiSettings s) {
     app.gui_log("Processing complete. Ready for preview/render.", false);
     app.processed = true;
     app.result_ret = 0;
+    app.op_result = AppState::OP_PROCESS_OK;
     app.finish_op();
 }
 
@@ -230,6 +232,8 @@ void run_render(RenderSettings s) {
     app.log_lines.clear();
     app.result_path.clear();
 
+    app.render_active = true;
+
     app.gui_log(("Rendering video: " + s.output_video + "...").c_str(), false);
 
     // Move the ASS to a fixed bare name beside itself (see fmcg_render.h):
@@ -266,6 +270,9 @@ void run_render(RenderSettings s) {
             ret = -2;
         } else if (ret == 0) std::remove(bat_file.c_str());   // keep bat + log on failure for diagnosis
         g_app.result_ret = ret;
+        g_app.op_result = (ret == 0)  ? AppState::OP_RENDER_OK
+                        : (ret == -2) ? AppState::OP_RENDER_CANCELLED
+                                      : AppState::OP_RENDER_FAIL;
         g_app.result_path = s.output_video;
         if (ret == 0)
             g_app.gui_log(("Video rendered to: " + s.output_video).c_str(), false);

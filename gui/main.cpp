@@ -843,6 +843,7 @@ int main() {
                 g_app.processed = false;
                 g_app.done = false;
                 g_app.result_ret = -1;
+                g_app.op_result = AppState::OP_NONE;
                 g_app.progress.store(0.0f);   // reset the progress bar too
                 g_app.result_path.clear();
                 g_app.ass_path.clear();
@@ -891,8 +892,11 @@ int main() {
         }
         ImGui::EndChild();
 
+        // Final status line, phrased per operation so a failed/cancelled
+        // PROCESS is never mislabelled as "Render failed".
         if (g_app.done.load() && !g_app.processed.load() && !g_app.busy.load()) {
-            if (g_app.result_ret.load() == 0) {
+            const int op = g_app.op_result.load();
+            if (op == AppState::OP_RENDER_OK) {
                 uint64_t fsize = 0;
                 {
                     std::ifstream rf(g_app.result_path, std::ios::binary | std::ios::ate);
@@ -900,8 +904,17 @@ int main() {
                 }
                 ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Rendered: %s (%s)",
                     g_app.result_path.c_str(), format_file_size(fsize).c_str());
-            } else if (g_app.result_ret.load() != -1)
+            } else if (op == AppState::OP_RENDER_FAIL) {
                 ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Render failed. Check log.");
+            } else if (op == AppState::OP_RENDER_CANCELLED) {
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "Render cancelled.");
+            } else if (op == AppState::OP_PROCESS_FAIL) {
+                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Processing failed. Check log.");
+            } else if (op == AppState::OP_PROCESS_CANCELLED) {
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "Processing cancelled.");
+            }
+            // OP_NONE: nothing completed yet; OP_PROCESS_OK is excluded above
+            // by !processed (processed=true shows the "Processed" tag instead).
         }
 
         // --- Preview popup ---

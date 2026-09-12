@@ -63,6 +63,17 @@ struct AppState {
     std::string               result_path;
     std::atomic<int>          result_ret{-1};
 
+    // What the last completed operation was and how it ended. Kept separate
+    // from result_ret (which carries process/ffmpeg exit codes) so the status
+    // line can say "Processing failed" vs "Render failed" vs "...cancelled"
+    // instead of lumping every non-zero result under "Render failed".
+    enum OpResult {
+        OP_NONE = 0,            // no completed operation yet (fresh/idle)
+        OP_PROCESS_OK, OP_PROCESS_FAIL, OP_PROCESS_CANCELLED,
+        OP_RENDER_OK,   OP_RENDER_FAIL,   OP_RENDER_CANCELLED
+    };
+    std::atomic<int>          op_result{OP_NONE};
+
     // ---- processed state ------------------------------------------------------
     std::atomic<bool>         processed{false};
     std::string               ass_path;
