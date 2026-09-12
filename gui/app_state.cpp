@@ -71,11 +71,14 @@ std::string AppState::compose_scan_line() {
 
 // End-of-operation bookkeeping shared by process and render: hide the live
 // scan stats (progress bar returns to percentage-only) and mark completion.
+// Progress jumps to 100% so fast operations that stalled at their last scan
+// ping (~90%) visibly complete instead of hanging just short of the end.
 void AppState::finish_op() {
     {
         std::lock_guard<std::mutex> lock(scan_mutex);
         scan_active = false;
     }
+    progress.store(1.0f);
     busy = false;
     done = true;
 }

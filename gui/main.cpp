@@ -774,6 +774,7 @@ int main() {
                 g_app.processed = false;
                 g_app.done = false;
                 g_app.result_ret = -1;
+                g_app.progress.store(0.0f);   // reset the progress bar too
                 g_app.result_path.clear();
                 g_app.ass_path.clear();
                 g_app.frames_data.clear();
