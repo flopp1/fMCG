@@ -599,8 +599,41 @@ int main() {
 
         ImGui::Spacing();
         ImGui::Text("Output Path");
-        ImGui::SetNextItemWidth(-1);
+        ImGui::SameLine(120);
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 80);
         ImGui::InputText("##output", g_ui.output_buf, sizeof(g_ui.output_buf));
+        ImGui::SameLine();
+        {
+            bool odialog_active = g_app.dialog_busy.load();
+            if (odialog_active) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
+            if (ImGui::Button("Browse...##out") && !odialog_active) {
+                std::string cmd;
+#if defined(_WIN32)
+                cmd = "powershell -NoProfile -Command \""
+                      "Add-Type -AssemblyName System.Windows.Forms; "
+                      "$f = New-Object System.Windows.Forms.SaveFileDialog; "
+                      "$f.Filter = 'MP4 video (*.mp4)|*.mp4|All files (*.*)|*.*'; "
+                      "$f.Title = 'Select output video'; "
+                      "if ($f.ShowDialog() -eq 'OK') { $f.FileName }\"";
+#elif defined(__APPLE__)
+                cmd = "osascript -e 'tell application \"System Events\" to set f to (choose file name with prompt \"Select output video\") as alias' -e 'POSIX path of f'";
+#else
+                cmd = "zenity --file-selection --save --title='Select output video' --file-filter='MP4 video | *.mp4' 2>/dev/null || "
+                      "kdialog --getsavefilename . 'Select output video' 2>/dev/null";
+#endif
+                launch_dialog(cmd, "output");
+            }
+            if (odialog_active) ImGui::PopStyleVar();
+        }
+        // Poll output-path dialog result.
+        {
+            std::string result = poll_dialog_result("output");
+            if (!result.empty()) {
+                strncpy(g_ui.output_buf, result.c_str(), sizeof(g_ui.output_buf) - 1);
+                g_ui.output_buf[sizeof(g_ui.output_buf) - 1] = '\0';
+                g_ui.s.output_video = g_ui.output_buf;
+            }
+        }
 
         maybe_autosave_globals();
 
