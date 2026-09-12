@@ -28,6 +28,10 @@
 #include <GL/gl.h>
 
 #if defined(_WIN32)
+#include <windows.h>
+#endif
+
+#if defined(_WIN32)
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 #endif
@@ -997,6 +1001,16 @@ static LRESULT CALLBACK fmcg_modal_paint_proc(HWND hwnd, UINT msg, WPARAM wp, LP
 #endif
 
 int main() {
+#if defined(_WIN32) && defined(FMCG_DEBUG)
+    // Debug builds keep a console for printf/stderr tracing; release builds
+    // (linked with -mwindows) have no console and none is created.
+    if (AllocConsole()) {
+        FILE* f_out = nullptr; FILE* f_err = nullptr; FILE* f_in = nullptr;
+        freopen_s(&f_out, "CONOUT$", "w", stdout);
+        freopen_s(&f_err, "CONOUT$", "w", stderr);
+        freopen_s(&f_in, "CONIN$", "r", stdin);
+    }
+#endif
     if (!glfwInit()) return 1;
 
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);

@@ -20,9 +20,13 @@ REM (default) discard it -- end users never see progress artifacts.
 REM ===========================================================================
 
 set EXTRA_CFLAGS=
+REM Release (default) links -mwindows: GUI subsystem, no console window.
+REM "build.bat debug" additionally allocates one at startup for tracing.
+set CONSOLE_FLAG=-mwindows
 if /i "%1"=="debug" (
     set EXTRA_CFLAGS=-DFMCG_DEBUG=1
-    echo [debug build] ffmpeg stderr log enabled.
+    set CONSOLE_FLAG=
+    echo [debug build] ffmpeg stderr log + console window enabled.
 )
 
 if not exist vendor\imgui\imgui.h (
@@ -94,7 +98,7 @@ g++ -std=c++17 -O3 -o fMCG_gui.exe lib\gui\app_state.o lib\gui\dialogs.o lib\gui
     -Ivendor\imgui -Ivendor\imgui\backends -Ivendor\GLFW -I. -Isrc -Igui -Ivendor\libarchive ^
     -Lvendor\GLFW -Lvendor\libarchive\lib ^
     lib\libimgui.a vendor\libarchive\lib\libarchive.dll.a ^
-    -lglfw3 -lbcrypt -lopengl32 -lgdi32 -luser32 -lkernel32 -lpthread
+    -lglfw3 -lbcrypt -lopengl32 -lgdi32 -luser32 -lkernel32 -lpthread %CONSOLE_FLAG%
 if %ERRORLEVEL% NEQ 0 (
     echo GUI build FAILED.
     exit /b 1
