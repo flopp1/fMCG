@@ -258,10 +258,14 @@ int main() {
         ImGui::Separator();
         ImGui::Spacing();
 
-        // --- Pattern manager -------------------------------------------------
+        // --- Pattern section: everything below (until Global) is saved under
+        // --- the selected pattern --------------------------------------------
+        ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f),
+            "Pattern \u2014 the overlay look, saved with the selected pattern");
+        ImGui::Spacing();
         {
             refresh_pattern_list();
-            ImGui::Text("Pattern:");
+            ImGui::Text("Active:");
             ImGui::SameLine(120);
 
             std::vector<const char*> pat_cstrs;
@@ -377,10 +381,7 @@ int main() {
         }
 
         ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
 
-        // --- Settings ---
         // Font family + weight/variant share one row to stay compact.
         ImGui::Text("Font Family");
         if (!font_list_loaded && !g_ui.font_cstrs.empty()) font_list_loaded = true;
@@ -435,110 +436,7 @@ int main() {
         ImGui::InputInt("##fsize", &g_ui.s.font_size, 1, 10);
         if (g_ui.s.font_size < 1) g_ui.s.font_size = 1;
 
-        ImGui::Text("Resolution");
-        ImGui::SameLine(120);
-        ImGui::SetNextItemWidth(100);
-        if (ImGui::InputInt("##w", &g_ui.s.width, 0, 0)) { mark_globals_dirty(); }
-        ImGui::SameLine();
-        ImGui::Text("x");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(100);
-        if (ImGui::InputInt("##h", &g_ui.s.height, 0, 0)) { mark_globals_dirty(); }
-        if (g_ui.s.width < 16) g_ui.s.width = 16;
-        if (g_ui.s.height < 16) g_ui.s.height = 16;
-
-        ImGui::Text("FPS");
-        ImGui::SameLine(120);
-        ImGui::SetNextItemWidth(120);
-        double fps_input = g_ui.s.fps;
-        if (ImGui::InputDouble("##fps", &fps_input, 0, 0, "%.1f")) {
-            if (fps_input > 0) { g_ui.s.fps = fps_input; mark_globals_dirty(); }
-        }
-
-        // --- Colours: swatch + RGB-slider popup, live preview ---------------
-        {
-            std::string rgb;
-            if (fmcg_ui::ass_to_rrggbb(g_ui.s.text_color_aabbggrr, rgb)) {
-                ImGui::Text("Text Colour");
-                ImGui::SameLine(120);
-                if (fmcg_ui::EditColour("##textcol", rgb))
-                    g_ui.s.text_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
-            }
-            if (fmcg_ui::ass_to_rrggbb(g_ui.s.bg_color_aabbggrr, rgb)) {
-                ImGui::Text("Background");
-                ImGui::SameLine(120);
-                if (fmcg_ui::EditColour("##bgcol", rgb))
-                    g_ui.s.bg_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
-            }
-        }
-
-        ImGui::Text("Comma separators:");
-        ImGui::SameLine();
-        ImGui::Checkbox("Notes##c", &g_ui.s.commas.notes);
-        ImGui::SameLine();
-        ImGui::Checkbox("Poly##c", &g_ui.s.commas.polyphony);
-        ImGui::SameLine();
-        ImGui::Checkbox("NPS##c", &g_ui.s.commas.nps);
-        ImGui::SameLine();
-        ImGui::Checkbox("CC##c", &g_ui.s.commas.cc);
-        if (ImGui::Checkbox("Vel-0 as Note-Off", &g_ui.s.vel0_note_off)) mark_globals_dirty();
-        if (ImGui::Checkbox("Count CC events (enables {cc} stats)", &g_ui.s.cc_stats)) mark_globals_dirty();
-        if (ImGui::Checkbox("Leading zeros (pad each stat to its own maximum)", &g_ui.s.pad.enabled)) {}
-
-        ImGui::Text("Counter position:");
-        ImGui::SameLine();
-        if (ImGui::RadioButton("Corners##pm", g_ui.s.pos_mode == 0)) g_ui.s.pos_mode = 0;
-        ImGui::SameLine();
-        if (ImGui::RadioButton("Custom x,y##pm", g_ui.s.pos_mode == 1)) g_ui.s.pos_mode = 1;
-        if (g_ui.s.pos_mode == 0) {
-            ImGui::SetNextItemWidth(160);
-            if (ImGui::Combo("##align", &g_ui.alignment_idx, k_alignment_items, k_alignment_count)) {
-                g_ui.s.alignment = g_ui.alignment_idx;
-            }
-        } else {
-            // Valid ranges for the text-block anchor (top-left), shown so the
-            // user knows the boundaries. The exact bottom-right bound depends
-            // on the rendered text size (rows and digits per frame), so the
-            // generator clamps per-frame; here we only keep the anchor itself
-            // inside the frame and document that.
-            int max_x = g_ui.s.width, max_y = g_ui.s.height;
-            ImGui::Text("x");
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(90);
-            int xin = g_ui.s.pos_x;
-            if (ImGui::InputInt("##posx", &xin, 0, 0)) {
-                if (xin < 0) xin = 0;
-                if (xin > max_x) xin = max_x;
-                g_ui.s.pos_x = xin;
-            }
-            ImGui::SameLine();
-            ImGui::Text("y");
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(90);
-            int yin = g_ui.s.pos_y;
-            if (ImGui::InputInt("##posy", &yin, 0, 0)) {
-                if (yin < 0) yin = 0;
-                if (yin > max_y) yin = max_y;
-                g_ui.s.pos_y = yin;
-            }
-            ImGui::SameLine();
-            ImGui::TextDisabled("(top-left of text block)");
-            ImGui::TextDisabled("x: 0..%d  y: 0..%d  (block is auto-shifted left/up to stay fully visible)", max_x, max_y);
-        }
-
-        ImGui::Text("Start delay (seconds): ");
-        ImGui::SameLine(170);
-        ImGui::SetNextItemWidth(100);
-        double delay_input = g_ui.s.start_delay;
-        if (ImGui::InputDouble("##delay", &delay_input, 0, 0, "%.2f")) {
-            if (delay_input >= 0) { g_ui.s.start_delay = delay_input; mark_globals_dirty(); }
-        }
-
-        ImGui::Spacing();
-        ImGui::Text("Output Path");
-        ImGui::SetNextItemWidth(-1);
-        ImGui::InputText("##output", g_ui.output_buf, sizeof(g_ui.output_buf));
-
+        // Layout: one line per overlay row (pattern-saved).
         ImGui::Text("Layout (one line per overlay row; {nc}, {time-milli}, {bpm}, ...)");
         ImGui::InputTextMultiline("##layout", g_ui.layout_buf, sizeof(g_ui.layout_buf), ImVec2(-1, 120));
         {
@@ -581,6 +479,119 @@ int main() {
                 strncpy(g_ui.layout_buf, content.c_str(), sizeof(g_ui.layout_buf) - 1);
             }
         }
+
+        // --- Colours: swatch + RGB-slider popup, live preview (pattern-saved) --
+        {
+            std::string rgb;
+            if (fmcg_ui::ass_to_rrggbb(g_ui.s.text_color_aabbggrr, rgb)) {
+                ImGui::Text("Text Colour");
+                ImGui::SameLine(120);
+                if (fmcg_ui::EditColour("##textcol", rgb))
+                    g_ui.s.text_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
+            }
+            if (fmcg_ui::ass_to_rrggbb(g_ui.s.bg_color_aabbggrr, rgb)) {
+                ImGui::Text("Background");
+                ImGui::SameLine(120);
+                if (fmcg_ui::EditColour("##bgcol", rgb))
+                    g_ui.s.bg_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
+            }
+        }
+
+        ImGui::Text("Comma separators:");
+        ImGui::SameLine();
+        ImGui::Checkbox("Notes##c", &g_ui.s.commas.notes);
+        ImGui::SameLine();
+        ImGui::Checkbox("Poly##c", &g_ui.s.commas.polyphony);
+        ImGui::SameLine();
+        ImGui::Checkbox("NPS##c", &g_ui.s.commas.nps);
+        ImGui::SameLine();
+        ImGui::Checkbox("CC##c", &g_ui.s.commas.cc);
+        ImGui::Checkbox("Leading zeros (pad each stat to its own maximum)", &g_ui.s.pad.enabled);
+
+        ImGui::Text("Counter position:");
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Corners##pm", g_ui.s.pos_mode == 0)) g_ui.s.pos_mode = 0;
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Custom x,y##pm", g_ui.s.pos_mode == 1)) g_ui.s.pos_mode = 1;
+        if (g_ui.s.pos_mode == 0) {
+            ImGui::SetNextItemWidth(160);
+            if (ImGui::Combo("##align", &g_ui.alignment_idx, k_alignment_items, k_alignment_count)) {
+                g_ui.s.alignment = g_ui.alignment_idx;
+            }
+        } else {
+            // Valid ranges for the text-block anchor (top-left), shown so the
+            // user knows the boundaries. The exact bottom-right bound depends
+            // on the rendered text size (rows and digits per frame), so the
+            // generator clamps per-frame; here we only keep the anchor itself
+            // inside the frame and document that.
+            int max_x = g_ui.s.width, max_y = g_ui.s.height;
+            ImGui::Text("x");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(90);
+            int xin = g_ui.s.pos_x;
+            if (ImGui::InputInt("##posx", &xin, 0, 0)) {
+                if (xin < 0) xin = 0;
+                if (xin > max_x) xin = max_x;
+                g_ui.s.pos_x = xin;
+            }
+            ImGui::SameLine();
+            ImGui::Text("y");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(90);
+            int yin = g_ui.s.pos_y;
+            if (ImGui::InputInt("##posy", &yin, 0, 0)) {
+                if (yin < 0) yin = 0;
+                if (yin > max_y) yin = max_y;
+                g_ui.s.pos_y = yin;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(top-left of text block)");
+            ImGui::TextDisabled("x: 0..%d  y: 0..%d  (block is auto-shifted left/up to stay fully visible)", max_x, max_y);
+        }
+
+        // --- Global section: session-wide settings, autosaved, NOT in patterns --
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f),
+            "Global settings \u2014 autosaved, not part of any pattern");
+        ImGui::Spacing();
+
+        ImGui::Text("Start delay (seconds): ");
+        ImGui::SameLine(170);
+        ImGui::SetNextItemWidth(100);
+        double delay_input = g_ui.s.start_delay;
+        if (ImGui::InputDouble("##delay", &delay_input, 0, 0, "%.2f")) {
+            if (delay_input >= 0) { g_ui.s.start_delay = delay_input; mark_globals_dirty(); }
+        }
+
+        if (ImGui::Checkbox("Vel-0 as Note-Off", &g_ui.s.vel0_note_off)) mark_globals_dirty();
+        if (ImGui::Checkbox("Count CC events (enables {cc} stats)", &g_ui.s.cc_stats)) mark_globals_dirty();
+
+        ImGui::Text("Resolution");
+        ImGui::SameLine(120);
+        ImGui::SetNextItemWidth(100);
+        if (ImGui::InputInt("##w", &g_ui.s.width, 0, 0)) { mark_globals_dirty(); }
+        ImGui::SameLine();
+        ImGui::Text("x");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(100);
+        if (ImGui::InputInt("##h", &g_ui.s.height, 0, 0)) { mark_globals_dirty(); }
+        if (g_ui.s.width < 16) g_ui.s.width = 16;
+        if (g_ui.s.height < 16) g_ui.s.height = 16;
+
+        ImGui::Text("FPS");
+        ImGui::SameLine(120);
+        ImGui::SetNextItemWidth(120);
+        double fps_input = g_ui.s.fps;
+        if (ImGui::InputDouble("##fps", &fps_input, 0, 0, "%.1f")) {
+            if (fps_input > 0) { g_ui.s.fps = fps_input; mark_globals_dirty(); }
+        }
+
+        ImGui::Spacing();
+        ImGui::Text("Output Path");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputText("##output", g_ui.output_buf, sizeof(g_ui.output_buf));
 
         maybe_autosave_globals();
 

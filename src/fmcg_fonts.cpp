@@ -205,7 +205,16 @@ std::vector<std::string> enumerate_system_fonts() {
         collect_font_files(dir, files, 0);
         for (const auto& path : files) {
             std::string fam = read_font_family(path);
-            if (!fam.empty()) families.insert(fam);
+            if (fam.empty()) continue;
+            // Skip names with glyphs outside the UI atlas's coverage
+            // (ImGui default ranges: Basic Latin + Latin-1 Supplement,
+            // 0x20..0xFF). CJK/Arabic/... family names would render as
+            // rows of '?' in the dropdown.
+            bool renderable = true;
+            for (unsigned char c : fam)
+                if (c < 0x20 || c > 0xFF) { renderable = false; break; }
+            if (!renderable) continue;
+            families.insert(fam);
         }
     }
     return std::vector<std::string>(families.begin(), families.end());
