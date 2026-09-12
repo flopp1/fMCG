@@ -127,6 +127,8 @@ static void refresh_pattern_list() {
         if (g_ui.pattern_names[i] == g_ui.active_pattern) g_ui.active_pattern_idx = (int)i;
 }
 
+static bool font_list_loaded = false;   // font-list lazy-init (set at startup)
+
 // --- per-frame drawing -------------------------------------------------------
 // Extracted from the main loop so it can also run from the window-refresh
 // callback: on Windows, border-drag/resize enters a modal loop that never
@@ -326,7 +328,7 @@ static void draw_frame(GLFWwindow* window) {
 
     // Font family + weight/variant share one row to stay compact.
     ImGui::Text("Font Family");
-    if (!font_list_loaded && !g_ui.font_cstrs.empty()) font_list_loaded = true;
+    if (!g_ui.font_cstrs.empty()) font_list_loaded = true;
     bool fam_changed = false;
     if (!g_ui.font_cstrs.empty()) {
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 130);
@@ -496,7 +498,7 @@ static void draw_frame(GLFWwindow* window) {
     ImGui::Separator();
     ImGui::Spacing();
     ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f),
-        "Global settings - autosaved, not part of any pattern");
+        "Global settings - autosaved, separate from patterns");
     ImGui::Spacing();
 
     ImGui::Text("Start delay (seconds): ");
@@ -939,7 +941,7 @@ int main() {
         // stored as a directory hint only; the file itself is picked per-session
     }
 
-    bool font_list_loaded = !g_ui.font_cstrs.empty();
+    font_list_loaded = !g_ui.font_cstrs.empty();   // draw_frame()'s lazy-init flag
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();

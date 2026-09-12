@@ -63,9 +63,17 @@ public:
         virtual ~Feeder() {}
         virtual size_t pull(void* dst, size_t n) = 0;   // 0 = end of stream
         virtual bool errored() const { return false; }
+        // Restart the layer's decode from the stream's beginning.
+        virtual void reset() = 0;
     };
 
     // Reads the selected entry's bytes out of a container via data blocks.
+    // If the container path errors out -- the classic case being a filter
+    // (xz/gz/zst) wrapped around a seek-dependent container (7z/zip), whose
+    // end-of-file header demands a backward seek through forward-only filter
+    // output -- it transparently re-opens in RAW mode (filter decode only)
+    // and serves the decoded stream, letting the unwrap() layer stack above
+    // handle the inner container with its seek-capable decoder.
     class ArchiveFeeder : public Feeder {
     public:
         struct archive* a = nullptr;
@@ -73,24 +81,13 @@ public:
         size_t s_lo = 0;                // by the next call, so blocks are copied
         bool saw_error = false;
 
-        explicit ArchiveFeeder(const std::string& path) {
-            a = archive_read_new();
-            archive_read_support_filter_all(a);
-            archive_read_support_format_all(a);
-            archive_read_support_format_raw(a);   // bare filter-compressed files
-            if (archive_read_open_filename(a, path.c_str(), 10240) != ARCHIVE_OK) {
-                archive_read_free(a); a = nullptr; return;
-            }
-            // First header; skip directory entries.
-            while (true) {
-                if (archive_read_next_header(a, &entry) != ARCHIVE_OK) {
-                    archive_read_free(a); a = nullptr; return;
-                }
-                if (archive_entry_filetype(entry) != AE_IFDIR) break;
-            }
-            staging.reserve(1 << 20);
+        explicit ArchiveFeeder(const std::string& path) : path_(path) {
+            open_container();
         }
-        ~ArchiveFeeder() override { if (a) archive_read_free(a); }
+        ~ArchiveFeeder() override {
+            if (a) archive_read_free(a);
+            if (pf) fclose(pf);
+        }
 
         size_t pull(void* dst, size_t n) override {
             uint8_t* d = (uint8_t*)dst;
@@ -98,9 +95,17 @@ public:
             while (out < n) {
                 if (s_lo == staging.size()) {
                     const void* buf; size_t bsz; la_int64_t off;
-                    int r = archive_read_data_block(a, &buf, &bsz, &off);
+                    int r = a ? archive_read_data_block(a, &buf, &bsz, &off) : ARCHIVE_FATAL;
                     if (r == ARCHIVE_EOF) break;
-                    if (r != ARCHIVE_OK) { saw_error = true; break; }
+                    if (r != ARCHIVE_OK) {
+                        // Seek-through-filter and friends: retry in raw mode.
+                        if (!raw_mode) {
+                            reset();
+                            open_raw();
+                            continue;
+                        }
+                        saw_error = true; break;
+                    }
                     if (bsz == 0) continue;   // zero-size OK blocks occur mid-stream (7z)
                     const uint8_t* p = (const uint8_t*)buf;
                     staging.assign(p, p + bsz);
@@ -115,8 +120,57 @@ public:
         }
         bool errored() const override { return saw_error; }
 
+        // Restart the layer from the file's beginning in container mode.
+        void reset() override {
+            saw_error = false;
+            raw_mode = false;
+            if (pf) { fclose(pf); pf = nullptr; }
+            open_container();
+        }
+
     private:
+        std::string path_;
         struct archive_entry* entry = nullptr;
+        bool raw_mode = false;          // serving filter-decoded bytes only
+        FILE* pf = nullptr;
+
+        void open_container() {
+            if (a) { archive_read_free(a); a = nullptr; }
+            staging.clear(); s_lo = 0;
+            a = archive_read_new();
+            archive_read_support_filter_all(a);
+            archive_read_support_format_all(a);
+            archive_read_support_format_raw(a);   // bare filter-compressed files
+            if (archive_read_open_filename(a, path_.c_str(), 10240) != ARCHIVE_OK) {
+                archive_read_free(a); a = nullptr; return;
+            }
+            // First header; skip directory entries.
+            while (true) {
+                if (archive_read_next_header(a, &entry) != ARCHIVE_OK) {
+                    archive_read_free(a); a = nullptr; return;
+                }
+                if (archive_entry_filetype(entry) != AE_IFDIR) break;
+            }
+            staging.reserve(1 << 20);
+        }
+        // Re-open serving only the filter's decoded output (no container
+        // parsing): the raw reader's "data" entry yields exactly the decoded
+        // byte stream, whatever the inner content is. If no filter matches,
+        // raw mode simply serves the file bytes unchanged -- which is the
+        // correct passthrough for a plain container reached via recursion.
+        void open_raw() {
+            if (a) { archive_read_free(a); a = nullptr; }
+            staging.clear(); s_lo = 0;
+            raw_mode = true;
+            a = archive_read_new();
+            archive_read_support_filter_all(a);
+            archive_read_support_format_raw(a);
+            if (archive_read_open_filename(a, path_.c_str(), 10240) != ARCHIVE_OK ||
+                archive_read_next_header(a, &entry) != ARCHIVE_OK) {
+                archive_read_free(a); a = nullptr;
+                pf = fopen(path_.c_str(), "rb");   // last resort: copy the file verbatim
+            }
+        }
     };
 
     // Streams arbitrary bytes through libarchive decode (all filters, all
@@ -133,6 +187,7 @@ public:
         std::vector<uint8_t> staging;
         size_t s_lo = 0;
         bool saw_error = false;
+        size_t prefix_n = 0;         // peeked header bytes prepended to buf
         std::vector<uint8_t> buf;    // full history of the decoded-input stream
         size_t lpos = 0;             // logical position within buf
         bool inner_eof = false;
@@ -176,26 +231,22 @@ public:
 
         explicit DecompFeeder(std::unique_ptr<Feeder> in, const uint8_t* hdr = nullptr, size_t hdr_n = 0)
             : inner(std::move(in)), rb(1 << 18) {
-            if (hdr && hdr_n) buf.assign(hdr, hdr + hdr_n);   // peeked header bytes
-            fprintf(stderr, "DBG DecompFeeder ctor hdr_n=%zu\n", hdr_n);
-            a = archive_read_new();
-            archive_read_support_filter_all(a);
-            archive_read_support_format_all(a);
-            archive_read_support_format_raw(a);
-            // Callbacks (and their client data) must be registered BEFORE
-            // open: archive_read_open1 runs format bidding immediately, and
-            // the 7z/rar bidders ask for seekability at bid time.
-            archive_read_set_read_callback(a, read_cb);
-            archive_read_set_seek_callback(a, seek_cb);
-            archive_read_set_callback_data(a, this);
-            if (archive_read_open1(a) != ARCHIVE_OK) {
-                archive_read_free(a); a = nullptr; return;
-            }
-            if (archive_read_next_header(a, &entry) != ARCHIVE_OK) {
-                archive_read_free(a); a = nullptr; return;
-            }
+            if (hdr && hdr_n) { buf.assign(hdr, hdr + hdr_n); prefix_n = hdr_n; }
+            open_archive();
         }
         ~DecompFeeder() override { if (a) archive_read_free(a); }
+
+        // Restart the layer's decode from its stream's beginning: drop the
+        // decoded history, rewind the inner feeder, re-open the decoder.
+        void reset() override {
+            if (a) { archive_read_free(a); a = nullptr; }
+            buf.resize(prefix_n);
+            lpos = 0;
+            inner_eof = false;
+            saw_error = false;
+            inner->reset();
+            open_archive();
+        }
 
         size_t pull(void* dst, size_t n) override {
             uint8_t* d = (uint8_t*)dst;
@@ -222,6 +273,25 @@ public:
 
     private:
         struct archive_entry* entry = nullptr;
+
+        void open_archive() {
+            a = archive_read_new();
+            archive_read_support_filter_all(a);
+            archive_read_support_format_all(a);
+            archive_read_support_format_raw(a);
+            // Callbacks (and their client data) must be registered BEFORE
+            // open: archive_read_open1 runs format bidding immediately, and
+            // the 7z/rar bidders ask for seekability at bid time.
+            archive_read_set_read_callback(a, read_cb);
+            archive_read_set_seek_callback(a, seek_cb);
+            archive_read_set_callback_data(a, this);
+            if (archive_read_open1(a) != ARCHIVE_OK) {
+                archive_read_free(a); a = nullptr; return;
+            }
+            if (archive_read_next_header(a, &entry) != ARCHIVE_OK) {
+                archive_read_free(a); a = nullptr; return;
+            }
+        }
     };
 
     std::vector<std::unique_ptr<Feeder>> stack;   // outermost first
@@ -247,7 +317,6 @@ public:
                 if (!r) break;
                 got += r;
             }
-            fprintf(stderr, "DBG unwrap layer=%d got=%zu magic=%02x%02x%02x%02x\n", (int)stack.size(), got, hdr[0], hdr[1], hdr[2], hdr[3]);
             if (!is_compressed_magic(hdr, got)) {
                 // Payload reached; the peeked bytes ARE the first payload bytes.
                 pending.insert(pending.end(), hdr, hdr + got);
