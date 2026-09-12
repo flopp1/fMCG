@@ -7,7 +7,7 @@ It's fast! Renders a notecounter of a 2.3 billion note MIDI in 3 minutes on a Ry
 ## Features
 
 - **Single-pass streaming engine** — the file is walked exactly once (mmap for plain files, chunked libarchive streaming for compressed archives). Memory scales with song *duration*, never with event count.
-- **Compressed input** — `.7z`, `.xz`, `.rar` (including double-compressed `.rar.xz`) are decompressed on the fly via libarchive; the decompressed image is never materialized on disk or RAM. Decode is pipelined with parsing on a separate thread.
+- **Compressed input** — `.7z`, `.xz`, `.rar`, `.gz`, `.bz2`, `.zst`, `.lz4` and any nesting of these (e.g. `.rar.xz`, `7z inside 7z`) are decompressed on the fly via libarchive; the decompressed image is never materialized on disk or RAM. Decode is pipelined with parsing on a separate thread, and nesting is unwrapped recursively to arbitrary depth.
 - **Dear ImGui GUI** — process, preview the video live, and render with FFmpeg.
 - **Customizable stats overlay** — one line per stat, any text around tokens, per-stat comma separators, optional leading-zero padding that auto-sizes to each stat's own maximum, corner alignment or an exact x/y position, text and background colours.
 - **Start delay** — black lead-in where all stats sit at zero and the current-time fields count up from negative to zero.
