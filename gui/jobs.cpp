@@ -289,8 +289,11 @@ int spawn_ffmpeg_cancellable(const std::string& cwd,
             break;
         }
         if (g_app.cancel.load()) {
-            std::string kill = "taskkill /PID " + std::to_string(pi.dwProcessId) + " /T /F >nul 2>&1";
-            std::system(kill.c_str());
+            // Kill ffmpeg directly -- no shell. (taskkill via std::system
+            // would flash a cmd.exe console: the app is GUI-subsystem, so
+            // Windows allocates one for the spawned shell.) ffmpeg has no
+            // children of its own, so terminating the process is enough.
+            TerminateProcess(pi.hProcess, (UINT)-3);
             WaitForSingleObject(pi.hProcess, 10000);
             ret = -2;   // cancelled
             break;
