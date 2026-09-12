@@ -631,9 +631,10 @@ int main() {
             ImGui::SameLine();
             if (!can_preview) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
             if (ImGui::Button("Preview", ImVec2(140, 30)) && can_preview) {
-                if (has_data) {
-                    // Snap the live mirror to the current pattern so a fresh
-                    // Preview without re-Process shows the edited look.
+                {
+                    // Snap the live mirror to the current pattern so Preview
+                    // (with or without a processed MIDI) shows the edited look.
+                    // Always: the pattern-only preview needs template_lines too.
                     g_app.template_lines.clear();
                     {
                         std::istringstream tstream(g_ui.layout_buf);

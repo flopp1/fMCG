@@ -127,6 +127,17 @@ void render_pattern_only_popup() {
         if (!g_app.preview_font && !g_app.preview_font_reload.load() && !g_app.font_family.empty())
             g_app.preview_font_reload = true;
 
+        // Layout fallback: the mirror is normally snapped on Preview click, but
+        // guard anyway -- an empty template list would render nothing and leave
+        // the cursor moved with no item submitted (ImGui assert).
+        if (g_app.template_lines.empty()) {
+            g_app.template_lines.push_back("Time: {time-milli}/{time-milli-max}");
+            g_app.template_lines.push_back("Notes: {nc}/{nc-total}/{nc-rem}");
+            g_app.template_lines.push_back("NPS: {nps}/{nps-max}");
+            g_app.template_lines.push_back("Polyphony: {plph}/{plph-max}");
+            g_app.template_lines.push_back("BPM: {bpm}");
+        }
+
         FrameStats zero_fs;
         zero_fs.timestamp_sec = g_app.preview_time - g_app.start_delay;
         std::string text = format_frame_text(zero_fs);
@@ -178,6 +189,12 @@ void render_pattern_only_popup() {
             if (y_off < margin) y_off = margin;
             if (x_off < margin) x_off = margin;
         }
+        // Hard clamp: never place the cursor at/after the child's edge, or
+        // ImGui asserts on cursor-beyond-boundaries when text is empty.
+        if (x_off > area_w - 1.0f) x_off = area_w - 1.0f;
+        if (y_off > area_h - 1.0f) y_off = area_h - 1.0f;
+        if (x_off < 0.0f) x_off = 0.0f;
+        if (y_off < 0.0f) y_off = 0.0f;
 
         ImGui::SetCursorPos(ImVec2(x_off, y_off));
         for (size_t i = 0; i < lines.size(); ++i) {
@@ -186,6 +203,9 @@ void render_pattern_only_popup() {
         }
         if (g_app.preview_font) ImGui::PopFont();
         ImGui::PopStyleColor();
+        // Submit an item so the window grows over any cursor movement (the
+        // SetCursorPos + empty-text combination would otherwise assert).
+        ImGui::Dummy(ImVec2(4.0f, 4.0f));
 
         ImGui::EndChild();
 
