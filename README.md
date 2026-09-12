@@ -17,8 +17,8 @@ It's fast! Renders a notecounter of a 2.3 billion note MIDI in 3 minutes on a Ry
 
 ### Windows
 
-1. Install a MinGW-w64 toolchain ([w64devkit](https://github.com/skeeto/w64devkit/releases)) and put `g++` on PATH.
-2. Run `bootstrap.bat` once — it downloads the pinned dependencies (Dear ImGui, GLFW 3.4, libarchive 3.8.9) into `vendor/`.
+1. Install a MinGW-w64 toolchain ([w64devkit](https://github.com/skeeto/w64devkit/releases)) and [Git for Windows](https://git-scm.com/download/win).
+2. Run `bootstrap.bat` once — it fetches the Dear ImGui submodule and downloads the pinned GLFW 3.4 and libarchive 3.8.9 packages into `vendor/`.
 3. Run `build.bat`. This produces `fMCG_gui.exe` and copies `libarchive.dll` next to it.
 
 Both scripts are idempotent; re-run `build.bat` after changing sources.
@@ -29,24 +29,19 @@ GLFW and libarchive are resolved via pkg-config (i.e. your system package manage
 
 ```bash
 # Debian/Ubuntu
-sudo apt install build-essential pkg-config libglfw3-dev libarchive-dev libgl1-mesa-dev
+sudo apt install build-essential pkg-config git libglfw3-dev libarchive-dev libgl1-mesa-dev
 # Fedora
-sudo dnf install gcc-c++ make pkgconf-pkg-config glfw-devel libarchive-devel mesa-libGL-devel
+sudo dnf install gcc-c++ make pkgconf-pkg-config git glfw-devel libarchive-devel mesa-libGL-devel
 # Arch
-sudo pacman -S base-devel pkgconf glfw libarchive mesa
+sudo pacman -S base-devel pkgconf git glfw libarchive mesa
 # macOS
 brew install pkg-config glfw libarchive
 
-make            # builds ./fMCG_gui
+git submodule update --init   # fetch Dear ImGui (pinned v1.92.9b)
+make                          # builds ./fMCG_gui (default target)
 ```
 
-Dear ImGui is compiled from `vendor/imgui` (no standard distro package); fetch it with:
-
-```bash
-make get-imgui
-```
-
-or point the build at a system copy: `make IMGUI_CFLAGS=-I/usr/include/imgui IMGUI_SOURCES=`.
+Dear ImGui is a git submodule compiled from `vendor/imgui` (no standard distro package). To use a system copy instead: `make IMGUI_CFLAGS=-I/usr/include/imgui IMGUI_SOURCES=`.
 
 ## Rendering requirement
 

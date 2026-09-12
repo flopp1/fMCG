@@ -6,16 +6,18 @@ REM ===========================================================================
 REM fMCG build script (Windows)
 REM
 REM Third-party dependencies live in vendor\, laid out by bootstrap.bat:
-REM   vendor\imgui\           Dear ImGui sources + backends
+REM   vendor\imgui\           Dear ImGui git submodule (sources + backends\)
 REM   vendor\GLFW\GLFW\       GLFW headers          + libglfw3.a (static)
 REM   vendor\libarchive\      headers + libarchive.dll.a + bin\libarchive.dll
 REM
-REM Run bootstrap.bat first on a fresh clone; it downloads everything.
+REM Run bootstrap.bat first on a fresh clone; it fetches the imgui submodule
+REM and downloads the rest.
 REM Output: fMCG_gui.exe (needs libarchive.dll next to it at runtime).
 REM ===========================================================================
 
 if not exist vendor\imgui\imgui.h (
-    echo ERROR: vendor\imgui not found. Run bootstrap.bat first.
+    echo ERROR: vendor\imgui not found. Run bootstrap.bat first ^(or:
+    echo        git submodule update --init^).
     exit /b 1
 )
 if not exist vendor\GLFW\GLFW\glfw3.h (
@@ -39,19 +41,29 @@ if not exist lib mkdir lib
 echo [1/2] Checking imgui static library...
 set NEED_REBUILD=0
 if not exist lib\libimgui.a set NEED_REBUILD=1
-for %%f in (imgui imgui_draw imgui_widgets imgui_tables imgui_demo imgui_impl_glfw imgui_impl_opengl3) do (
+for %%f in (imgui imgui_draw imgui_widgets imgui_tables imgui_demo) do (
+    if not exist "lib\%%f.o" set NEED_REBUILD=1
+)
+for %%f in (imgui_impl_glfw imgui_impl_opengl3) do (
     if not exist "lib\%%f.o" set NEED_REBUILD=1
 )
 REM any imgui source newer than any object -> rebuild
-for %%s in (vendor\imgui\*.cpp) do (
+for %%s in (vendor\imgui\*.cpp vendor\imgui\backends\imgui_impl_*.cpp) do (
     for %%g in (lib\*.o) do (
         if "%%~ts" GTR "%%~tg" set NEED_REBUILD=1
     )
 )
 if "%NEED_REBUILD%"=="1" (
     echo   Building imgui...
-    for %%f in (imgui imgui_draw imgui_widgets imgui_tables imgui_demo imgui_impl_glfw imgui_impl_opengl3) do (
+    for %%f in (imgui imgui_draw imgui_widgets imgui_tables imgui_demo) do (
         g++ -std=c++17 -O3 -c vendor\imgui\%%f.cpp -Ivendor\imgui -Ivendor\GLFW -o lib\%%f.o
+        if !ERRORLEVEL! NEQ 0 (
+            echo imgui build FAILED ^(%%f^).
+            exit /b 1
+        )
+    )
+    for %%f in (imgui_impl_glfw imgui_impl_opengl3) do (
+        g++ -std=c++17 -O3 -c vendor\imgui\backends\%%f.cpp -Ivendor\imgui -Ivendor\imgui\backends -Ivendor\GLFW -o lib\%%f.o
         if !ERRORLEVEL! NEQ 0 (
             echo imgui build FAILED ^(%%f^).
             exit /b 1
@@ -66,7 +78,7 @@ if "%NEED_REBUILD%"=="1" (
 
 echo [2/2] Building fMCG_gui (GUI)...
 g++ -std=c++17 -O3 -o fMCG_gui.exe fMCG_gui.cpp ^
-    -Ivendor\imgui -Ivendor\GLFW -I. -Ivendor\libarchive ^
+    -Ivendor\imgui -Ivendor\imgui\backends -Ivendor\GLFW -I. -Ivendor\libarchive ^
     -Lvendor\GLFW -Lvendor\libarchive\lib ^
     lib\libimgui.a vendor\libarchive\lib\libarchive.dll.a ^
     -lglfw3 -lbcrypt -lopengl32 -lgdi32 -luser32 -lkernel32 -lpthread

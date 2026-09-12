@@ -9,16 +9,13 @@
 #   openSUSE      : sudo zypper install gcc-c++ make pkgconf-pkg-config glfw-devel libarchive-devel Mesa-libGL-devel
 #   macOS         : brew install pkg-config glfw libarchive
 #
-# Dear ImGui has no standard pkg-config module on most distros, so by default
-# the Makefile compiles the required ImGui sources from vendor/imgui (fetch
-# them with the pinned URLs in vendor/README.txt, or point IMGUI_CFLAGS at a
-# system copy and set IMGUI_SOURCES=):
+# Dear ImGui is a git submodule at vendor/imgui (fetch it with
+# `git submodule update --init`), or point IMGUI_CFLAGS at a system copy:
 #
 #   make IMGUI_CFLAGS=-I/usr/include/imgui IMGUI_SOURCES=
 #
 # Targets:
-#   make              build ./fMCG_gui
-#   make get-imgui    fetch the pinned Dear ImGui sources into vendor/imgui
+#   make              build ./fMCG_gui (default)
 #   make run          build and launch the GUI
 #   make test         build and run the formatting checks (test/)
 #   make clean
@@ -68,33 +65,22 @@ ARCH_CFLAGS :=
 ARCH_LIBS   := -larchive
 endif
 
-# --- Dear ImGui -----------------------------------------------------------------
-IMGUI_CFLAGS ?= -Ivendor/imgui
-IMGUI_SOURCES ?= vendor/imgui/imgui.cpp \
-                 vendor/imgui/imgui_draw.cpp \
-                 vendor/imgui/imgui_tables.cpp \
-                 vendor/imgui/imgui_widgets.cpp \
-                 vendor/imgui/imgui_demo.cpp \
-                 vendor/imgui/imgui_impl_glfw.cpp \
-                 vendor/imgui/imgui_impl_opengl3.cpp
+# --- Dear ImGui (git submodule at vendor/imgui) ----------------------------------
+IMGUI_DIR  ?= vendor/imgui
+IMGUI_CFLAGS ?= -I$(IMGUI_DIR)
+IMGUI_SOURCES ?= $(IMGUI_DIR)/imgui.cpp \
+                 $(IMGUI_DIR)/imgui_draw.cpp \
+                 $(IMGUI_DIR)/imgui_tables.cpp \
+                 $(IMGUI_DIR)/imgui_widgets.cpp \
+                 $(IMGUI_DIR)/imgui_demo.cpp \
+                 $(IMGUI_DIR)/backends/imgui_impl_glfw.cpp \
+                 $(IMGUI_DIR)/backends/imgui_impl_opengl3.cpp
 
 ALL_CFLAGS := $(CXXFLAGS) $(GLFW_CFLAGS) $(ARCH_CFLAGS) $(IMGUI_CFLAGS)
 ALL_LIBS   := $(GLFW_LIBS) $(ARCH_LIBS) $(GL_LDLIBS) -lpthread
 
-.PHONY: all run test clean get-imgui
-
-IMGUI_TAG  := 1.92.9b
-IMGUI_URL  := https://github.com/ocornut/imgui/archive/refs/tags/v$(IMGUI_TAG).zip
-
-get-imgui:
-	mkdir -p vendor
-	curl -L --fail -o vendor/imgui.zip $(IMGUI_URL)
-	cd vendor && unzip -q -o imgui.zip \
-	   && rm -rf imgui \
-	   && mv imgui-$(IMGUI_TAG) imgui \
-	   && cp imgui/backends/imgui_impl_glfw.* imgui/backends/imgui_impl_opengl3* imgui/ \
-	   && rm imgui.zip
-	@echo "vendor/imgui ready."
+# 'all' must stay the FIRST target -- GNU Make treats it as the default.
+.PHONY: all run test clean
 
 all: fMCG_gui
 

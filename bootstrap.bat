@@ -9,7 +9,7 @@ REM Run this once on a fresh clone. It downloads pinned copies of the three
 REM third-party dependencies into vendor\ so build.bat can compile offline
 REM afterwards:
 REM
-REM   Dear ImGui v1.92.9b        https://github.com/ocornut/imgui
+REM   Dear ImGui v1.92.9b        git submodule (vendor/imgui) -- fetched below
 REM   GLFW 3.4 (mingw-w64 bin)   https://github.com/glfw/glfw
 REM   libarchive 3.8.9 (mingw)   https://github.com/li-ruijie/libarchive
 REM
@@ -44,9 +44,26 @@ if not defined DL (
 set "CACHE=build_cache"
 if not exist "%CACHE%" mkdir "%CACHE%"
 
-REM --- 3. fetch the three dependencies (skipped when already present) --------
-call :get_dep imgui      https://github.com/ocornut/imgui/archive/refs/tags/v1.92.9b.zip imgui-1.92.9b.zip vendor\imgui\imgui.h
-if !ERRORLEVEL! NEQ 0 exit /b 1
+REM --- 3. fetch the imgui submodule -------------------------------------------
+if exist vendor\imgui\imgui.h (
+    echo [ok] imgui submodule already present.
+) else (
+    where git >nul 2>&1
+    if !ERRORLEVEL! NEQ 0 (
+        echo ERROR: git not found in PATH. Install Git for Windows
+        echo        ^(https://git-scm.com/download/win^) and re-run.
+        exit /b 1
+    )
+    echo [..] fetching imgui submodule...
+    git submodule update --init --depth 1 vendor/imgui
+    if !ERRORLEVEL! NEQ 0 (
+        echo ERROR: git submodule update failed. Check your network connection.
+        exit /b 1
+    )
+    echo [ok] imgui fetched into vendor\imgui.
+)
+
+REM --- 4. download the remaining dependencies (skipped when already present) ---
 call :get_dep glfw       https://github.com/glfw/glfw/releases/download/3.4/glfw-3.4.bin.WIN64.zip glfw-3.4.bin.WIN64.zip vendor\GLFW\GLFW\glfw3.h
 if !ERRORLEVEL! NEQ 0 exit /b 1
 call :get_dep libarchive https://github.com/li-ruijie/libarchive/releases/download/v3.8.9/libarchive-v3.8.9-windows-mingw-x64-static.zip libarchive-3.8.9-mingw-x64.zip vendor\libarchive\lib\libarchive.dll.a
@@ -87,17 +104,6 @@ echo        Delete build_cache\ and retry, or fetch %~2 manually.
 exit /b 1
 
 REM --- per-dependency staging: layout the extracted files under vendor\ ------
-
-:stage_imgui
-if not exist vendor\imgui mkdir vendor\imgui
-robocopy "%CACHE%\imgui\imgui-1.92.9b" vendor\imgui /E >nul
-if errorlevel 8 exit /b 1
-REM flatten the backends next to the core sources (flat include style)
-robocopy "%CACHE%\imgui\imgui-1.92.9b\backends" vendor\imgui *.cpp *.h >nul
-if errorlevel 8 exit /b 1
-REM imgui_impl_*.cpp pull GLFW headers via "GLFW/glfw3.h"
-if not exist vendor\GLFW\GLFW mkdir vendor\GLFW\GLFW
-exit /b 0
 
 :stage_glfw
 if not exist vendor\GLFW\GLFW mkdir vendor\GLFW\GLFW
