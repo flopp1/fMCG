@@ -24,8 +24,11 @@ std::string ffmpeg_color_spec(const std::string& ass_col);
 // overlay render: lavfi colour background + subtitles filter + libx264.
 // `progress_to_stdout` enables "-progress pipe:1" so the caller can parse
 // out_time_ms lines from the child's stdout for live progress.
+// `threads` > 0 passes -threads to the encoder; 0 leaves ffmpeg's
+// auto-selection untouched (the historic default).
 std::vector<std::string> ffmpeg_args(const std::string& output_video,
                                      int width, int height, double fps,
                                      double total_duration,
                                      const std::string& bg_color_ass,
-                                     bool progress_to_stdout = true);
+                                     bool progress_to_stdout = true,
+                                     int threads = 0);

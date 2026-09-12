@@ -413,7 +413,9 @@ void run_render(RenderSettings s) {
     // only kept on disk in debug builds; end users never see it.
     std::vector<std::string> args = ffmpeg_args(s.output_video, s.width, s.height,
                                                 s.fps, s.total_duration,
-                                                s.bg_color_aabbggrr);
+                                                s.bg_color_aabbggrr,
+                                                /*progress_to_stdout=*/true,
+                                                s.ffmpeg_threads);
 #if defined(FMCG_DEBUG)
     std::string progress_file = s.midi_dir + s.midi_stem + "_fMCG_progress.txt";
 #else

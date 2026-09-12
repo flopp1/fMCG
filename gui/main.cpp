@@ -71,6 +71,7 @@ static void save_globals_now() {
     g_ui.globals.cc_stats = g_ui.s.cc_stats;
     g_ui.globals.vel0_note_off = g_ui.s.vel0_note_off;
     g_ui.globals.start_delay = g_ui.s.start_delay;
+    g_ui.globals.ffmpeg_threads = g_ui.s.ffmpeg_threads;
     g_ui.globals_dirty = false;
     g_ui.last_globals_save = ImGui::GetTime();
     save_global_settings(g_ui.globals);
@@ -409,6 +410,40 @@ static void draw_frame(GLFWwindow* window) {
     // Layout: one line per overlay row (pattern-saved).
     ImGui::Text("Layout (one line per overlay row; {nc}, {time-milli}, {bpm}, ...)");
     ImGui::InputTextMultiline("##layout", g_ui.layout_buf, sizeof(g_ui.layout_buf), ImVec2(-1, 120));
+    if (ImGui::Button("Stats list"))
+        ImGui::OpenPopup("Valid layout stats");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Show every stat token usable in the layout");
+    if (ImGui::BeginPopupModal("Valid layout stats", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        static const char* const k_stats[] = {
+            "Notes",  "{nc} / {nc-total} / {nc-rem}",
+            "CC",     "{cc} / {cc-total} / {cc-rem}",
+            "Time",   "{time} / {time-max} / {time-rem}",
+            "Time (ms)", "{time-milli} / {time-milli-max} / {time-milli-rem}",
+            "Seconds", "{sec} / {sec-max} / {sec-rem}",
+            "NPS",     "{nps} / {nps-max}",
+            "Polyphony", "{plph} / {plph-max}",
+            "BPM",     "{bpm}",
+            "PPQN",    "{ppqn}",
+        };
+        ImGui::TextDisabled("Usable tokens (current / total / remaining where shown):");
+        ImGui::Spacing();
+        if (ImGui::BeginTable("##stats", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
+            for (const char* const* row = k_stats; row < k_stats + sizeof(k_stats) / sizeof(k_stats[0]); row += 2) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(row[0]);
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(row[1]);
+            }
+            ImGui::EndTable();
+        }
+        ImGui::Spacing();
+        ImGui::TextDisabled("{cc*} needs 'Count CC events' enabled.");
+        if (ImGui::Button("Close", ImVec2(120, 0)))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
     {
         bool cfg_dialog_active = g_app.dialog_busy.load();
         if (cfg_dialog_active) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
@@ -567,6 +602,22 @@ static void draw_frame(GLFWwindow* window) {
     if (ImGui::InputDouble("##fps", &fps_input, 0, 0, "%.1f")) {
         if (fps_input > 0) { g_ui.s.fps = fps_input; mark_globals_dirty(); }
     }
+
+    ImGui::Text("Threads");
+    ImGui::SameLine(120);
+    ImGui::SetNextItemWidth(120);
+    int thr_input = g_ui.s.ffmpeg_threads;
+    if (ImGui::InputInt("##threads", &thr_input, 0, 0)) {
+        // 0 = auto (ffmpeg default); negative makes no sense.
+        if (thr_input < 0) thr_input = 0;
+        if (thr_input > 64) thr_input = 64;
+        if (thr_input != g_ui.s.ffmpeg_threads) {
+            g_ui.s.ffmpeg_threads = thr_input;
+            mark_globals_dirty();
+        }
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Encoder threads for ffmpeg. 0 = auto (recommended).\nApplies at render time.");
 
     ImGui::Spacing();
     ImGui::Text("Output Path");
@@ -760,6 +811,7 @@ static void draw_frame(GLFWwindow* window) {
             rs.height = g_app.vid_height;
             rs.fps = g_app.fps;
             rs.total_duration = g_app.total_duration + g_app.start_delay;
+            rs.ffmpeg_threads = g_ui.s.ffmpeg_threads;
             rs.bg_color_aabbggrr = g_app.bg_colour_ass;
             g_app.done = false;
             g_app.log_lines.clear();
@@ -1085,6 +1137,7 @@ int main() {
     g_ui.s.cc_stats = g_ui.globals.cc_stats;
     g_ui.s.vel0_note_off = g_ui.globals.vel0_note_off;
     g_ui.s.start_delay = g_ui.globals.start_delay;
+    g_ui.s.ffmpeg_threads = g_ui.globals.ffmpeg_threads;
 
     // Refresh the variant cache for the bootstrapped family.
     g_ui.variants_for = g_ui.s.font_family;

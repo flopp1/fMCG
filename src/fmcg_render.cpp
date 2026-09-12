@@ -50,7 +50,8 @@ std::vector<std::string> ffmpeg_args(const std::string& output_video,
                                      int width, int height, double fps,
                                      double total_duration,
                                      const std::string& bg_color_ass,
-                                     bool progress_to_stdout) {
+                                     bool progress_to_stdout,
+                                     int threads) {
     std::string out_fwd = output_video;
     std::replace(out_fwd.begin(), out_fwd.end(), '\\', '/');
 
@@ -63,6 +64,9 @@ std::vector<std::string> ffmpeg_args(const std::string& output_video,
                                                 + ":d=" + std::to_string(total_duration));
     a.push_back("-vf");           a.push_back("subtitles=temp_stats.ass");
     a.push_back("-c:v");          a.push_back("libx264");
+    if (threads > 0) {
+        a.push_back("-threads");  a.push_back(std::to_string(threads));
+    }
     a.push_back("-pix_fmt");      a.push_back("yuv420p");
     if (progress_to_stdout) {
         a.push_back("-progress"); a.push_back("pipe:1");

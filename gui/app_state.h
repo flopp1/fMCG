@@ -39,6 +39,7 @@ struct GuiSettings {
     int         pos_x = 30;
     int         pos_y = 30;
     bool        vel0_note_off = true;
+    int         ffmpeg_threads = 0;   // 0 = ffmpeg auto-selects (no -threads flag)
     std::string text_color_aabbggrr = "&H00FFFFFF";
     std::string bg_color_aabbggrr = "&H00000000";
 };
@@ -50,6 +51,7 @@ struct RenderSettings {
     std::string midi_stem;
     int width, height;
     double fps, total_duration;
+    int ffmpeg_threads = 0;           // 0 = ffmpeg auto-selects (no -threads flag)
     std::string bg_color_aabbggrr = "&H00000000";
 };
 
