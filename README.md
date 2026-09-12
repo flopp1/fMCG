@@ -60,7 +60,16 @@ The same applies to everything else bundled in this DLL: zlib (zlib licence), bz
 
 So a shareable release is just: `fMCG_gui.exe` + `libarchive.dll` + a licence notice file — the user still supplies FFmpeg themselves (it's GPL on Windows, so it should never be merged into your own distribution anyway; instructing users to install it is the standard and compliant approach).
 
-Merging the DLL into a single-file exe is technically possible (statically linking libarchive, or embedding and self-extracting the DLL), but not worth it here: static linking drags in the whole MinGW CRT/toolchain dance that the li-ruijie prebuilt package explicitly doesn't support (see `vendor/README.txt`), and self-extract tricks trip antivirus heuristics. Ship the two files.
+`THIRD_PARTY_LICENSES.txt` in the repo root is the ready-made notices file covering everything shipped in the binary and the DLL.
+
+**Making a release zip** — one command:
+
+```bat
+release.bat            :: -> dist\fMCG-windows\ and dist\fMCG-windows.zip
+release.bat v1.2       :: -> dist\fMCG-v1.2-windows\ ... (name suffix)
+```
+
+The script builds first (so the exe is current), assembles the folder with `fMCG_gui.exe`, `libarchive.dll`, `THIRD_PARTY_LICENSES.txt` and `README.md`, verifies nothing is missing, and zips it via PowerShell. On Linux/macOS the equivalent is `make release` → `dist/fMCG-linux.tar.gz`.
 
 ## Usage
 

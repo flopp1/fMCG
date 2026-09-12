@@ -8,10 +8,11 @@ fMCG
 test_harness
 test_newopts
 
-# --- third-party dependencies (populated by bootstrap.bat / make get-imgui) --
+# --- third-party dependencies (populated by bootstrap.bat / submodule) --------
 vendor/
 build_cache/
 lib/
+dist/
 
 # --- runtime artifacts -------------------------------------------------------
 libarchive.dll

@@ -17,7 +17,8 @@
 # Targets:
 #   make              build ./fMCG_gui (default)
 #   make run          build and launch the GUI
-#   make test         build and run the formatting checks (test/)
+#   make test         build and run both test suites (test/)
+#   make release      build + test + package dist/fMCG-linux.tar.gz
 #   make clean
 
 CXX      ?= g++
@@ -80,7 +81,7 @@ ALL_CFLAGS := $(CXXFLAGS) $(GLFW_CFLAGS) $(ARCH_CFLAGS) $(IMGUI_CFLAGS)
 ALL_LIBS   := $(GLFW_LIBS) $(ARCH_LIBS) $(GL_LDLIBS) -lpthread
 
 # 'all' must stay the FIRST target -- GNU Make treats it as the default.
-.PHONY: all run test clean
+.PHONY: all run test release clean
 
 all: fMCG_gui
 
@@ -100,4 +101,11 @@ test/test_harness: test/test_harness.cpp fMCG_core.h
 	$(CXX) $(CXXFLAGS) -o $@ test/test_harness.cpp $(ARCH_CFLAGS) $(LDFLAGS) $(ARCH_LIBS) -lpthread
 
 clean:
-	rm -f fMCG_gui test/test_newopts test/test_harness
+	rm -rf fMCG_gui test/test_newopts test/test_harness dist
+
+# Assemble a ready-to-share release: binary + licence notices + README.
+release: all test
+	@mkdir -p dist/fMCG-linux
+	cp fMCG_gui THIRD_PARTY_LICENSES.txt README.md dist/fMCG-linux/
+	tar -czf dist/fMCG-linux.tar.gz -C dist fMCG-linux
+	@echo "Release ready: dist/fMCG-linux.tar.gz" test/test_harness
