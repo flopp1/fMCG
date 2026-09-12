@@ -304,6 +304,7 @@ struct TickData {
     uint64_t total_ons = 0;
     size_t ntracks = 0;
     size_t desync_tracks = 0;
+    uint64_t total_events_seen = 0;   // every event walked (ons+offs+CC+meta), matches live counter
 
     void ensure(uint64_t t) {
         if (t >= dense_ons.size()) {
@@ -466,6 +467,7 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
 
     // Final progress ping so elapsed/ev-per-s cover the whole scan.
     ping();
+    td.total_events_seen = ev_total + ev_count;   // identical metric to the live pings
     return true;
 }
 
@@ -610,7 +612,7 @@ std::vector<FrameStats> process_streaming(
         // Processing statistics.
         const double t_scan_s   = std::chrono::duration<double>(t_sweep - t_scan).count();
         const double t_sweep_s  = std::chrono::duration<double>(clock::now() - t_sweep).count();
-        const uint64_t nev = td.total_ons + td.ntracks + td.total_cc;   // note-ons + EOT markers + CC
+        const uint64_t nev = td.total_events_seen;   // all events walked, same as the live counter
         auto rate = [](uint64_t n, double s) {
             return (s > 0.0) ? (double)n / s : 0.0;
         };
