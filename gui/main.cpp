@@ -855,10 +855,10 @@ static void draw_frame(GLFWwindow* window) {
             if (g_app.scan_active && !g_app.render_active)
                 overlay = g_app.compose_scan_line();
         }
-        char pct[32];
+        char pct[48];
         float spd = g_app.render_speed.load();
         if (g_app.render_active && spd > 0.0f)
-            snprintf(pct, sizeof(pct), "%d%%  (%.2fx)", (int)(p * 100), spd);
+            snprintf(pct, sizeof(pct), "%d%%  (%.2fx speed)", (int)(p * 100), spd);
         else
             snprintf(pct, sizeof(pct), "%d%%", (int)(p * 100));
         ImGui::ProgressBar(p, ImVec2(-1, 0), overlay.empty() ? pct : overlay.c_str());
@@ -995,13 +995,16 @@ static void draw_frame(GLFWwindow* window) {
     if (g_app.done.load() && !g_app.processed.load() && !g_app.busy.load()) {
         const int op = g_app.op_result.load();
         if (op == AppState::OP_RENDER_OK) {
-            uint64_t fsize = 0;
-            {
-                std::ifstream rf(g_app.result_path, std::ios::binary | std::ios::ate);
-                if (rf.is_open()) fsize = (uint64_t)rf.tellg();
-            }
-            ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Rendered: %s (%s speed)",
-                g_app.result_path.c_str(), format_file_size(fsize).c_str());
+            // Effective speed: video length divided by the render's wall-clock
+            // time (>1x = faster than realtime). ffmpeg's own instantaneous
+            // speed is shown live on the progress bar during the render.
+            const double wc = g_app.render_wallclock.load();
+            const double speed = (wc > 0.0 && g_app.total_duration > 0.0)
+                               ? (g_app.total_duration + g_app.start_delay) / wc : 0.0;
+            char spd_txt[32] = "";
+            if (speed > 0.0) snprintf(spd_txt, sizeof(spd_txt), " (%.2fx speed)", speed);
+            ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Rendered: %s%s",
+                g_app.result_path.c_str(), spd_txt);
         } else if (op == AppState::OP_RENDER_FAIL) {
             ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Render failed. Check log.");
         } else if (op == AppState::OP_RENDER_CANCELLED) {

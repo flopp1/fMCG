@@ -441,7 +441,9 @@ void run_render(RenderSettings s) {
                 g_app.progress.store(1.0f);
             }
         };
+        const auto t_ff_start = std::chrono::steady_clock::now();
         int ret = spawn_ffmpeg_cancellable(dir_cd, args, progress_file, on_line);
+        g_app.render_wallclock.store(std::chrono::duration<double>(std::chrono::steady_clock::now() - t_ff_start).count());
         if (g_app.cancel.load()) {
             g_app.gui_log("Rendering cancelled.", false);
             if (!progress_file.empty()) std::remove(progress_file.c_str());

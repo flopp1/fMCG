@@ -61,6 +61,7 @@ struct AppState {
     std::vector<std::string>  log_lines;
     std::atomic<float>        progress{0.0f};
     std::atomic<float>        render_speed{0.0f};   // ffmpeg-reported encode speed (x realtime), 0 = unknown
+    std::atomic<double>       render_wallclock{0.0};// render wall-clock seconds (for effective speed)
     std::atomic<bool>         busy{false};
     std::atomic<bool>         done{false};
     std::atomic<bool>         cancel{false};   // user-requested abort of process/render
