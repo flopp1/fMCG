@@ -261,7 +261,7 @@ int main() {
         // --- Pattern section: everything below (until Global) is saved under
         // --- the selected pattern --------------------------------------------
         ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f),
-            "Pattern \u2014 the overlay look, saved with the selected pattern");
+            "Pattern - the overlay look, saved with the selected pattern");
         ImGui::Spacing();
         {
             refresh_pattern_list();
@@ -554,7 +554,7 @@ int main() {
         ImGui::Separator();
         ImGui::Spacing();
         ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f),
-            "Global settings \u2014 autosaved, not part of any pattern");
+            "Global settings - autosaved, not part of any pattern");
         ImGui::Spacing();
 
         ImGui::Text("Start delay (seconds): ");

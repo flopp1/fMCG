@@ -308,7 +308,7 @@ void render_preview_popup() {
         // Render text
         if (!g_app.frames_data.empty() && total_len > 0) {
             // Start-delay lead-in: stats all at zero, current-time fields run
-            // negative and count up to 0 — same text the video shows there.
+            // negative and count up to 0, same text the video shows there.
             if (g_app.preview_time < g_app.start_delay) {
                 ImGui::EndChild();
                 ImGui::PushStyleColor(ImGuiCol_Text, ass_colour_to_imgui(g_app.text_colour_ass));
