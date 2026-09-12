@@ -47,6 +47,21 @@ Dear ImGui is a git submodule compiled from `vendor/imgui` (no standard distro p
 
 Rendering uses **FFmpeg** (the `subtitles` filter, i.e. a build with libass) and must be on PATH: `ffmpeg -version`. Any recent [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) full build works on Windows.
 
+## Distributing Windows binaries
+
+A built `fMCG_gui.exe` links libarchive **dynamically** and needs `libarchive.dll` sitting in the same folder (the build copies it there; `bootstrap.bat` fetches it into `vendor\libarchive\bin\`). Without it the exe starts but fails the moment it touches a MIDI file.
+
+**You may redistribute `libarchive.dll` with your build.** It is [BSD-3-Clause](https://opensource.org/license/bsd-3-clause) licensed, which explicitly permits redistribution in binary form, in commercial and non-commercial products alike. The only obligations are:
+
+- include the BSD-3 copyright/licence notice for libarchive (and its embedded components) in your distribution — e.g. a `THIRD_PARTY_LICENSES.txt` shipped alongside the exe;
+- do not use the authors' names to promote derived products (the non-endorsement clause).
+
+The same applies to everything else bundled in this DLL: zlib (zlib licence), bzip2 (BSD-style), xz/LZMA (public domain / 0BSD), zstd (BSD), LZ4 (BSD/MIT), libxml2 (MIT) and libiconv (LGPL — dynamically linked inside the DLL, which LGPL permits). ImGui itself is MIT and GLFW's static import is zlib-style; neither adds obligations beyond the licence notice.
+
+So a shareable release is just: `fMCG_gui.exe` + `libarchive.dll` + a licence notice file — the user still supplies FFmpeg themselves (it's GPL on Windows, so it should never be merged into your own distribution anyway; instructing users to install it is the standard and compliant approach).
+
+Merging the DLL into a single-file exe is technically possible (statically linking libarchive, or embedding and self-extracting the DLL), but not worth it here: static linking drags in the whole MinGW CRT/toolchain dance that the li-ruijie prebuilt package explicitly doesn't support (see `vendor/README.txt`), and self-extract tricks trip antivirus heuristics. Ship the two files.
+
 ## Usage
 
 1. Pick a MIDI file (plain `.mid`, or `.7z`/`.xz`/`.rar`/`.rar.xz` containing one).
