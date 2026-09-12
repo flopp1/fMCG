@@ -654,7 +654,6 @@ static void draw_frame(GLFWwindow* window) {
         // the current pattern with all stats at zero (and, during the start
         // delay, the negative countdown). While a render runs it reopens
         // the live render-progress view.
-        bool has_data = g_app.processed.load();
         bool can_preview = (!g_app.busy.load()) || g_app.render_active;
         bool preview_starts_render_view = g_app.render_active && g_app.busy.load();
         g_app.preview_watching_render = preview_starts_render_view;
@@ -694,7 +693,8 @@ static void draw_frame(GLFWwindow* window) {
                 g_app.preview_font_reload = true;
             }
             g_app.show_preview = true;
-            g_app.preview_playing = has_data && !preview_starts_render_view;
+            // Auto-play on open (pattern-only or full preview alike).
+            g_app.preview_playing = !preview_starts_render_view;
             g_app.preview_start_time = glfwGetTime();
             g_app.preview_start_pos = g_app.preview_time;
             ImGui::OpenPopup("Preview");
@@ -706,6 +706,7 @@ static void draw_frame(GLFWwindow* window) {
         if (ImGui::Button("Render Video", ImVec2(140, 30)) && can_render) {
             g_app.show_preview = true;
             g_app.render_active = true;
+            g_app.render_watch_done = false;        // fresh render, fresh watch
             g_app.preview_watching_render = true;   // popup closes when render ends
             g_app.preview_playing = false;
             g_app.preview_time = 0.0;
@@ -778,6 +779,15 @@ static void draw_frame(GLFWwindow* window) {
             "Processed data will be discarded; the file must be re-processed to render.");
         ImGui::Spacing();
         if (ImGui::Button("Unload", ImVec2(140, 0))) {
+            // Remove the generated ASS next to the (former) MIDI, plus the
+            // temp_stats.ass copy ffmpeg consumed -- a failed render leaves
+            // both behind by design, so unload is the last chance to sweep.
+            if (!g_app.ass_path.empty()) {
+                std::remove(g_app.ass_path.c_str());
+                size_t sep = g_app.ass_path.find_last_of("/\\");
+                if (sep != std::string::npos)
+                    std::remove((g_app.ass_path.substr(0, sep + 1) + "temp_stats.ass").c_str());
+            }
             g_ui.midi_buf[0] = '\0';
             g_ui.output_buf[0] = '\0';
             g_ui.s.midi_file.clear();
@@ -797,6 +807,8 @@ static void draw_frame(GLFWwindow* window) {
             g_app.preview_time = 0.0;
             g_app.show_preview = false;
             g_app.render_active = false;
+            g_app.preview_watching_render = false;
+            g_app.render_watch_done = false;
             g_app.log_lines.clear();
             g_app.gui_log("File unloaded.", false);
             ImGui::CloseCurrentPopup();

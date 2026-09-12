@@ -93,6 +93,8 @@ void render_pattern_only_popup() {
     if (popup_w < 480) popup_w = 480;
     if (popup_h < 320) popup_h = 320;
     double total_len = 10.0;
+    double total_len_song = total_len - g_app.start_delay;   // MIDI-time span
+    if (total_len_song < 0.0) total_len_song = 0.0;
 
     ImGui::SetNextWindowSize(ImVec2(popup_w, popup_h), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2((display.x - popup_w) / 2, (display.y - popup_h) / 2), ImGuiCond_FirstUseEver);
@@ -108,6 +110,11 @@ void render_pattern_only_popup() {
                 g_app.preview_playing = false;
             }
         }
+
+        // Slider shows MIDI (song) time: negative during the start-delay
+        // countdown, crossing 0 when the song begins -- the same time base
+        // the stats themselves display, so bar and text never disagree.
+        float song_t = (float)(g_app.preview_time - g_app.start_delay);
 
         ImGui::BeginChild("pattern_only", ImVec2(0, ImGui::GetContentRegionAvail().y - 34),
                           ImGuiChildFlags_None,
@@ -210,11 +217,11 @@ void render_pattern_only_popup() {
         ImGui::EndChild();
 
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 120);
-        float tp = (float)g_app.preview_time;
-        if (ImGui::SliderFloat("##ptime", &tp, 0.0f, (float)total_len, "%.2fs")) {
-            g_app.preview_time = tp;
+        float tp = song_t;
+        if (ImGui::SliderFloat("##ptime", &tp, (float)-g_app.start_delay, (float)total_len_song, "%.2fs")) {
+            g_app.preview_time = (double)tp + g_app.start_delay;
             if (g_app.preview_playing) {
-                g_app.preview_start_pos = tp;
+                g_app.preview_start_pos = g_app.preview_time;
                 g_app.preview_start_time = glfwGetTime();
             }
         }
@@ -251,6 +258,8 @@ void render_preview_popup() {
 
     // Compute popup size matching output aspect ratio
     double total_len = g_app.total_duration + g_app.start_delay;   // includes black lead-in
+    double total_len_song = total_len - g_app.start_delay;         // MIDI-time span
+    if (total_len_song < 0.0) total_len_song = 0.0;
     float max_w = display.x * 0.8f;
     float max_h = display.y * 0.85f;
     float popup_w, popup_h;
@@ -424,20 +433,27 @@ void render_preview_popup() {
         } else {
             // Render finished: a popup opened to watch the render closes
             // itself; one opened via Preview stays as a regular timeline view.
-            if (g_app.render_active && !g_app.busy.load()) {
-                g_app.render_active = false;
+            // finish_op() latches render_watch_done BEFORE clearing
+            // render_active/busy, so this never races: those atomics may
+            // already be false by the frame after completion, but the latch
+            // survives until consumed here.
+            if (g_app.render_watch_done.exchange(false)) {
                 g_app.preview_playing = false;
                 if (g_app.preview_watching_render) {
                     g_app.preview_watching_render = false;
                     ImGui::CloseCurrentPopup();
                 }
             }
+            // Scrub bar in MIDI (song) time: negative during the start-delay
+            // countdown, 0 at the song's first frame -- matching the stats'
+            // own time fields.
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 120);
-            float tp = (float)g_app.preview_time;
-            if (ImGui::SliderFloat("##time", &tp, 0.0f, (float)total_len, "%.2fs")) {
-                g_app.preview_time = tp;
+            float song_t = (float)(g_app.preview_time - g_app.start_delay);
+            float tp = song_t;
+            if (ImGui::SliderFloat("##time", &tp, (float)-g_app.start_delay, (float)total_len_song, "%.2fs")) {
+                g_app.preview_time = (double)tp + g_app.start_delay;
                 if (g_app.preview_playing) {
-                    g_app.preview_start_pos = tp;
+                    g_app.preview_start_pos = g_app.preview_time;
                     g_app.preview_start_time = glfwGetTime();
                 }
             }

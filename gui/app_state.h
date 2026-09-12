@@ -103,6 +103,11 @@ struct AppState {
     // Preview while a render runs). Such a popup closes itself when the render
     // ends instead of degrading into a regular timeline preview.
     bool                      preview_watching_render{false};
+    // One-shot latch set by the render worker when the render finishes (before
+    // finish_op clears render_active/busy, whose simultaneous write would
+    // otherwise race away the "render just ended" window the popup watches
+    // for). The preview consumes it to close a watching popup.
+    std::atomic<bool>         render_watch_done{false};
     bool                      preview_playing{false};
     double                    preview_time{0.0};
     double                    start_delay{0.0};   // black lead-in before the song starts

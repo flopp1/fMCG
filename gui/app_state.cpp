@@ -78,6 +78,7 @@ void AppState::finish_op() {
         std::lock_guard<std::mutex> lock(scan_mutex);
         scan_active = false;
     }
+    if (render_active) render_watch_done = true;   // popup closes on next frame
     render_active = false;
     progress.store(1.0f);
     busy = false;
