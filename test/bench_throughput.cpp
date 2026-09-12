@@ -11,7 +11,10 @@
 // against real-world runs: if a real compressed file lands far below these
 // numbers, the bottleneck is decode/I-O, not the parser.
 //
-// Usage: bench_throughput [events] [outfile]
+// Usage: bench_throughput [events] [outfile] [dense|spread]
+//   dense : all events at tick 0 (measures pure parse ceiling)
+//   spread: delta 1 per event, ticks grow with the stream (adds the
+//           per-tick array cache/TLB cost of a real black MIDI)
 #include "../fMCG_core.h"
 #include <cstdio>
 #include <cstdlib>
@@ -33,6 +36,7 @@ static void write_u16(std::vector<uint8_t>& v, uint16_t x) {
 int main(int argc, char** argv) {
     const uint64_t target_events = (argc > 1) ? std::strtoull(argv[1], nullptr, 10) : 50000000ull;
     const char* out_path = (argc > 2) ? argv[2] : "_bench.mid";
+    const bool spread = (argc > 3 && std::string(argv[3]) == "spread");
 
     // ---- generate a dense, valid MIDI ------------------------------------
     // One track, every event preceded by a zero delta (densest legal timing),
@@ -53,11 +57,13 @@ int main(int argc, char** argv) {
     // track chunk placeholder
     mid.insert(mid.end(), {'M','T','r','k'});
     write_u32(mid, (uint32_t)(pairs * 8 + 4));
+    const uint8_t dl_on  = spread ? 1 : 0;   // spread: each event advances one tick
+    const uint8_t dl_off = spread ? 1 : 0;
     uint8_t note = 0, ch = 0;
     for (uint64_t i = 0; i < pairs; ++i) {
-        mid.push_back(0x00);                       // delta 0
+        mid.push_back(dl_on);
         mid.push_back(0x90 | ch); mid.push_back(note); mid.push_back(100);
-        mid.push_back(0x00);                       // delta 0
+        mid.push_back(dl_off);
         mid.push_back(0x80 | ch); mid.push_back(note); mid.push_back(0x00);
         note = (uint8_t)((note + 1) & 0x7F);
         if (((i + 1) & 0x7F) == 0) ch = (uint8_t)((ch + 1) & 0x0F);

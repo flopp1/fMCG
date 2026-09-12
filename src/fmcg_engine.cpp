@@ -469,7 +469,7 @@ public:
 
 class ByteStream {
     DataSrc& src;
-    static constexpr size_t CAP = 1 << 16;
+    static constexpr size_t CAP = 1 << 19;   // 512 KB: fewer fill() round-trips (was 64 KB)
     uint8_t data[CAP];
     size_t lo = 0, hi = 0;
     size_t limit_remaining = (size_t)-1;
@@ -507,6 +507,13 @@ public:
         if (lo == hi) { fill(); if (lo == hi) return -1; }
         limit_remaining--;
         return data[lo++];
+    }
+    // Non-consuming byte read: for running-status lookahead. Same bounds
+    // checks as get() but never advances -- no skip_back_one() round-trip.
+    int peek() {
+        if (limit_remaining == 0) return -1;
+        if (lo == hi) { fill(); if (lo == hi) return -1; }
+        return data[lo];
     }
     void skip_back_one() { if (lo > 0 && limit_remaining < limit_total) { lo--; limit_remaining++; } }
 
@@ -555,8 +562,13 @@ public:
 // ---- accumulation targets ---------------------------------------------------
 
 struct TickData {
-    std::vector<uint32_t> dense_ons;     // per-tick note-on counts (>=2^31 on ONE tick is impossible in practice: a note-on is >=2 bytes, so it needs ~4 GB of pure 0x9x pairs on a single tick)
-    std::vector<int32_t>  dense_deltas;  // per-tick polyphony deltas (+1 on, -1 off)
+    // One interleaved cell per tick: a note-on touches ons and delta of the
+    // SAME tick, so keeping them in one struct halves the cache/TLB misses
+    // versus two separate multi-GB arrays (the sweep then reads each tick's
+    // whole cell in one line too).
+    struct TickCell { uint32_t ons; int32_t delta; };
+    static_assert(sizeof(TickCell) == 8, "TickCell must stay tightly packed");
+    std::vector<TickCell> cells;         // per-tick (>=2^31 ons on ONE tick is impossible in practice: a note-on is >=2 bytes, so it needs ~4 GB of pure 0x9x pairs on a single tick)
     uint64_t max_tick = 0;
     uint64_t total_ons = 0;
     size_t ntracks = 0;
@@ -564,33 +576,31 @@ struct TickData {
     uint64_t total_events_seen = 0;   // every event walked (ons+offs+CC+meta), matches live counter
 
     void ensure(uint64_t t) {
-        if (t >= dense_ons.size()) {
-            size_t n = dense_ons.size();
+        if (t >= cells.size()) {
+            size_t n = cells.size();
             if (n == 0) n = 4096;
             while (n <= t) n *= 2;
-            dense_ons.resize(n, 0);
-            dense_deltas.resize(n, 0);
+            cells.resize(n, TickCell{0, 0});
         }
     }
-    void note_on(uint64_t t) { ensure(t); dense_ons[t]++; dense_deltas[t]++; total_ons++; }
-    void delta_at(uint64_t t, int64_t d) { ensure(t); dense_deltas[t] += (int32_t)d; }
+    void note_on(uint64_t t) { ensure(t); cells[t].ons++; cells[t].delta++; total_ons++; }
+    void delta_at(uint64_t t, int64_t d) { ensure(t); cells[t].delta += (int32_t)d; }
     // CC accumulation (only touched when CC stats are enabled).
     std::vector<uint32_t> dense_cc;      // per-tick control-change counts
     uint64_t total_cc = 0;
     void cc_at(uint64_t t) {
         ensure(t);
-        if (dense_cc.size() < dense_ons.size()) dense_cc.resize(dense_ons.size(), 0);
+        if (dense_cc.size() < cells.size()) dense_cc.resize(cells.size(), 0);
         dense_cc[t]++;
         total_cc++;
     }
     // Current footprint of the dense arrays (bytes).
     size_t memory_bytes() const {
-        return dense_ons.size() * (sizeof(uint32_t) + sizeof(int32_t))
+        return cells.size() * sizeof(TickCell)
              + dense_cc.size() * sizeof(uint32_t);
     }
     void reset() {
-        std::vector<uint32_t>().swap(dense_ons);
-        std::vector<int32_t>().swap(dense_deltas);
+        std::vector<TickCell>().swap(cells);
         std::vector<uint32_t>().swap(dense_cc);
         max_tick = 0; total_ons = 0; ntracks = 0; desync_tracks = 0;
         total_events_seen = 0; total_cc = 0;
@@ -683,35 +693,39 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
                 if (choice == 1) throw SpecAbort{};   // caller restarts in TEMPO_ONLY mode
                 spec_warned = true;              // 0 (or absent cb): ask only once
             }
-            int st = bs.get();
+            // Peek the next byte: if it is a data byte, this event uses the
+            // held running status and the byte stays in the stream (it will
+            // be re-read below as data). No unread round-trip needed.
+            int st = bs.peek();
             if (st < 0) break;
             uint8_t status;
             if (st < 0x80) {
-                // Running status: re-examine the data byte (mirrors the parallel
-                // engine, including the running==0 fall-through that consumes
-                // nothing further).
-                bs.skip_back_one();
                 status = running;
             } else {
+                bs.get();   // consume the status byte
                 status = (uint8_t)st;
                 running = (status < 0xF0) ? status : 0;
             }
 
-            if (status == 0xFF) {
-                int type = bs.get();
-                if (type < 0) break;
-                uint64_t mlen = bs.vlq();
-                if (type == 0x51 && mlen == 3 && bs.avail() >= 3) {
-                    uint32_t us = ((uint32_t)bs.get() << 16) | ((uint32_t)bs.get() << 8) | (uint32_t)bs.get();
-                    if (us > 0) tempo_raw.push_back({tick, 0.0, us, 60000000.0 / us});
-                } else {
-                    bs.skip((size_t)mlen);
+            if (status >= 0xF0) {
+                // Rare system/meta family, kept out of the channel hot path.
+                if (status == 0xFF) {
+                    int type = bs.get();
+                    if (type < 0) break;
+                    uint64_t mlen = bs.vlq();
+                    if (type == 0x51 && mlen == 3 && bs.avail() >= 3) {
+                        uint32_t us = ((uint32_t)bs.get() << 16) | ((uint32_t)bs.get() << 8) | (uint32_t)bs.get();
+                        if (us > 0) tempo_raw.push_back({tick, 0.0, us, 60000000.0 / us});
+                    } else {
+                        bs.skip((size_t)mlen);
+                    }
+                } else if (status == 0xF0 || status == 0xF7) {
+                    bs.skip((size_t)bs.vlq());
+                } else if (status >= 0xF1 && status <= 0xF6) {
+                    if (status == 0xF1 || status == 0xF3) bs.skip(1);
+                    else if (status == 0xF2) bs.skip(2);
                 }
-            } else if (status == 0xF0 || status == 0xF7) {
-                bs.skip((size_t)bs.vlq());
-            } else if (status >= 0xF1 && status <= 0xF6) {
-                if (status == 0xF1 || status == 0xF3) bs.skip(1);
-                else if (status == 0xF2) bs.skip(2);
+                // status < 0x80 handled below (running==0 fall-through)
             } else if (status >= 0x80) {
                 uint8_t et = status & 0xF0;
                 int n1 = bs.get();
@@ -797,14 +811,11 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
     std::vector<TempoChange> tm = build_tempo_map(tempo_raw, ppqn);
 
     const uint64_t nticks = td.max_tick + 1;
-    std::vector<uint32_t>& ons = td.dense_ons;
-    std::vector<int32_t>& deltas = td.dense_deltas;
+    std::vector<TickData::TickCell>& cells = td.cells;
     // Track tails can extend past the last written tick; size arrays to cover
     // the whole tick span (also covers the no-events-at-all case).
-    if (ons.size() < nticks) {
-        ons.resize((size_t)nticks, 0);
-        deltas.resize((size_t)nticks, 0);
-    }
+    if (cells.size() < nticks)
+        cells.resize((size_t)nticks, TickData::TickCell{0, 0});
     if (with_cc && td.dense_cc.size() < nticks)
         td.dense_cc.resize((size_t)nticks, 0);   // dense_cc is sized to last-written tick only
     const double inv = 1.0 / ((double)ppqn * 1e6);
@@ -830,8 +841,9 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
     };
 
     for (uint64_t t = 0; t < nticks; ++t) {
-        uint64_t o = ons[(size_t)t];
-        int64_t  d = deltas[(size_t)t];
+        const TickData::TickCell cell = cells[(size_t)t];
+        uint64_t o = cell.ons;
+        int64_t  d = cell.delta;
         uint64_t c = with_cc ? td.dense_cc[(size_t)t] : 0;
         if (o == 0 && d == 0) {
             if (c) cum_cc += c;   // CC-only tick: accumulate, no frame needed
@@ -942,11 +954,30 @@ bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
     const double inv = 1.0 / ((double)ppqn * 1e6);
     size_t conv = 0;   // tempo anchor walked forward with the events
 
-    // Maps a tick to its frame index using the anchor at tm[conv]; conv must
-    // already cover the tick (advanced below in lockstep with the event walk).
+    // Segment state hoisted out of the hot path: the tempo segment changes
+    // rarely, so its fields are loaded into locals only when conv advances
+    // (instead of re-reading tm[conv] members per event). The frame formula
+    // is kept character-for-character identical to the original
+    //   sec = tm[conv].time_sec + (t - tm[conv].tick)*us*inv; f = sec*fps
+    // so results are bit-identical and frame boundaries cannot shift.
+    double seg_time = tm.empty() ? 0.0 : tm[0].time_sec;
+    double seg_us   = tm.empty() ? 0.0 : (double)tm[0].us_per_quarter;
+    uint64_t tick_base = tm.empty() ? 0ull : tm[0].tick;
+
+    auto advance_conv = [&](uint64_t t) {
+        bool moved = false;
+        while (conv + 1 < tm.size() && tm[conv + 1].tick <= t) { ++conv; moved = true; }
+        if (moved) {
+            seg_time  = tm[conv].time_sec;
+            seg_us    = (double)tm[conv].us_per_quarter;
+            tick_base = tm[conv].tick;
+        }
+    };
+
+    // Maps a tick to its frame index using the current segment; advance_conv
+    // must already have covered the tick (called in lockstep with the walk).
     auto frame_of = [&](uint64_t t) -> size_t {
-        const double sec = tm[conv].time_sec
-                         + (double)(t - tm[conv].tick) * (double)tm[conv].us_per_quarter * inv;
+        const double sec = seg_time + (double)(t - tick_base) * seg_us * inv;
         double f = sec * fps;
         return f <= 0.0 ? 0 : (size_t)f;
     };
@@ -962,27 +993,35 @@ bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
         uint64_t tick = 0;
         uint8_t running = 0;
         uint32_t refcount[16][128] = {};
-        conv = 0;   // tick restarts at 0 for each track: rewind the tempo anchor too
+        // Tick restarts at 0 for each track: rewind the tempo anchor and its
+        // hoisted segment state with it.
+        conv = 0;
+        seg_time  = tm.empty() ? 0.0 : tm[0].time_sec;
+        seg_us    = tm.empty() ? 0.0 : (double)tm[0].us_per_quarter;
+        tick_base = tm.empty() ? 0ull : tm[0].tick;
 
         while (bs.at_end() == false) {
             tick += bs.vlq();
-            while (conv + 1 < tm.size() && tm[conv + 1].tick <= tick) conv++;
-            int st = bs.get();
+            advance_conv(tick);
+            // Peek-based running-status handling (mirrors scan_image).
+            int st = bs.peek();
             if (st < 0) break;
             uint8_t status;
-            if (st < 0x80) { bs.skip_back_one(); status = running; }
-            else { status = (uint8_t)st; running = (status < 0xF0) ? status : 0; }
+            if (st < 0x80) { status = running; }
+            else { bs.get(); status = (uint8_t)st; running = (status < 0xF0) ? status : 0; }
 
-            if (status == 0xFF) {
-                int type = bs.get();
-                if (type < 0) break;
-                uint64_t mlen = bs.vlq();
-                bs.skip((size_t)mlen);   // tempo map is already complete
-            } else if (status == 0xF0 || status == 0xF7) {
-                bs.skip((size_t)bs.vlq());
-            } else if (status >= 0xF1 && status <= 0xF6) {
-                if (status == 0xF1 || status == 0xF3) bs.skip(1);
-                else if (status == 0xF2) bs.skip(2);
+            if (status >= 0xF0) {
+                if (status == 0xFF) {
+                    int type = bs.get();
+                    if (type < 0) break;
+                    uint64_t mlen = bs.vlq();
+                    bs.skip((size_t)mlen);   // tempo map is already complete
+                } else if (status == 0xF0 || status == 0xF7) {
+                    bs.skip((size_t)bs.vlq());
+                } else if (status >= 0xF1 && status <= 0xF6) {
+                    if (status == 0xF1 || status == 0xF3) bs.skip(1);
+                    else if (status == 0xF2) bs.skip(2);
+                }
             } else if (status >= 0x80) {
                 uint8_t et = status & 0xF0;
                 int n1e = bs.get();
