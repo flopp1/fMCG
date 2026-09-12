@@ -1,6 +1,9 @@
 import csv, sys
 
 # Row-by-row comparison of fMCG's CSV against the independent reference CSV.
+# Usage: compare_csv.py <fmcg.csv> <ref.csv>
+# The fMCG side CSV comes from test_harness's --csv mode; the reference from
+# ref_csv.py. compare_csv.py is generic enough to compare any two CSVs.
 a_path, b_path = sys.argv[1], sys.argv[2]
 a = list(csv.DictReader(open(a_path)))
 b = list(csv.DictReader(open(b_path)))

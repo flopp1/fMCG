@@ -1,7 +1,10 @@
 // Functional checks for the formatting layer: auto-padding, per-stat commas,
 // CC tokens, negative countdown times.
-#include "fMCG_core.h"
+#include "../fMCG_core.h"
 #include <cstdio>
+#include <fstream>
+#include <vector>
+#include <string>
 
 static int fails = 0;
 static void check(const char* name, const std::string& got, const std::string& want) {

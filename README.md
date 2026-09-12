@@ -105,7 +105,12 @@ During the start delay, `{sec}`/`{time}`/`{time-milli}` run from negative and co
 
 - Single sequential pass over the input; tick-space accumulation with an anchor-interpolated sweep converts events to per-frame stats in O(ticks + frames).
 - The FFmpeg invocation writes a `.bat`/shell script and renders the ASS from a fixed bare filename (`temp_stats.ass`), because ffmpeg's filter-argument parser mangles backslashes, apostrophes and colons — a user path can never be passed through `subtitles=` safely.
-- `test/` holds the regression harness (35 checks, including `.7z`/`.tar.xz` ≡ plain-parse equivalence) and forensic probes. On Linux: `make test`; on Windows, compile `test/test_harness.cpp` against `fMCG_core.h` with the libarchive import library.
+- `test/` holds two self-contained suites plus fixture tooling:
+    - `test_harness.cpp` — parse-correctness regression suite (note/poly/NPS/BPM/tempo-map checks on generated fixtures, compressed-vs-plain equivalence for `.7z`/`.tar.xz`, CC counting, vel-0 handling). Run standalone: `test_harness.exe <file.mid>` prints a parse summary; `test_harness.exe --csv` also dumps a comparison CSV.
+    - `test_newopts.cpp` — formatting-layer checks (auto-padding, per-stat commas, CC tokens, negative countdown, ASS lead-in, colour conversion).
+    - `gen_midi.py` regenerates all fixtures (run it after cloning — the binary `.mid` files are not committed).
+    - `ref_csv.py` + `compare_csv.py` diff fMCG's output against an independent Python SMF parser; `check_full_csv.py` validates invariants of a full CSV dump; `extract_tracks.py` slices tracks off huge MIDIs for spot checks.
+  On Linux/macOS: `make test` builds and runs both suites. On Windows, compile either `.cpp` against `fMCG_core.h` and link `vendor\libarchive\lib\libarchive.dll.a` (see `build.bat`'s flags); keep `libarchive.dll` beside the exe.
 
 ## License
 

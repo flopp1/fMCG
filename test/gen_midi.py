@@ -85,3 +85,21 @@ print('desync.mid written:', len(body), 'bytes')
 with open(os.path.join(out, 'notmidi.txt'), 'wb') as f:
     f.write(b'hello world, definitely not a midi file')
 print('notmidi.txt written')
+
+# Compressed fixtures for test_harness's archive-equivalence checks.
+# Regenerated whenever the tools exist (test_harness expects both present).
+import shutil, subprocess
+src = os.path.join(out, 'test.mid')
+txz = os.path.join(out, 'test.mid.tar.xz')
+sz = os.path.join(out, 'test.mid.7z')
+if shutil.which('tar'):
+    subprocess.run(['tar', 'cJf', txz, '-C', out, 'test.mid'], check=False)
+    print('test.mid.tar.xz written')
+sevenz = shutil.which('7z') or shutil.which('7za')
+if sevenz:
+    subprocess.run([sevenz, 'a', '-y', sz, src], check=False,
+                   stdout=subprocess.DEVNULL)
+    print('test.mid.7z written')
+if not (os.path.exists(txz) and os.path.exists(sz)):
+    print('NOTE: some archive fixtures missing (need tar with xz and 7z); '
+          'the archive-equivalence harness checks will fail until they exist.')

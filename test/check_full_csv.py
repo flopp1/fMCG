@@ -1,11 +1,16 @@
-# Stream-validate the FULL CSV: cumulative is monotonic, current_nps equals the
-# 60-frame (1-second) rolling window delta, peaks are nondecreasing and match
-# the running maxima, and the final cumulative equals the parser's note total.
+# Stream-validate a full CSV dump: cumulative is monotonic, current_nps equals
+# the 60-frame (1-second) rolling window delta, peaks are nondecreasing and
+# match the running maxima, and the final cumulative equals the parser's note
+# total.
+#
+# Usage: python check_full_csv.py <full.csv> [expected_total_notes]
+# (expected_total_notes is optional; when omitted the final-cumulative check
+#  just reports the value instead of asserting).
 import csv, sys
 from collections import deque
 
-path = sys.argv[1] if len(sys.argv) > 1 else "qualito_full.csv"
-expected_total = int(sys.argv[2]) if len(sys.argv) > 2 else 2317090225
+path = sys.argv[1] if len(sys.argv) > 1 else "full.csv"
+expected_total = int(sys.argv[2]) if len(sys.argv) > 2 else None
 bad = 0
 prev_cum = 0
 prev_peak_nps = 0
@@ -38,9 +43,12 @@ with open(path, newline="") as f:
         prev_peak_poly = ppoly
 
 print(f"rows={n} bad={bad}")
-print(f"final cumulative={prev_cum}  expected total_notes={expected_total}  match={prev_cum == expected_total}")
+if expected_total is not None:
+    print(f"final cumulative={prev_cum}  expected total_notes={expected_total}  match={prev_cum == expected_total}")
+else:
+    print(f"final cumulative={prev_cum}")
 print(f"max current nps={max_nps_seen} at {peak_nps_row}")
 print(f"final peak_nps={prev_peak_nps} peak_polyphony={prev_peak_poly}")
-assert bad == 0 and prev_cum == expected_total
+if bad or (expected_total is not None and prev_cum != expected_total):
+    sys.exit(1)
 print("INVARIANTS OK")
-

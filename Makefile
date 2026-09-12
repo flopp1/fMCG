@@ -90,11 +90,14 @@ fMCG_gui: fMCG_gui.cpp fMCG_core.h $(IMGUI_SOURCES)
 run: fMCG_gui
 	./fMCG_gui
 
-test: test/test_newopts
-	./test/test_newopts
+test: test/test_newopts test/test_harness
+	cd test && ./test_newopts && ./test_harness
 
 test/test_newopts: test/test_newopts.cpp fMCG_core.h
-	$(CXX) $(ALL_CFLAGS) -o $@ test/test_newopts.cpp $(LDFLAGS) $(ARCH_LIBS) -lpthread
+	$(CXX) $(CXXFLAGS) -o $@ test/test_newopts.cpp $(ARCH_CFLAGS) $(LDFLAGS) $(ARCH_LIBS) -lpthread
+
+test/test_harness: test/test_harness.cpp fMCG_core.h
+	$(CXX) $(CXXFLAGS) -o $@ test/test_harness.cpp $(ARCH_CFLAGS) $(LDFLAGS) $(ARCH_LIBS) -lpthread
 
 clean:
-	rm -f fMCG_gui test/test_newopts
+	rm -f fMCG_gui test/test_newopts test/test_harness

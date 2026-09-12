@@ -709,9 +709,9 @@ static bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
                         td.note_on(tick);
                     } else if (et == 0x90 || et == 0x80) {
                         if (refcount[ch][note] > 0) { refcount[ch][note]--; td.delta_at(tick, -1); }
+                    } else if (et == 0xB0 && count_cc) {
+                        td.cc_at(tick);   // control change: counted only when the CC stat is on
                     }
-                } else if (et == 0xB0 && count_cc) {
-                    td.cc_at(tick);   // control change: counted only when the CC stat is on
                 }
             }
             // status < 0x80 with running==0: consume nothing (matches parallel engine)
@@ -785,6 +785,8 @@ static std::vector<FrameStats> sweep_to_frames(TickData& td,
         ons.resize((size_t)nticks, 0);
         deltas.resize((size_t)nticks, 0);
     }
+    if (with_cc && td.dense_cc.size() < nticks)
+        td.dense_cc.resize((size_t)nticks, 0);   // dense_cc is sized to last-written tick only
     const double inv = 1.0 / ((double)ppqn * 1e6);
     const size_t W = (size_t)std::round(fps);
 
@@ -810,7 +812,11 @@ static std::vector<FrameStats> sweep_to_frames(TickData& td,
     for (uint64_t t = 0; t < nticks; ++t) {
         uint64_t o = ons[(size_t)t];
         int64_t  d = deltas[(size_t)t];
-        if (o == 0 && d == 0) continue;
+        uint64_t c = with_cc ? td.dense_cc[(size_t)t] : 0;
+        if (o == 0 && d == 0) {
+            if (c) cum_cc += c;   // CC-only tick: accumulate, no frame needed
+            continue;
+        }
 
         while (conv + 1 < tm.size() && tm[conv + 1].tick <= t) conv++;
         double sec = tm[conv].time_sec + (double)(t - tm[conv].tick) * (double)tm[conv].us_per_quarter * inv;
@@ -822,7 +828,7 @@ static std::vector<FrameStats> sweep_to_frames(TickData& td,
 
         cum += o;
         poly += d;
-        if (with_cc) cum_cc += td.dense_cc[(size_t)t];
+        if (c) cum_cc += c;
     }
 
     // Determine total frames from sec(max_tick) (catch up conversion anchors first).
