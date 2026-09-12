@@ -151,8 +151,11 @@ struct UiState {
     std::vector<const char*> font_cstrs;        // refreshed after list changes
 
     // font-variant combo cache (rebuilt when the family changes)
+    // NOTE: never cache const char* into these strings across frames -- the
+    // rebuild reallocates the vector and dangles every earlier pointer (the
+    // combo then displays freed heap). The cstr array is rebuilt locally each
+    // frame in main.cpp right before ImGui::Combo consumes it.
     std::vector<std::string> variant_names;
-    std::vector<const char*> variant_cstrs;
     std::string variants_for;
     int  variant_idx = 0;
 

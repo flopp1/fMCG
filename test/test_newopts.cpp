@@ -110,13 +110,27 @@ int main() {
             check("bottom-center anchor", all.find("\\pos(500,470)") != std::string::npos ? "yes" : "no", "yes");
         }
         ac.ass_alignment = 7;
-        ac.pos_mode = 1; ac.pos_x = -50; ac.pos_y = 5000;   // both out of range
+        ac.pos_mode = 1; ac.pos_x = -50; ac.pos_y = 5000;   // anchor out of range
         generate_ass("_t.ass", frames, {"X"}, 0, 0, 480, ac);
         {
             std::ifstream f("_t.ass");
             std::string all((std::istreambuf_iterator<char>(f)), {});
             std::remove("_t.ass");
-            check("pos clamped to frame", all.find("\\pos(0,500)") != std::string::npos ? "yes" : "no", "yes");
+            // pos_y=5000 clamps so the one-line block (1.5em x 36px = 54px) fits:
+            // y -> 500-54 = 446; x -> 0. With font_size 36 and row "X":
+            // est_w = 1*0.62*36 = 23 -> x bound 1000-23 = 977; but pos_x=-50 -> 0
+            check("pos clamped to frame", all.find("\\pos(0,446)") != std::string::npos ? "yes" : "no", "yes");
+        }
+        {   // Bottom-right clamp: a huge x/y anchor is pulled back so the block
+            // stays fully visible (est. width for a long row, height for 1 line).
+            ac.pos_x = 2000; ac.pos_y = 1000;   // beyond 1000x500 frame
+            std::string long_row(60, '0');      // 60 digits -> 60*0.62*36 = 1339 px wide
+            generate_ass("_t.ass", frames, {long_row}, 0, 0, 480, ac);
+            std::ifstream f("_t.ass");
+            std::string all((std::istreambuf_iterator<char>(f)), {});
+            std::remove("_t.ass");
+            // x -> min(0, 1000-1339<0 -> 0); y -> 500 - 54 = 446
+            check("bottom-right clamp", all.find("\\pos(0,446)") != std::string::npos ? "yes" : "no", "yes");
         }
     }
     printf("\n%s (%d failures)\n", fails ? "FAILURES" : "ALL OK", fails);

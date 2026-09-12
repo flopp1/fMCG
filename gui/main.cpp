@@ -151,7 +151,7 @@ int main() {
     ensure_default_pattern();
 
     g_ui.system_fonts = enumerate_system_fonts();
-    for (auto& f : g_ui.system_fonts) g_ui.font_cstrs.push_back(f.c_str());
+    for (auto& f : g_ui.system_fonts) g_ui.font_cstrs.push_back(f.c_str());   // safe: system_fonts is never mutated after this
 
     // Bootstrap the UI from the Default pattern (or first available).
     {
@@ -174,11 +174,8 @@ int main() {
     // Refresh the variant cache for the bootstrapped family.
     g_ui.variants_for = g_ui.s.font_family;
     g_ui.variant_names.clear();
-    g_ui.variant_cstrs.clear();
-    for (const auto& v : enumerate_font_variants(g_ui.s.font_family)) {
+    for (const auto& v : enumerate_font_variants(g_ui.s.font_family))
         g_ui.variant_names.push_back(v.style);
-        g_ui.variant_cstrs.push_back(g_ui.variant_names.back().c_str());
-    }
     g_ui.variant_idx = 0;
     for (size_t i = 0; i < g_ui.variant_names.size(); ++i)
         if (g_ui.variant_names[i] == g_ui.s.font_variant) g_ui.variant_idx = (int)i;
@@ -268,6 +265,7 @@ int main() {
             ImGui::SameLine(120);
 
             std::vector<const char*> pat_cstrs;
+            pat_cstrs.reserve(g_ui.pattern_names.size());
             for (auto& n : g_ui.pattern_names) pat_cstrs.push_back(n.c_str());
             ImGui::SetNextItemWidth(200);
             if (!pat_cstrs.empty() &&
@@ -404,27 +402,30 @@ int main() {
         }
 
         // Style/weight combo on the same row, populated from the family's files.
+        // The cstr array is rebuilt here, right before Combo consumes it, so it
+        // can never point at freed std::string heap (dangling c_str() caching
+        // made the dropdown show garbage from other allocations).
         if (fam_changed || g_ui.variants_for != g_ui.s.font_family) {
             g_ui.variants_for = g_ui.s.font_family;
             g_ui.variant_names.clear();
-            g_ui.variant_cstrs.clear();
-            for (const auto& v : enumerate_font_variants(g_ui.s.font_family)) {
+            for (const auto& v : enumerate_font_variants(g_ui.s.font_family))
                 g_ui.variant_names.push_back(v.style);
-                g_ui.variant_cstrs.push_back(g_ui.variant_names.back().c_str());
-            }
             g_ui.variant_idx = 0;
             for (size_t i = 0; i < g_ui.variant_names.size(); ++i)
                 if (g_ui.variant_names[i] == g_ui.s.font_variant) g_ui.variant_idx = (int)i;
         }
         ImGui::SameLine();
         float style_w = 125.0f;
-        if (g_ui.variant_cstrs.empty()) {
+        if (g_ui.variant_names.empty()) {
             ImGui::SetNextItemWidth(style_w);
             ImGui::TextDisabled("(no styles)");
         } else {
             if ((size_t)g_ui.variant_idx >= g_ui.variant_names.size()) g_ui.variant_idx = 0;
+            std::vector<const char*> variant_cstrs;
+            variant_cstrs.reserve(g_ui.variant_names.size());
+            for (const auto& n : g_ui.variant_names) variant_cstrs.push_back(n.c_str());
             ImGui::SetNextItemWidth(style_w);
-            if (ImGui::Combo("##fstyle", &g_ui.variant_idx, g_ui.variant_cstrs.data(), (int)g_ui.variant_cstrs.size()))
+            if (ImGui::Combo("##fstyle", &g_ui.variant_idx, variant_cstrs.data(), (int)variant_cstrs.size()))
                 apply_font_variant(g_ui.s, g_ui.s.font_family, g_ui.variant_names[g_ui.variant_idx]);
         }
 
@@ -496,7 +497,10 @@ int main() {
             }
         } else {
             // Valid ranges for the text-block anchor (top-left), shown so the
-            // user knows the boundaries; the generator clamps defensively too.
+            // user knows the boundaries. The exact bottom-right bound depends
+            // on the rendered text size (rows and digits per frame), so the
+            // generator clamps per-frame; here we only keep the anchor itself
+            // inside the frame and document that.
             int max_x = g_ui.s.width, max_y = g_ui.s.height;
             ImGui::Text("x");
             ImGui::SameLine();
@@ -519,7 +523,7 @@ int main() {
             }
             ImGui::SameLine();
             ImGui::TextDisabled("(top-left of text block)");
-            ImGui::TextDisabled("Valid x: 0..%d    Valid y: 0..%d", max_x, max_y);
+            ImGui::TextDisabled("x: 0..%d  y: 0..%d  (block is auto-shifted left/up to stay fully visible)", max_x, max_y);
         }
 
         ImGui::Text("Start delay (seconds): ");

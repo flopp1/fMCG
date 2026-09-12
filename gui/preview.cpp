@@ -157,8 +157,20 @@ void render_pattern_only_popup() {
         bool top   = (a == 7 || a == 9 || a == 8);
         float x_off, y_off;
         if (g_app.pos_mode == 1) {
+            // Mirror the generator's bottom-right clamp: shift the anchor so
+            // the whole block stays visible (same 0.62em/char estimate).
+            float est_w = 0.0f;
+            for (auto& ln : lines) {
+                float w = (float)ln.size() * 0.62f * (float)g_app.font_size * preview_scale;
+                if (w > est_w) est_w = w;
+            }
+            float est_h = (float)lines.size() * 1.50f * (float)g_app.font_size * preview_scale;
             x_off = (float)g_app.pos_x * preview_scale;
             y_off = (float)g_app.pos_y * preview_scale;
+            if (x_off > area_w - est_w) x_off = area_w - est_w;
+            if (y_off > area_h - est_h) y_off = area_h - est_h;
+            if (x_off < 0) x_off = 0;
+            if (y_off < 0) y_off = 0;
         } else {
             x_off = left ? ((a == 8 || a == 2) ? area_w / 2 - max_tw / 2 : margin)
                          : area_w - max_tw - margin;
@@ -304,14 +316,26 @@ void render_preview_popup() {
                 float line_h2 = ImGui::GetTextLineHeightWithSpacing();
                 float total_text_h2 = line_h2 * (float)lines.size();
                 int a2 = g_app.ass_alignment;
-                bool left2 = (a2 == 7 || a2 == 1);
-                bool top2  = (a2 == 7 || a2 == 9);
+                bool left2 = (a2 == 7 || a2 == 1 || a2 == 8 || a2 == 2);
+                bool top2  = (a2 == 7 || a2 == 9 || a2 == 8);
                 float x2, y2;
                 if (g_app.pos_mode == 1) {
+                    // Same bottom-right clamp parity as the generator.
+                    float est_w2 = 0.0f;
+                    for (auto& ln : lines) {
+                        float w = (float)ln.size() * 0.62f * (float)g_app.font_size * preview_scale2;
+                        if (w > est_w2) est_w2 = w;
+                    }
+                    float est_h2 = (float)lines.size() * 1.50f * (float)g_app.font_size * preview_scale2;
                     x2 = (float)g_app.pos_x * preview_scale2;
                     y2 = (float)g_app.pos_y * preview_scale2;
+                    if (x2 > area_w2 - est_w2) x2 = area_w2 - est_w2;
+                    if (y2 > area_h2 - est_h2) y2 = area_h2 - est_h2;
+                    if (x2 < 0) x2 = 0;
+                    if (y2 < 0) y2 = 0;
                 } else {
-                    x2 = left2 ? margin2 : area_w2 - max_tw2 - margin2;
+                    x2 = left2 ? ((a2 == 8 || a2 == 2) ? area_w2 / 2 - max_tw2 / 2 : margin2)
+                               : area_w2 - max_tw2 - margin2;
                     y2 = top2  ? margin2 : area_h2 - total_text_h2 - margin2;
                     if (y2 < margin2) y2 = margin2;
                     if (x2 < margin2) x2 = margin2;
@@ -395,8 +419,19 @@ void render_preview_popup() {
             if (g_app.pos_mode == 1) {
                 // Explicit placement: (pos_x,pos_y) in video pixels anchors the
                 // text block's TOP-LEFT (matches the \pos(...,7) in the ASS).
+                // Bottom-right clamp parity with the generator (0.62em/char).
+                float est_w = 0.0f;
+                for (auto& ln : lines) {
+                    float w = (float)ln.size() * 0.62f * (float)g_app.font_size * preview_scale;
+                    if (w > est_w) est_w = w;
+                }
+                float est_h = (float)lines.size() * 1.50f * (float)g_app.font_size * preview_scale;
                 x_off = (float)g_app.pos_x * preview_scale;
                 y_off = (float)g_app.pos_y * preview_scale;
+                if (x_off > area_w - est_w) x_off = area_w - est_w;
+                if (y_off > area_h - est_h) y_off = area_h - est_h;
+                if (x_off < 0) x_off = 0;
+                if (y_off < 0) y_off = 0;
             } else {
                 if (left)  x_off = margin;
                 else       x_off = area_w - max_tw - margin;

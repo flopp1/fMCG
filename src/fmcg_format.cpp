@@ -5,6 +5,40 @@
 #include <sstream>
 #include <iomanip>
 #include <cmath>
+#include <algorithm>
+
+// ---------------------------------------------------------------------------
+// Text-block extent estimation for custom-position clamping.
+//
+// libass font metrics are unavailable here (no font file is loaded in this
+// translation unit), so extents are estimated conservatively: monospace-ish
+// advance of 0.62em per character, line height 1.5x the font size. These are
+// upper-bound-ish for typical stat strings (digits are tabular and near the
+// em width; the estimate errs wide so the clamp never allows visible
+// clipping). The same constants drive the preview's clamp in gui/preview.cpp
+// so both surfaces agree.
+// ---------------------------------------------------------------------------
+static constexpr double k_char_em   = 0.62;   // advance width per char, in em
+static constexpr double k_line_em   = 1.50;   // line height, in em
+
+struct TextExtent {
+    int max_line_w = 0;   // widest rendered row, in pixels
+    int lines = 0;
+};
+
+static TextExtent measure_block(const std::vector<std::string>& lines, int font_size) {
+    TextExtent e;
+    e.lines = (int)std::max<size_t>(1, lines.size());
+    for (const auto& l : lines) {
+        int w = (int)std::ceil(l.size() * k_char_em * font_size);
+        if (w > e.max_line_w) e.max_line_w = w;
+    }
+    return e;
+}
+
+static int block_height(int lines, int font_size) {
+    return (int)std::ceil(lines * k_line_em * font_size);
+}
 
 std::string ProcessTemplateLine(const std::string& line, const FrameStats& fs,
                                        uint64_t total_notes, uint64_t total_cc_events,
@@ -110,7 +144,7 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
     int pos_x = 30, pos_y = 30;
     if (cfg.pos_mode == 1) {
         // Explicit placement: \pos anchors the text block's TOP-LEFT corner
-        // (alignment 7). Clamp so the anchor can never leave the frame.
+        // (alignment 7). Clamp so the ANCHOR stays on the frame.
         pos_x = cfg.pos_x;
         pos_y = cfg.pos_y;
         if (pos_x < 0) pos_x = 0;
@@ -126,6 +160,22 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
 
     double total_duration = frames.empty() ? 0.0 : frames.back().timestamp_sec;
 
+    // Per-frame clamping for custom positions: the text block must stay fully
+    // on screen (bottom-right included). Block extents vary as counters grow
+    // (e.g. "999 -> 1,000" gains a digit), so measure each frame's rendered
+    // rows and clamp the anchor accordingly. Corner/center alignments are
+    // positioned by libass itself and need no clamping.
+    auto clamp_pos = [&](const std::vector<std::string>& lines) {
+        if (cfg.pos_mode != 1) return;
+        TextExtent ext = measure_block(lines, cfg.font_size);
+        int bh = block_height(ext.lines, cfg.font_size);
+        // Keep at least the estimated em-box on screen; never negative.
+        int max_x = std::max(0, cfg.width  - std::min(ext.max_line_w, cfg.width));
+        int max_y = std::max(0, cfg.height - std::min(bh,          cfg.height));
+        if (pos_x > max_x) pos_x = max_x;
+        if (pos_y > max_y) pos_y = max_y;
+    };
+
     // Start-delay lead-in: one Dialogue per frame with all-zero stats and
     // negative current-time fields counting up to 0 at the song's first frame.
     if (cfg.start_delay > 0.0 && !frames.empty()) {
@@ -140,10 +190,14 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
             zero_fs.timestamp_sec = t_start - cfg.start_delay;   // negative song time
             zero_fs.frame_index = (size_t)k;
             std::string text_block;
+            std::vector<std::string> rendered;
             for (size_t i = 0; i < template_lines.size(); ++i) {
-                text_block += ProcessTemplateLine(template_lines[i], zero_fs, total_notes, 0, total_duration, ppqn, cfg.commas, cfg.pad);
+                std::string row = ProcessTemplateLine(template_lines[i], zero_fs, total_notes, 0, total_duration, ppqn, cfg.commas, cfg.pad);
+                rendered.push_back(row);
+                text_block += row;
                 if (i + 1 < template_lines.size()) text_block += "\\N";
             }
+            clamp_pos(rendered);
             ass << "Dialogue: 0," << to_ass_time(t_start) << "," << to_ass_time(t_end)
                 << ",Default,,0,0,0,,{\\pos(" << pos_x << "," << pos_y << ")}" << text_block << "\n";
         }
@@ -153,10 +207,14 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
     for (size_t fi = 0; fi < frames.size(); ++fi) {
         const auto& f = frames[fi];
         std::string text_block;
+        std::vector<std::string> rendered;
         for (size_t i = 0; i < template_lines.size(); ++i) {
-            text_block += ProcessTemplateLine(template_lines[i], f, total_notes, total_cc, total_duration, ppqn, cfg.commas, cfg.pad);
+            std::string row = ProcessTemplateLine(template_lines[i], f, total_notes, total_cc, total_duration, ppqn, cfg.commas, cfg.pad);
+            rendered.push_back(row);
+            text_block += row;
             if (i + 1 < template_lines.size()) text_block += "\\N";
         }
+        clamp_pos(rendered);
 
         double t_start = f.timestamp_sec + cfg.start_delay;
         double t_end = (fi + 1 < frames.size()) ? frames[fi + 1].timestamp_sec + cfg.start_delay
