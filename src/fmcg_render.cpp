@@ -11,23 +11,23 @@
 // terminate the quoting, and colons must be escaped. A user-derived path can
 // therefore never be passed through the subtitles= filter safely. Like the
 // original fMCG (which rendered a fixed "temp_stats.ass" from the working
-// directory), we move the ASS next to its own directory under a fixed bare
-// name and spawn ffmpeg with that directory as its working directory, so the
-// filter argument is a simple name no parser can mangle. Returns the renamed
-// file's full path.
+// directory), we place a copy of the ASS next to the original under a fixed
+// bare name and spawn ffmpeg with that directory as its working directory, so
+// the filter argument is a simple name no parser can mangle. A copy -- not a
+// rename -- keeps the original on disk so the render can be repeated. Returns
+// the copy's full path.
 std::string prepare_ass_for_filter(const std::string& ass_filename) {
     size_t sep = ass_filename.find_last_of("/\\");
     std::string dir = (sep != std::string::npos) ? ass_filename.substr(0, sep + 1) : std::string("./");
     std::string safe = dir + "temp_stats.ass";
-    std::remove(safe.c_str());
-    if (std::rename(ass_filename.c_str(), safe.c_str()) != 0) {
-        // rename can fail on exotic filesystem setups; fall back to a copy
+    // Copy (never move): re-rendering the same processed MIDI must keep
+    // working, and deleting the only copy would break that.
+    {
         std::ifstream src(ass_filename.c_str(), std::ios::binary);
-        if (src) {
-            std::ofstream dst(safe.c_str(), std::ios::binary);
-            dst << src.rdbuf();
-        }
-        std::remove(ass_filename.c_str());
+        std::ofstream dst(safe.c_str(), std::ios::binary | std::ios::trunc);
+        if (!src || !dst) return std::string();   // signal failure to the caller
+        dst << src.rdbuf();
+        if (!dst) return std::string();
     }
     return safe;
 }

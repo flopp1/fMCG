@@ -256,7 +256,7 @@ int spawn_ffmpeg_cancellable(const std::string& cwd,
     si.hStdError  = err_w;
     PROCESS_INFORMATION pi{};
     BOOL ok = CreateProcessW(nullptr, &wcmd[0], nullptr, nullptr, TRUE,
-                             CREATE_NEW_PROCESS_GROUP, nullptr,
+                             CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, nullptr,
                              wcwd.empty() ? nullptr : &wcwd[0], &si, &pi);
     CloseHandle(out_w); CloseHandle(err_w);
     if (!ok) { CloseHandle(out_r); CloseHandle(pi.hThread); CloseHandle(pi.hProcess); return -1; }
@@ -391,6 +391,13 @@ void run_render(RenderSettings s) {
     // ffmpeg's filter parser mangles backslashes, apostrophes and colons, so
     // the subtitles filter must never receive a real user path.
     std::string safe_ass = prepare_ass_for_filter(app.ass_path);
+    if (safe_ass.empty()) {
+        app.gui_log("Error: cannot prepare the subtitle file for rendering (missing or unreadable).\n", true);
+        app.result_ret = -1;
+        app.op_result = AppState::OP_RENDER_FAIL;
+        app.finish_op();
+        return;
+    }
     size_t ass_sep = safe_ass.find_last_of("/\\");
     std::string dir_cd = (ass_sep != std::string::npos) ? safe_ass.substr(0, ass_sep) : std::string(".");
 
@@ -448,11 +455,9 @@ void run_render(RenderSettings s) {
     });
 
     render_thread.join();
-    if (app.result_ret == 0) {
-        std::remove(safe_ass.c_str());   // renamed copy; original was consumed by the rename
-    }
-    // On failure the .ass (and, in debug builds, the ffmpeg log) are kept so
-    // the exact cause remains inspectable.
+    // temp_stats.ass is a working copy; sweep it either way. The original
+    // <name>_fMCG.ass is intentionally kept so the render can be repeated.
+    std::remove(safe_ass.c_str());
     app.progress.store(1.0f);
     app.finish_op();
 }

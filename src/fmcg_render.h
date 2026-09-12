@@ -10,8 +10,10 @@
 #include <string>
 #include <vector>
 
-// Move the generated ASS next to itself under the fixed bare name that the
-// subtitles filter receives. Returns the renamed file's full path.
+// Copy the generated ASS next to itself under the fixed bare name that the
+// subtitles filter receives. A copy (not a rename) keeps the original in
+// place so the same processed MIDI can be rendered again later. Returns the
+// copy's full path.
 std::string prepare_ass_for_filter(const std::string& ass_filename);
 
 // Convert an ASS colour (&HAABBGGRR) to ffmpeg's "0xRRGGBB" colour spec for
