@@ -42,6 +42,15 @@ static const char* k_default_layout =
 // --- persistence glue -------------------------------------------------------
 
 static void save_globals_now() {
+    // Pull the live UI values into the store first: the checkboxes/fields bind
+    // to g_ui.s, and without this sync every save would re-write the values
+    // captured at startup (silently reverting CC/vel-0/delay across restarts).
+    g_ui.globals.width = g_ui.s.width;
+    g_ui.globals.height = g_ui.s.height;
+    g_ui.globals.fps = g_ui.s.fps;
+    g_ui.globals.cc_stats = g_ui.s.cc_stats;
+    g_ui.globals.vel0_note_off = g_ui.s.vel0_note_off;
+    g_ui.globals.start_delay = g_ui.s.start_delay;
     g_ui.globals_dirty = false;
     g_ui.last_globals_save = ImGui::GetTime();
     save_global_settings(g_ui.globals);
@@ -712,6 +721,16 @@ int main() {
             if (!can_render) ImGui::PopStyleVar();
 
             ImGui::SameLine();
+            // Unload: clear the loaded MIDI and any processed state. Warn
+            // first -- re-processing takes time on big files.
+            bool has_file = (g_ui.midi_buf[0] != '\0') || g_app.processed.load();
+            if (!has_file || g_app.busy.load()) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
+            if (ImGui::Button("Unload", ImVec2(140, 30)) && has_file && !g_app.busy.load()) {
+                ImGui::OpenPopup("Unload file?");
+            }
+            if (!has_file || g_app.busy.load()) ImGui::PopStyleVar();
+
+            ImGui::SameLine();
             if (g_app.processed.load()) {
                 ImGui::TextColored(ImVec4(0.4f, 0.8f, 0.4f, 1.0f), "Processed");
             } else if (g_app.busy.load()) {
@@ -740,6 +759,40 @@ int main() {
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
+
+        // Unload confirmation modal (opened from the action row above).
+        if (ImGui::BeginPopupModal("Unload file?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("Unload the current MIDI file?");
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f),
+                "Processed data will be discarded; the file must be re-processed to render.");
+            ImGui::Spacing();
+            if (ImGui::Button("Unload", ImVec2(140, 0))) {
+                g_ui.midi_buf[0] = '\0';
+                g_ui.output_buf[0] = '\0';
+                g_ui.s.midi_file.clear();
+                g_ui.s.output_video.clear();
+                g_app.processed = false;
+                g_app.done = false;
+                g_app.result_ret = -1;
+                g_app.result_path.clear();
+                g_app.ass_path.clear();
+                g_app.frames_data.clear();
+                g_app.template_lines.clear();
+                g_app.total_notes = 0;
+                g_app.total_duration = 0.0;
+                g_app.preview_playing = false;
+                g_app.preview_time = 0.0;
+                g_app.show_preview = false;
+                g_app.render_active = false;
+                g_app.log_lines.clear();
+                g_app.gui_log("File unloaded.", false);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(140, 0)))
+                ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
 
         // --- Log ---
         ImGui::Text("Log Output:");

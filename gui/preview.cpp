@@ -275,6 +275,20 @@ void render_preview_popup() {
     if (ImGui::BeginPopupModal("Preview", &g_app.show_preview,
             ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar)) {
 
+        // Space toggles play/pause when a preview is playing (not during a
+        // render, where space has no meaning and the user may be typing).
+        bool rendering_early = g_app.render_active && g_app.busy.load();
+        if (!rendering_early && ImGui::IsKeyPressed(ImGuiKey_Space) &&
+            !g_app.frames_data.empty()) {
+            if (g_app.preview_playing) {
+                g_app.preview_playing = false;
+            } else {
+                g_app.preview_playing = true;
+                g_app.preview_start_time = glfwGetTime();
+                g_app.preview_start_pos = g_app.preview_time;
+            }
+        }
+
         // Update preview time (timeline spans start_delay + song duration)
         if (g_app.render_active && g_app.busy.load() && total_len > 0) {
             g_app.preview_time = g_app.progress.load() * total_len;
@@ -307,95 +321,6 @@ void render_preview_popup() {
 
         // Render text
         if (!g_app.frames_data.empty() && total_len > 0) {
-            // Start-delay lead-in: stats all at zero, current-time fields run
-            // negative and count up to 0, same text the video shows there.
-            if (g_app.preview_time < g_app.start_delay) {
-                ImGui::EndChild();
-                ImGui::PushStyleColor(ImGuiCol_Text, ass_colour_to_imgui(g_app.text_colour_ass));
-                if (g_app.preview_font) ImGui::PushFont(g_app.preview_font, std::max(4.0f, std::min(256.0f, (float)g_app.font_size * (g_app.vid_width > 0 ? ImGui::GetContentRegionAvail().x / (float)g_app.vid_width : 0.0f))));
-                FrameStats zero_fs;
-                zero_fs.bpm = g_app.frames_data.front().bpm;
-                zero_fs.timestamp_sec = g_app.preview_time - g_app.start_delay;
-                std::string text = format_frame_text(zero_fs);
-                std::vector<std::string> lines;
-                {
-                    std::istringstream stream(text);
-                    std::string ln;
-                    while (std::getline(stream, ln)) lines.push_back(ln);
-                }
-                // Match the video's placement (same geometry as the song branch).
-                float preview_scale2 = (g_app.vid_width > 0) ? ImGui::GetContentRegionAvail().x / (float)g_app.vid_width : 0.0f;
-                float margin2 = std::max(4.0f, 30.0f * preview_scale2);
-                float max_tw2 = 0;
-                for (auto& ln : lines) {
-                    float w = ImGui::CalcTextSize(ln.c_str()).x;
-                    if (w > max_tw2) max_tw2 = w;
-                }
-                float area_w2 = ImGui::GetContentRegionAvail().x;
-                float area_h2 = ImGui::GetContentRegionAvail().y;
-                float line_h2 = ImGui::GetTextLineHeightWithSpacing();
-                float total_text_h2 = line_h2 * (float)lines.size();
-                int a2 = g_app.ass_alignment;
-                bool left2 = (a2 == 7 || a2 == 1 || a2 == 8 || a2 == 2);
-                bool top2  = (a2 == 7 || a2 == 9 || a2 == 8);
-                float x2, y2;
-                if (g_app.pos_mode == 1) {
-                    // Same bottom-right clamp parity as the generator.
-                    float est_w2 = 0.0f;
-                    for (auto& ln : lines) {
-                        float w = (float)ln.size() * 0.62f * (float)g_app.font_size * preview_scale2;
-                        if (w > est_w2) est_w2 = w;
-                    }
-                    float est_h2 = (float)lines.size() * 1.50f * (float)g_app.font_size * preview_scale2;
-                    x2 = (float)g_app.pos_x * preview_scale2;
-                    y2 = (float)g_app.pos_y * preview_scale2;
-                    if (x2 > area_w2 - est_w2) x2 = area_w2 - est_w2;
-                    if (y2 > area_h2 - est_h2) y2 = area_h2 - est_h2;
-                    if (x2 < 0) x2 = 0;
-                    if (y2 < 0) y2 = 0;
-                } else {
-                    x2 = left2 ? ((a2 == 8 || a2 == 2) ? area_w2 / 2 - max_tw2 / 2 : margin2)
-                               : area_w2 - max_tw2 - margin2;
-                    y2 = top2  ? margin2 : area_h2 - total_text_h2 - margin2;
-                    if (y2 < margin2) y2 = margin2;
-                    if (x2 < margin2) x2 = margin2;
-                }
-                ImGui::SetCursorPos(ImVec2(x2, y2));
-                for (size_t i = 0; i < lines.size(); ++i) {
-                    if (i > 0) ImGui::SetCursorPosX(x2);
-                    ImGui::TextUnformatted(lines[i].c_str());
-                }
-                if (g_app.preview_font) ImGui::PopFont();
-                ImGui::PopStyleColor();
-
-                if (rendering) {
-                    float p = g_app.display_progress();
-                    char overlay[32];
-                    snprintf(overlay, sizeof(overlay), "Rendering %d%%", (int)(p * 100));
-                    ImGui::ProgressBar(p, ImVec2(-1, 0), overlay);
-                } else {
-                    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 120);
-                    float tp = (float)g_app.preview_time;
-                    if (ImGui::SliderFloat("##time", &tp, 0.0f, (float)total_len, "%.2fs")) {
-                        g_app.preview_time = tp;
-                        if (g_app.preview_playing) {
-                            g_app.preview_start_pos = tp;
-                            g_app.preview_start_time = glfwGetTime();
-                        }
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::Button(g_app.preview_playing ? "Pause" : "Play", ImVec2(50, 0))) {
-                        if (g_app.preview_playing) g_app.preview_playing = false;
-                        else {
-                            g_app.preview_playing = true;
-                            g_app.preview_start_time = glfwGetTime();
-                            g_app.preview_start_pos = g_app.preview_time;
-                        }
-                    }
-                }
-                ImGui::EndPopup();
-                return;
-            }
             // Scale video-resolution values (ASS Fontsize / 30px margins, PlayRes
             // = video width x height) into the preview area, which shows the
             // full video frame scaled by preview_width / video_width.
@@ -406,7 +331,20 @@ void render_preview_popup() {
             if (!g_app.preview_font && !g_app.preview_font_reload.load() && !g_app.font_family.empty())
                 g_app.preview_font_reload = true;   // picked up before the next frame
 
-            const FrameStats& fs = find_frame(g_app.preview_time - g_app.start_delay);
+            // Start-delay lead-in: stats all at zero, current-time fields run
+            // negative and count up to 0, same text the video shows there.
+            // Same child + controls as the song branch (unified layout).
+            bool in_delay = g_app.preview_time < g_app.start_delay;
+            FrameStats delay_fs;
+            const FrameStats* fs_ptr;
+            if (in_delay) {
+                delay_fs.bpm = g_app.frames_data.front().bpm;
+                delay_fs.timestamp_sec = g_app.preview_time - g_app.start_delay;
+                fs_ptr = &delay_fs;
+            } else {
+                fs_ptr = &find_frame(g_app.preview_time - g_app.start_delay);
+            }
+            const FrameStats& fs = *fs_ptr;
             std::string text = format_frame_text(fs);
 
             std::vector<std::string> lines;
@@ -432,8 +370,8 @@ void render_preview_popup() {
             }
 
             int a = g_app.ass_alignment;
-            bool left = (a == 7 || a == 1);
-            bool top  = (a == 7 || a == 9);
+            bool left = (a == 7 || a == 1 || a == 8 || a == 2);   // L, and centers
+            bool top  = (a == 7 || a == 9 || a == 8);
 
             float x_off, y_off;
             if (g_app.pos_mode == 1) {
@@ -453,10 +391,9 @@ void render_preview_popup() {
                 if (x_off < 0) x_off = 0;
                 if (y_off < 0) y_off = 0;
             } else {
-                if (left)  x_off = margin;
-                else       x_off = area_w - max_tw - margin;
-                if (top)   y_off = margin;
-                else       y_off = area_h - total_text_h - margin;
+                x_off = left ? ((a == 8 || a == 2) ? area_w / 2 - max_tw / 2 : margin)
+                             : area_w - max_tw - margin;
+                y_off = top  ? margin : area_h - total_text_h - margin;
                 if (y_off < margin) y_off = margin;
                 if (x_off < margin) x_off = margin;
             }
