@@ -103,9 +103,9 @@ test/test_harness: test/test_harness.cpp fMCG_core.h
 clean:
 	rm -rf fMCG_gui test/test_newopts test/test_harness dist
 
-# Assemble a ready-to-share release: binary + licence notices + README.
+# Assemble a ready-to-share release: binary + licences + README.
 release: all test
 	@mkdir -p dist/fMCG-linux
-	cp fMCG_gui THIRD_PARTY_LICENSES.txt README.md dist/fMCG-linux/
+	cp fMCG_gui LICENSE THIRD_PARTY_LICENSES.txt README.md dist/fMCG-linux/
 	tar -czf dist/fMCG-linux.tar.gz -C dist fMCG-linux
 	@echo "Release ready: dist/fMCG-linux.tar.gz" test/test_harness

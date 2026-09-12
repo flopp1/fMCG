@@ -10,6 +10,7 @@ REM folder in dist\fMCG-windows\ containing:
 REM
 REM   fMCG_gui.exe              the application
 REM   libarchive.dll            required at runtime (BSD -- see licences file)
+REM   LICENSE                   fMCG's own GPL-3.0 licence
 REM   THIRD_PARTY_LICENSES.txt  required notices for the bundled libraries
 REM   README.md                 quick-start / build-from-source instructions
 REM
@@ -36,11 +37,12 @@ if exist "%DIST%" rmdir /s /q "%DIST%"
 mkdir "%DIST%" 2>nul
 copy /y fMCG_gui.exe             "%DIST%\" >nul
 copy /y libarchive.dll           "%DIST%\" >nul
+copy /y LICENSE                  "%DIST%\" >nul
 copy /y THIRD_PARTY_LICENSES.txt "%DIST%\" >nul
 copy /y README.md                "%DIST%\" >nul
 
 REM --- 3. sanity: everything the exe needs is present -------------------------
-for %%f in (fMCG_gui.exe libarchive.dll THIRD_PARTY_LICENSES.txt README.md) do (
+for %%f in (fMCG_gui.exe libarchive.dll LICENSE THIRD_PARTY_LICENSES.txt README.md) do (
     if not exist "%DIST%\%%f" (
         echo ERROR: %DIST%\%%f missing; packaging incomplete.
         exit /b 1
