@@ -882,6 +882,10 @@ static void draw_frame(GLFWwindow* window) {
         {
             std::lock_guard<std::mutex> slock(g_app.scan_mutex);
             scan_live = g_app.scan_active && g_app.busy.load() && g_app.processed.load() == false;
+            // While the spec-violation modal parks the worker, the live line
+            // is stale: show the full log (including the warning that asked
+            // the question) instead of hiding the newest entry behind it.
+            if (g_app.spec_prompt_open.load()) scan_live = false;
             if (scan_live) scan_line = g_app.compose_scan_line();
         }
         size_t n = g_app.log_lines.size();

@@ -6,7 +6,7 @@
 #include <sstream>
 #include <algorithm>
 #include <thread>
-#include <future>
+#include <chrono>
 #include <chrono>
 #include <atomic>
 #include <cstring>
@@ -81,19 +81,22 @@ void run_process(GuiSettings s) {
     app.cancel = false;
 
     // MIDI spec-violation handling: when the scanner crosses the 28-bit tick
-    // limit it parks on this promise; the UI thread opens a modal, and the
-    // answer (proceed / two-pass / cancel) is delivered through app state.
-    std::promise<int> spec_promise;
-    std::shared_future<int> spec_future = spec_promise.get_future().share();
+    // limit it parks on this wait; the UI thread opens a modal and stores the
+    // answer in app.spec_choice. Waiting on the atomic (not a future) keeps
+    // Cancel live while parked.
     bool spec_prompt_used = false;
-    cb.on_spec_violation = [&app, spec_future, &spec_prompt_used](uint64_t tick, size_t bytes) -> int {
+    cb.on_spec_violation = [&app, &spec_prompt_used](uint64_t tick, size_t bytes) -> int {
         spec_prompt_used = true;
         app.spec_choice.store(-1);
         app.spec_popup_started = false;
         app.gui_log(("Warning: this MIDI exceeds the spec's 28-bit delta-time limit at tick "
                      + std::to_string(tick) + ".").c_str(), true);
         app.spec_prompt_open.store(true);
-        const int choice = spec_future.get();
+        int choice;
+        while ((choice = app.spec_choice.load()) < 0) {
+            if (app.cancel.load()) { choice = 2; break; }   // Cancel button works while parked
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
         app.spec_prompt_open.store(false);
         return choice;
     };

@@ -440,6 +440,10 @@ void render_preview_popup() {
             // survives until consumed here.
             if (g_app.render_watch_done.exchange(false)) {
                 g_app.preview_playing = false;
+                // The render view drove preview_time to the end; rewind so the
+                // next timeline preview starts at the song's beginning instead
+                // of picking up where the render progress left off.
+                g_app.preview_time = 0.0;
                 if (g_app.preview_watching_render) {
                     g_app.preview_watching_render = false;
                     ImGui::CloseCurrentPopup();
