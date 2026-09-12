@@ -613,8 +613,16 @@ int main() {
             bool can_process = (g_ui.midi_buf[0] != '\0') && !g_app.busy.load();
             bool can_render  = g_app.processed.load() && !g_app.busy.load();
 
+            // Guard: the layout uses {cc*} tokens but CC counting is off.
+            // Those tokens would silently render as 0/0/0 forever.
+            bool layout_uses_cc = strstr(g_ui.layout_buf, "{cc") != nullptr;
+            bool cc_mismatch = layout_uses_cc && !g_ui.s.cc_stats;
+
             if (!can_process) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
             if (ImGui::Button("Process", ImVec2(140, 30)) && can_process) {
+                if (cc_mismatch) {
+                    ImGui::OpenPopup("CC stats not enabled");
+                } else {
                 g_ui.s.midi_file = g_ui.midi_buf;
                 g_ui.s.output_video = g_ui.output_buf;
                 g_ui.s.layout_text = g_ui.layout_buf;
@@ -625,8 +633,36 @@ int main() {
                 g_app.preview_time = 0.0;
                 g_app.busy = true;  // set before detach so the button disables immediately
                 std::thread(run_process, g_ui.s).detach();
+                }
             }
             if (!can_process) ImGui::PopStyleVar();
+
+            // CC mismatch: tell the user and offer the one-click fix.
+            if (ImGui::BeginPopupModal("CC stats not enabled", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::Text("Your layout uses {cc} stats, but 'Count CC events' is off.\n");
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f),
+                    "CC counters would show 0/0/0 for the whole video.");
+                ImGui::Spacing();
+                if (ImGui::Button("Enable CC counting & process", ImVec2(240, 0))) {
+                    g_ui.s.cc_stats = true;
+                    mark_globals_dirty();
+                    g_ui.s.midi_file = g_ui.midi_buf;
+                    g_ui.s.output_video = g_ui.output_buf;
+                    g_ui.s.layout_text = g_ui.layout_buf;
+                    g_app.processed = false;
+                    g_app.done = false;
+                    g_app.log_lines.clear();
+                    g_app.preview_playing = false;
+                    g_app.preview_time = 0.0;
+                    g_app.busy = true;
+                    std::thread(run_process, g_ui.s).detach();
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(100, 0)))
+                    ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+            }
 
             ImGui::SameLine();
             // Cancel while processing or rendering (checked at ~1M-event pings
