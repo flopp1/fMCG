@@ -49,6 +49,10 @@ inline std::string utf16be_to_utf8(const uint8_t* s, size_t len) {
 }
 
 // Extract one string from the sfnt 'name' table by name ID.
+// Language-aware: records come in many languages (a legacy Rockwell Bold
+// lists ID 2 as "Negreta" for Spanish and "Bold" for English), so prefer
+// platform 3 encoding 1/10 language 0x0409 (en-US), then Mac Roman, then
+// whatever appears first.
 inline bool extract_sfnt_name_id(std::ifstream& f, uint64_t base, uint16_t want_id, std::string& out) {
     f.clear();
     f.seekg((std::streamoff)base, std::ios::beg);
@@ -78,11 +82,25 @@ inline bool extract_sfnt_name_id(std::ifstream& f, uint64_t base, uint16_t want_
 
     uint16_t count = read_be16(nt.data() + 2);
     uint16_t str_off = read_be16(nt.data() + 4);
+    // Sanity-check the table header before trusting its records. Some TTC
+    // subfont offsets (e.g. msgothic.ttc) point at data whose "name table"
+    // is misaligned with the subfont header, producing impossible values
+    // (format=10, count=1041); walking those records yields garbage names
+    // like "rsion 5.3". Real tables: format 0, a few dozen records.
+    uint16_t format = read_be16(nt.data());
+    if (format != 0 || count == 0 || count > 512) return false;
+    // The string storage must FOLLOW the record array (sfnt spec). msgothic.ttc
+    // ships subfont tables where strOff lands inside the record array, so every
+    // offset resolves into record bytes -- the source of names like "rsion 5.3"
+    // (a slice of "Version 5.3"). Such tables are nonconformant; reject them.
+    if ((uint32_t)str_off < 6u + (uint32_t)count * 12u) return false;
+    int best_score = -1;
     size_t rec_pos = 6;
     for (uint32_t i = 0; i < count && rec_pos + 12 <= nt.size(); ++i, rec_pos += 12) {
         const uint8_t* rec = nt.data() + rec_pos;
         uint16_t platform = read_be16(rec);
         uint16_t encoding = read_be16(rec + 2);
+        uint16_t lang     = read_be16(rec + 4);
         uint16_t name_id = read_be16(rec + 6);
         uint16_t length = read_be16(rec + 8);
         uint16_t offset = read_be16(rec + 10);
@@ -91,18 +109,45 @@ inline bool extract_sfnt_name_id(std::ifstream& f, uint64_t base, uint16_t want_
         uint32_t off = (uint32_t)str_off + offset;
         if (length == 0 || off + length > nt.size()) continue;
 
-        if ((platform == 3 && (encoding == 1 || encoding == 10)) || platform == 0)
-            out = utf16be_to_utf8(nt.data() + off, length);
+        // Score: higher wins. en-US Windows Unicode first, then any Windows
+        // Unicode, then Mac Roman, then leftovers.
+        int score;
+        if (platform == 3 && (encoding == 1 || encoding == 10))
+            score = (lang == 0x0409) ? 4 : 3;
+        else if (platform == 0)
+            score = 2;
         else if (platform == 3 || platform == 1)
-            out.assign((const char*)nt.data() + off, length);
+            score = 1;
         else continue;
-        if (!out.empty()) return true;
+        if (score <= best_score) continue;
+
+        std::string val;
+        if (platform == 3 && (encoding == 1 || encoding == 10))
+            val = utf16be_to_utf8(nt.data() + off, length);
+        else if (platform == 0)
+            val = utf16be_to_utf8(nt.data() + off, length);
+        else
+            val.assign((const char*)nt.data() + off, length);
+        if (val.empty()) continue;
+        out = val;
+        best_score = score;
     }
-    return false;
+    return best_score >= 0;
 }
 
 // Family name: prefer the typographic family (ID 16), fall back to ID 1.
+// Validates the sfnt version at `base` first: TTC collections (some Windows
+// ones carry version 0x00020000 headers) list offsets whose table data is
+// not a parseable font -- parsing them blindly yields garbage strings like
+// "rsion 5.3" (a slice of "Version 5.3").
 inline bool extract_family_from_sfnt(std::ifstream& f, uint64_t base, std::string& out_family) {
+    f.clear();
+    f.seekg((std::streamoff)base, std::ios::beg);
+    uint8_t v[4];
+    if (!f.read((char*)v, 4)) return false;
+    uint32_t version = read_be32(v);
+    if (version != 0x00010000 && version != 0x4F54544F && version != 0x74727565)
+        return false;
     if (extract_sfnt_name_id(f, base, 16, out_family) && !out_family.empty()) return true;
     return extract_sfnt_name_id(f, base, 1, out_family) && !out_family.empty();
 }
@@ -152,12 +197,21 @@ std::string read_font_family(const std::string& path) {
     if (version == 0x74746366) {
         uint32_t num_fonts = read_be32(hdr + 8);
         if (num_fonts == 0 || num_fonts > 64) return "";
-        std::string best;
+        // Read ALL subfont offsets before extracting anything: the extractor
+        // seeks the stream, so interleaved offset reads would continue from
+        // wherever the last parse left off -- producing garbage offsets and
+        // garbage family names ("rsion 5.3").
+        std::vector<uint64_t> bases;
+        bases.reserve(num_fonts);
         for (uint32_t i = 0; i < num_fonts; ++i) {
             uint8_t ob[4];
             if (!f.read((char*)ob, 4)) break;
+            bases.push_back(read_be32(ob));
+        }
+        std::string best;
+        for (uint64_t base : bases) {
             std::string fam;
-            if (extract_family_from_sfnt(f, read_be32(ob), fam) && fam.size() > best.size()) best = fam;
+            if (extract_family_from_sfnt(f, base, fam) && fam.size() > best.size()) best = fam;
         }
         return best;
     }

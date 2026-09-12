@@ -435,6 +435,8 @@ void run_render(RenderSettings s) {
                         g_app.progress.store(p);
                     }
                 } catch (...) {}
+            } else if (line.rfind("speed=", 0) == 0) {
+                try { g_app.render_speed.store((float)std::stod(line.substr(6))); } catch (...) {}
             } else if (line == "progress=end" && s.total_duration > 0) {
                 g_app.progress.store(1.0f);
             }

@@ -856,7 +856,11 @@ static void draw_frame(GLFWwindow* window) {
                 overlay = g_app.compose_scan_line();
         }
         char pct[32];
-        snprintf(pct, sizeof(pct), "%d%%", (int)(p * 100));
+        float spd = g_app.render_speed.load();
+        if (g_app.render_active && spd > 0.0f)
+            snprintf(pct, sizeof(pct), "%d%%  (%.2fx)", (int)(p * 100), spd);
+        else
+            snprintf(pct, sizeof(pct), "%d%%", (int)(p * 100));
         ImGui::ProgressBar(p, ImVec2(-1, 0), overlay.empty() ? pct : overlay.c_str());
     }
 
