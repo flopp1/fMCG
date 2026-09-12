@@ -991,10 +991,15 @@ static void draw_frame(GLFWwindow* window) {
     ImGui::EndChild();
 
     // Final status line, phrased per operation so a failed/cancelled
-    // PROCESS is never mislabelled as "Render failed".
-    if (g_app.done.load() && !g_app.processed.load() && !g_app.busy.load()) {
+    // PROCESS is never mislabelled as "Render failed". Shown for every
+    // completed op except PROCESS_OK ("processed" is already true then and
+    // the header tag covers it) -- notably it MUST show after a successful
+    // render even though processed==true there.
+    if (g_app.done.load() && !g_app.busy.load()) {
         const int op = g_app.op_result.load();
-        if (op == AppState::OP_RENDER_OK) {
+        if (op == AppState::OP_PROCESS_OK) {
+            // no status text: the header already shows the Processed tag
+        } else if (op == AppState::OP_RENDER_OK) {
             // Effective speed: video length divided by the render's wall-clock
             // time (>1x = faster than realtime). ffmpeg's own instantaneous
             // speed is shown live on the progress bar during the render.
