@@ -24,9 +24,10 @@
 // ---------------------------------------------------------------------------
 
 static std::string get_ass_path(const std::string& midi_file) {
-    std::string dir = extract_dir(midi_file);
+    // Generated in the OS temp area, not beside the user's MIDI: keeps the
+    // visible folder clean and the file safe from accidental deletion.
     std::string stem = extract_stem(midi_file);
-    return dir + stem + "_fMCG.ass";
+    return app_temp_dir() + "/" + stem + "_fMCG.ass";
 }
 
 void run_process(GuiSettings s) {
@@ -37,6 +38,7 @@ void run_process(GuiSettings s) {
     app.log_lines.clear();
     app.result_path.clear();
     app.processed = false;
+    app.cancel = false;   // clearing here too: a previous cancelled op must not abort this scan
 
     int ass_alignment = gui_alignment_to_ass(s.alignment);
 
@@ -382,6 +384,7 @@ void run_render(RenderSettings s) {
     AppState& app = g_app;
     app.busy = true;
     app.done = false;
+    app.cancel = false;   // a cancelled previous render must not kill this one
     app.progress.store(0.0f);
     app.log_lines.clear();
     app.result_path.clear();

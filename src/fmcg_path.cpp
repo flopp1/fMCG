@@ -1,7 +1,11 @@
 #include "fmcg_path.h"
 #include <fstream>
 #include <cstring>
+#include <cstdlib>
+#include <filesystem>
 #include "fmcg_midi.h"
+
+namespace fs = std::filesystem;
 
 // ---------------------------------------------------------------------------
 // File path helpers
@@ -17,6 +21,27 @@ std::string extract_stem(const std::string& path) {
     std::string basename = (sep != std::string::npos) ? path.substr(sep + 1) : path;
     size_t dot = basename.find_last_of('.');
     return (dot != std::string::npos) ? basename.substr(0, dot) : basename;
+}
+
+std::string app_temp_dir() {
+    static std::string cached;
+    if (!cached.empty()) return cached;
+    std::string base;
+#if defined(_WIN32)
+    const char* t = std::getenv("TEMP");
+    if (!t || !t[0]) t = std::getenv("TMP");
+    if (t && t[0]) base = t;
+    if (base.empty()) base = "C:/Windows/Temp";
+#else
+    const char* t = std::getenv("TMPDIR");
+    if (!t || !t[0]) t = "/tmp";
+    base = t;
+#endif
+    fs::path dir = fs::path(base) / "fMCG";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    cached = dir.string();
+    return cached;
 }
 
 std::string trim_path(std::string s) {
