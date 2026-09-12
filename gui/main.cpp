@@ -1000,7 +1000,7 @@ static void draw_frame(GLFWwindow* window) {
                 std::ifstream rf(g_app.result_path, std::ios::binary | std::ios::ate);
                 if (rf.is_open()) fsize = (uint64_t)rf.tellg();
             }
-            ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Rendered: %s (%s)",
+            ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Rendered: %s (%s speed)",
                 g_app.result_path.c_str(), format_file_size(fsize).c_str());
         } else if (op == AppState::OP_RENDER_FAIL) {
             ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Render failed. Check log.");
