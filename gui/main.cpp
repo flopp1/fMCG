@@ -50,6 +50,17 @@ static const char* k_default_layout =
 
 // --- persistence glue -------------------------------------------------------
 
+// Delete the generated <name>_fMCG.ass and the temp_stats.ass working copy
+// that belong to the currently processed MIDI. Called when the MIDI is
+// replaced (new file picked), explicitly unloaded, or the app exits.
+static void sweep_ass_files() {
+    if (g_app.ass_path.empty()) return;
+    std::remove(g_app.ass_path.c_str());
+    size_t sep = g_app.ass_path.find_last_of("/\\");
+    if (sep != std::string::npos)
+        std::remove((g_app.ass_path.substr(0, sep + 1) + "temp_stats.ass").c_str());
+}
+
 static void save_globals_now() {
     // Pull the live UI values into the store first: the checkboxes/fields bind
     // to g_ui.s, and without this sync every save would re-write the values
@@ -197,6 +208,10 @@ static void draw_frame(GLFWwindow* window) {
         if (!result.empty()) {
             std::string err;
             if (validate_midi(result, err)) {
+                // A new MIDI replaces the old one without going through the
+                // Unload modal: sweep the previous session's ASS files first.
+                sweep_ass_files();
+                g_app.ass_path.clear();
                 g_ui.s.midi_file = result;
                 strncpy(g_ui.midi_buf, result.c_str(), sizeof(g_ui.midi_buf) - 1);
                 std::string dir = extract_dir(result);
@@ -856,12 +871,7 @@ static void draw_frame(GLFWwindow* window) {
             // Remove the generated ASS next to the (former) MIDI, plus the
             // temp_stats.ass copy ffmpeg consumed -- a failed render leaves
             // both behind by design, so unload is the last chance to sweep.
-            if (!g_app.ass_path.empty()) {
-                std::remove(g_app.ass_path.c_str());
-                size_t sep = g_app.ass_path.find_last_of("/\\");
-                if (sep != std::string::npos)
-                    std::remove((g_app.ass_path.substr(0, sep + 1) + "temp_stats.ass").c_str());
-            }
+            sweep_ass_files();
             g_ui.midi_buf[0] = '\0';
             g_ui.output_buf[0] = '\0';
             g_ui.s.midi_file.clear();
@@ -1096,6 +1106,10 @@ int main() {
         glfwPollEvents();
         draw_frame(window);
     }
+
+    // Last session hygiene: the generated ASS and its temp copy die with the
+    // app (they are always regenerable by re-processing).
+    sweep_ass_files();
 
     // Flush pending settings on exit.
     if (g_ui.globals_dirty) save_globals_now();
