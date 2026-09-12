@@ -675,6 +675,11 @@ static void draw_frame(GLFWwindow* window) {
             // every frame would clobber it the instant the render finishes,
             // and the watching popup would miss its close window.
             g_app.preview_watching_render = preview_starts_render_view;
+            // A stale completion latch (render finished with the popup closed)
+            // still owes the timeline its saved position: apply the same
+            // restore the popup would have done, then clear the latch.
+            if (!preview_starts_render_view && g_app.render_watch_done.exchange(false))
+                g_app.preview_time = g_app.preview_saved_pos;
             {
                 // Snap the live mirror to the current pattern so Preview
                 // (with or without a processed MIDI) shows the edited look.

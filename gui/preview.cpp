@@ -303,7 +303,14 @@ void render_preview_popup() {
         if (g_app.render_active && g_app.busy.load() && total_len > 0) {
             g_app.preview_time = g_app.progress.load() * total_len;
             if (g_app.preview_time > total_len) g_app.preview_time = total_len;
-        } else if (g_app.preview_playing && !g_app.frames_data.empty() && total_len > 0) {
+        } else if (!g_app.render_watch_done.load()) {
+            // Normal (timeline) view: remember where the user is so the render
+            // view -- which borrows preview_time as its progress -- can put it
+            // back when it finishes. Skipped on the completion frame itself:
+            // preview_time still holds the render's final position there.
+            g_app.preview_saved_pos = g_app.preview_time;
+        }
+        if (g_app.preview_playing && !g_app.frames_data.empty() && total_len > 0) {
             double elapsed = glfwGetTime() - g_app.preview_start_time;
             g_app.preview_time = g_app.preview_start_pos + elapsed;
             if (g_app.preview_time >= total_len) {
@@ -440,10 +447,10 @@ void render_preview_popup() {
             // survives until consumed here.
             if (g_app.render_watch_done.exchange(false)) {
                 g_app.preview_playing = false;
-                // The render view drove preview_time to the end; rewind so the
-                // next timeline preview starts at the song's beginning instead
-                // of picking up where the render progress left off.
-                g_app.preview_time = 0.0;
+                // The render view borrowed preview_time as its progress; hand
+                // it back at where the normal timeline last was (0 if the
+                // timeline was never opened this session).
+                g_app.preview_time = g_app.preview_saved_pos;
                 if (g_app.preview_watching_render) {
                     g_app.preview_watching_render = false;
                     ImGui::CloseCurrentPopup();

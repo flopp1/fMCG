@@ -118,6 +118,11 @@ struct AppState {
     bool                      spec_popup_started{false};   // UI-thread only: OpenPopup once
     bool                      preview_playing{false};
     double                    preview_time{0.0};
+    // Where the NORMAL (timeline) preview last was, saved on every update of
+    // preview_time outside the render view. The render view drives
+    // preview_time itself (it is the render progress) and must not destroy
+    // this; on render completion the timeline resumes from here.
+    double                    preview_saved_pos{0.0};
     double                    start_delay{0.0};   // black lead-in before the song starts
     int                       pos_mode{0};        // 0 = corners, 1 = explicit x/y
     int                       pos_x{30};
