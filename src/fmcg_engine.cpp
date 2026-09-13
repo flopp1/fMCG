@@ -786,6 +786,10 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
                     if (p == pend) break;                  // window boundary: delta beyond it
                     if (*p != 0) break;                    // nonzero delta: loop top reads it
                     ++p;                                   // zero delta: consume it and chain
+                    if (p == pend) {                       // delta eaten but its event is beyond
+                        burst_at_event = true;             // the window: hand the event to the
+                        break;                             // slow path (a zero delta adds no tick)
+                    }
                 }
                 bs.commit_window(p - bs.fast_p);
             }
@@ -929,6 +933,14 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
     size_t conv = 0;   // anchor for tick->sec conversion (walked by tick)
     size_t bpmw = 0;   // tempo walk for frame BPM (walked by time)
 
+    // Tick-space inversion shared by the frame push: anchor walked by time.
+    size_t iconv = 0;                       // anchor for sec->tick conversion
+    auto tick_at = [&](double sec) -> uint64_t {
+        while (iconv + 1 < tm.size() && tm[iconv + 1].time_sec <= sec) iconv++;
+        return tm[iconv].tick + (uint64_t)std::max(0.0, (sec - tm[iconv].time_sec)
+                    * ((double)ppqn * 1e6) / (double)tm[iconv].us_per_quarter);
+    };
+
     auto push_frame = [&](size_t k) {
         while (bpmw + 1 < tm.size() && tm[bpmw + 1].time_sec <= (double)k / fps) bpmw++;
         uint64_t prev_cum = (k >= W) ? out[k - W].cumulative_notes : 0;
@@ -936,7 +948,7 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
         peak_nps = std::max(peak_nps, nps);
         peak_poly = std::max(peak_poly, poly);
         out.push_back({k, (double)k / fps, cum, cum_cc, nps, peak_nps,
-                       std::max<int64_t>(0, poly), peak_poly, tm[bpmw].bpm});
+                       std::max<int64_t>(0, poly), peak_poly, tm[bpmw].bpm, (int64_t)tick_at((double)k / fps)});
     };
 
     for (uint64_t t = 0; t < nticks; ++t) {
@@ -1164,6 +1176,10 @@ bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
                     if (p == pend) break;                  // window boundary: delta beyond it
                     if (*p != 0) break;                    // nonzero delta: loop top reads it
                     ++p;                                   // zero delta: consume it and chain
+                    if (p == pend) {                       // delta eaten but its event is beyond
+                        burst_at_event = true;             // the window: hand the event to the
+                        break;                             // slow path (a zero delta adds no tick)
+                    }
                 }
                 bs.commit_window(p - bs.fast_p);
             }
@@ -1240,7 +1256,7 @@ bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
 // per-frame values the sweep would have produced).
 std::vector<FrameStats> buckets_to_frames(FrameBuckets& fb, double fps,
                                           const std::vector<TempoChange>& tm,
-                                          double max_time_sec, bool with_cc) {
+                                          double max_time_sec, bool with_cc, uint16_t ppqn) {
     const size_t total_frames = (size_t)std::ceil(max_time_sec * fps) + 1;
     fb.reserve_exact(total_frames);   // grow (or zero-extend) to the horizon
 
@@ -1252,6 +1268,14 @@ std::vector<FrameStats> buckets_to_frames(FrameBuckets& fb, double fps,
     size_t bpmw = 0;
     const size_t W = (size_t)std::round(fps);
 
+    // Tick-space inversion, same as sweep_to_frames: anchor walked by time.
+    size_t iconv = 0;
+    auto tick_at = [&](double sec) -> uint64_t {
+        while (iconv + 1 < tm.size() && tm[iconv + 1].time_sec <= sec) iconv++;
+        return tm[iconv].tick + (uint64_t)std::max(0.0, (sec - tm[iconv].time_sec)
+                    * ((double)ppqn * 1e6) / (double)tm[iconv].us_per_quarter);
+    };
+
     for (size_t k = 0; k < total_frames; ++k) {
         while (bpmw + 1 < tm.size() && tm[bpmw + 1].time_sec <= (double)k / fps) bpmw++;
         cum  += fb.ons[k];
@@ -1262,7 +1286,7 @@ std::vector<FrameStats> buckets_to_frames(FrameBuckets& fb, double fps,
         peak_nps = std::max(peak_nps, nps);
         peak_poly = std::max(peak_poly, poly);
         out.push_back({k, (double)k / fps, cum, cum_cc, nps, peak_nps,
-                       std::max<int64_t>(0, poly), peak_poly, tm[bpmw].bpm});
+                       std::max<int64_t>(0, poly), peak_poly, tm[bpmw].bpm, (int64_t)tick_at((double)k / fps)});
     }
     return out;
 }
@@ -1271,10 +1295,12 @@ std::vector<FrameStats> buckets_to_frames(FrameBuckets& fb, double fps,
 
 std::vector<FrameStats> process_streaming(
     const std::string& filename, double fps, uint16_t& out_division,
-    uint64_t& out_total_notes, bool vel0_as_note_off, const ProgressCallbacks& cb)
+    uint64_t& out_total_notes, bool vel0_as_note_off, uint64_t& out_total_ticks,
+    const ProgressCallbacks& cb)
 {
     using clock = std::chrono::steady_clock;
     out_total_notes = 0;
+    out_total_ticks = 0;
     const bool compressed = is_compressed_file(filename);
     emit(cb, "Reading and parsing \"" + filename + "\"" + (compressed ? " (compressed)" : "") + "...\n");
 
@@ -1337,6 +1363,7 @@ std::vector<FrameStats> process_streaming(
                          + " track(s) consumed a different number of bytes than declared (possible parser desync).\n", true);
             frames = sweep_to_frames(td, tempo_raw, division, fps, cb.cc_stats);
             out_total_notes = td.total_ons;
+            out_total_ticks = td.max_tick;
             nev = td.total_events_seen;   // all events walked, same as the live counter
         } else {
             // Pass 1: tempo map only. Memory stays O(tempo events).
@@ -1368,9 +1395,10 @@ std::vector<FrameStats> process_streaming(
                 const double max_time = tm[conv].time_sec
                     + (double)(fb.max_tick - tm[conv].tick)
                       * (double)tm[conv].us_per_quarter / ((double)division * 1e6);
-                frames = buckets_to_frames(fb, fps, tm, max_time, cb.cc_stats);
+                frames = buckets_to_frames(fb, fps, tm, max_time, cb.cc_stats, division);
             }
             out_total_notes = fb.total_ons;
+            out_total_ticks = fb.max_tick;
             nev = fb.total_events_seen;
         }
 
