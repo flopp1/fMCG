@@ -80,7 +80,7 @@ IMGUI_SOURCES ?= $(IMGUI_DIR)/imgui.cpp \
                  $(IMGUI_DIR)/backends/imgui_impl_glfw.cpp \
                  $(IMGUI_DIR)/backends/imgui_impl_opengl3.cpp
 
-ALL_CFLAGS := $(CXXFLAGS) $(GLFW_CFLAGS) $(ARCH_CFLAGS) $(IMGUI_CFLAGS) -Isrc -Igui
+ALL_CFLAGS := $(CXXFLAGS) $(GLFW_CFLAGS) $(ARCH_CFLAGS) $(IMGUI_CFLAGS) -Isrc -Igui -I.
 ALL_LIBS   := $(GLFW_LIBS) $(ARCH_LIBS) $(GL_LDLIBS) -lpthread
 
 CORE_SOURCES := src/fmcg_path.cpp src/fmcg_util.cpp src/fmcg_midi.cpp \
