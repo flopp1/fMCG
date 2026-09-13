@@ -131,6 +131,64 @@ int main() {
         check("tail tick advance", std::to_string((int)(tail_end.tick - tail1.tick)), "1344");
         check("tail tick-rem clamped", std::to_string((int)std::max<int64_t>(0, (int64_t)tt - tail_end.tick)), "0");
     }
+    {   // Exact peak-NPS window: note-ons in any literal 1.000000s window,
+        // half-open (t-1, t]. Clumps of simultaneous note-ons at 120bpm
+        // (960 ticks/s, ppqn 480) probe the window edges without any
+        // float-fragile exactly-1s-apart boundary.
+        auto clumps_mid = [](std::initializer_list<std::pair<int, int>> clumps) {
+            // clumps: {delta_from_previous, count}; every clump is `count`
+            // note-ons (pitch 60) chained by zero deltas on one tick.
+            std::vector<uint8_t> trk = {0x00, 0xFF,0x51,0x03, 0x07,0xA1,0x20};
+            bool first = true;
+            for (auto [delta, count] : clumps) {
+                if (delta >= 128) { trk.push_back((uint8_t)(0x80 | (delta >> 7))); }
+                if (delta >= 128 || first || delta > 0) {
+                    if (delta >= 128) trk.push_back((uint8_t)(delta & 0x7F));
+                    else trk.push_back((uint8_t)delta);
+                }
+                (void)first; first = false;
+                trk.push_back(0x90);
+                for (int i = 0; i < count; ++i) { trk.push_back(0x3C); trk.push_back(0x40); if (i + 1 < count) trk.push_back(0x00); }
+            }
+            trk.push_back(0x00); trk.push_back(0xFF); trk.push_back(0x2F); trk.push_back(0x00);
+            std::vector<uint8_t> mid = {'M','T','h','d', 0,0,0,6, 0,0, 0,1, 0x01,0xE0,
+                                        'M','T','r','k', (uint8_t)(trk.size()>>24), (uint8_t)(trk.size()>>16),
+                                        (uint8_t)(trk.size()>>8), (uint8_t)trk.size()};
+            mid.insert(mid.end(), trk.begin(), trk.end());
+            std::ofstream mf("_nps.mid", std::ios::binary);
+            mf.write((const char*)mid.data(), (std::streamsize)mid.size());
+            mf.close();
+            uint16_t div = 0; uint64_t tn = 0, tt = 0;
+            auto frames = fmcg_stream::process_streaming("_nps.mid", 60.0, div, tn, true, tt, {});
+            std::remove("_nps.mid");
+            return frames.empty() ? -1.0 : frames.back().peak_nps;
+        };
+        // 10@0s + 10@950 ticks (0.9896s): both inside one window.
+        check("nps peak both inside", std::to_string((int)clumps_mid({{0,10},{950,10}})), "20");
+        // 10@0s + 10@970 ticks (1.0104s): the older clump has left the window.
+        check("nps peak one outside", std::to_string((int)clumps_mid({{0,10},{970,10}})), "10");
+        // 10@0 + 25@0.5s + 30@1.4s: max window (0.4,1.4] holds 25+30.
+        check("nps peak three clumps", std::to_string((int)clumps_mid({{0,10},{480,25},{864,30}})), "55");
+        // Literal 1.0s window regardless of fps (old code: round(fps)/fps).
+        {
+            std::vector<uint8_t> trk = {0x00, 0xFF,0x51,0x03, 0x07,0xA1,0x20,
+                                        0x00, 0x90,0x3C,0x40};
+            for (int i = 0; i < 9; ++i) { trk.push_back(0x00); trk.push_back(0x3C); trk.push_back(0x40); }
+            trk.push_back(0x87); trk.push_back(0x36);   // +950 ticks = 0.9896s
+            for (int i = 0; i < 10; ++i) { trk.push_back(0x90); trk.push_back(0x3C); trk.push_back(0x40); if (i + 1 < 10) trk.push_back(0x00); }
+            trk.push_back(0x00); trk.push_back(0xFF); trk.push_back(0x2F); trk.push_back(0x00);
+            std::vector<uint8_t> mid = {'M','T','h','d', 0,0,0,6, 0,0, 0,1, 0x01,0xE0,
+                                        'M','T','r','k', 0,0,0,(uint8_t)trk.size()};
+            mid.insert(mid.end(), trk.begin(), trk.end());
+            std::ofstream mf("_nps.mid", std::ios::binary);
+            mf.write((const char*)mid.data(), (std::streamsize)mid.size());
+            mf.close();
+            uint16_t div = 0; uint64_t tn = 0, tt = 0;
+            auto frames = fmcg_stream::process_streaming("_nps.mid", 59.94, div, tn, true, tt, {});
+            std::remove("_nps.mid");
+            check("nps window literal 1s @59.94fps", std::to_string(frames.empty() ? -1 : (int)frames.back().peak_nps), "20");
+        }
+    }
     {   // ffmpeg colour spec conversion (ASS &H00BBGGRR -> 0xRRGGBB).
         check("ffmpeg color spec", ffmpeg_color_spec("&H00FF8040"), "0x4080FF");
         check("ffmpeg color default", ffmpeg_color_spec("junk"), "0x000000");

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <deque>
 
 #include "archive.h"
 #include "archive_entry.h"
@@ -925,22 +926,22 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
 
 // ---- anchor-interpolated sweep: tick buckets -> FrameStats --------------------
 
-// Sub-frame peak resolution: note events are accumulated into bins of width
-// 1/(FMCG_FINE_BINS*fps) seconds so {nps-max} reflects the true peak instead
-// of a frame-aligned one (other counters show ~1% higher peaks because on/off
-// pairs inside one frame partially cancel there).
-static constexpr int FMCG_FINE_BINS = 8;
+// {plph-max} and {nps-max} are both EXACT in the single-pass engine, no bins
+// involved. The sweep walks every tick in strictly increasing time order and a
+// tick is the finest time unit MIDI has (same-tick events are simultaneous by
+// definition), so:
+//   - peak polyphony = running max of the net-per-tick polyphony state;
+//   - peak NPS       = max note-ons in any literal 1.000000-second window,
+//     maintained with a sliding-window deque over (tick_time, ons) -- entries
+//     are distinct note-carrying ticks, so its size scales with ticks-per-
+//     second, not events-per-second (a million-note tick is one entry).
+// Window convention: half-open (t-1, t] -- an onset exactly 1.000s older than
+// the newest one is excluded (window span is exactly 1.0s).
 
-// {plph-max} is EXACT in the single-pass engine, no bins involved: the sweep
-// walks every tick in order and a tick is the finest time unit MIDI has
-// (same-tick events are simultaneous by definition, so the net-per-tick
-// polyphony state IS the instantaneous count). The running max of `poly` over
-// ticks is therefore the true maximum-concurrent-notes value.
-
-// Peak NPS: max sum over a sliding window of exactly W*FMCG_FINE_BINS bins
-// (== W frames == the same ~1s span the per-frame {nps} uses, on a finer
-// grid). Evaluated at every fine-bin boundary; the only approximation is the
-// bin quantization of the window position (~2ms), invisible in practice.
+// Peak NPS in the TWO-PASS fallback instead uses bins of width
+// 1/(FMCG_FINE_BINS*fps) seconds (see FrameBuckets below): that architecture
+// never materializes tick space, so the deque cannot be built there and the
+// bin-quantized window is the accepted approximation.
 
 // Build the tempo map exactly like the parallel engine: default entry,
 // stable sort by tick, dedup keeping the LAST change at each tick, then
@@ -1000,38 +1001,20 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
                     * ((double)ppqn * 1e6) / (double)tm[iconv].us_per_quarter);
     };
 
-    // ---- fine grid for sub-frame peaks -----------------------------------
-    // Events land in 1/(FMCG_FINE_BINS*fps)-second bins; a sliding window
-    // (exactly W frames wide, on the fine grid) gives the true peak NPS and
-    // a prefix sum gives the true peak polyphony. The cursor advances frame
-    // by frame so each frame's displayed peaks include every event of that
-    // frame (bins of frame k are indices [FMCG_FINE_BINS*k, FMCG_FINE_BINS*(k+1)).
-    std::vector<uint32_t> fons;      // note-ons per fine bin (NPS window only)
-    size_t n_bins = 0;               // vector size; readable zero-padded tail
-    auto fine_ensure = [&](size_t bin) {
-        if (bin >= fons.size()) {
-            size_t n = fons.size() ? fons.size() : 4096;
-            while (n <= bin) n *= 2;
-            fons.resize(n, 0);
-            n_bins = n;
-        }
-    };
-    size_t wlen = W * FMCG_FINE_BINS;
-    size_t fine_next = 0;            // bins < fine_next are in the running peaks
-    uint64_t wsum = 0;               // notes in the last wlen bins
-    uint32_t run_nps = 0;            // running NPS max (monotonic)
+    // ---- exact peak-NPS sliding window -----------------------------------
+    // Monotonic deque of (time_sec, ons) for the distinct note-carrying ticks
+    // currently inside the last literal 1.000000 seconds. The window sum is
+    // sampled exactly where a new maximum can occur: right after each onset
+    // tick. Half-open (t-1, t] convention: an onset exactly 1.000s older is
+    // excluded, so the window span is exactly 1.0s at any fps.
+    std::deque<std::pair<double, uint64_t>> nps_window;
+    uint64_t wsum = 0;               // note-ons inside the 1s window
+    uint64_t peak_nps_exact = 0;     // exact maximum (monotonic)
 
     auto push_frame = [&](size_t k) {
         // Frame-end tempo: a tempo change inside frame k must show from k on
         // (the very last tempo is never hidden by the frame boundary).
         while (bpmw + 1 < tm.size() && tm[bpmw + 1].time_sec <= (double)(k + 1) / fps) bpmw++;
-        size_t cend = (k + 1) * FMCG_FINE_BINS;
-        if (cend > n_bins) cend = n_bins;
-        for (; fine_next < cend; ++fine_next) {
-            wsum += fons[fine_next];
-            if (fine_next >= wlen) wsum -= fons[fine_next - wlen];
-            if (wsum > run_nps) run_nps = (uint32_t)wsum;
-        }
         uint64_t prev_cum = (k >= W) ? out[k - W].cumulative_notes : 0;
         double nps = (double)(cum - prev_cum);
         int64_t cur_poly = poly;
@@ -1039,7 +1022,7 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
             nps = 0;                     // is over -- nps and polyphony drop
             cur_poly = 0;                // to their resting values
         } else {
-            peak_nps = std::max(peak_nps, (double)run_nps);
+            peak_nps = std::max(peak_nps, (double)peak_nps_exact);
             // peak_poly is maintained exactly per tick in the tick walk;
             // already monotonic and covers every event of frames < tail.
         }
@@ -1065,10 +1048,16 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
         // their end-of-frame state is the current running state.
         while (cur_frame < fi) push_frame(cur_frame++);
 
-        // Sub-frame peaks: place this tick's note-ons into their fine bin.
-        size_t bin = (size_t)(sec * fps * (double)FMCG_FINE_BINS);
-        fine_ensure(bin);
-        fons[bin] += (uint32_t)o;
+        // Exact peak NPS: fold this tick's note-ons into the 1s window.
+        if (o > 0) {
+            nps_window.emplace_back(sec, o);
+            wsum += o;
+            while (!nps_window.empty() && nps_window.front().first <= sec - 1.0) {
+                wsum -= nps_window.front().second;
+                nps_window.pop_front();
+            }
+            if (wsum > peak_nps_exact) peak_nps_exact = wsum;
+        }
 
         cum += o;
         poly += d;
@@ -1099,6 +1088,12 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
 // it lands in via the anchor-interpolated tick->second map. Memory becomes
 // O(frames) instead of O(ticks) -- a ~1000x reduction on extreme files -- at
 // the cost of a second decode+parse walk over the stream.
+
+// Sub-frame peak resolution for the fallback: note events are accumulated
+// into bins of width 1/(FMCG_FINE_BINS*fps) seconds. The single-pass engine
+// computes exact peaks (deque/per-tick, see top of file); the bin-quantized
+// window here is the accepted approximation for this low-memory path.
+static constexpr int FMCG_FINE_BINS = 8;
 
 struct FrameBuckets {
     std::vector<uint32_t> ons, cc;
