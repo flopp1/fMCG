@@ -422,6 +422,7 @@ static void draw_frame(GLFWwindow* window) {
             "Time (ms)", "{time-milli} / {time-milli-max} / {time-milli-rem}",
             "Seconds", "{sec} / {sec-max} / {sec-rem}",
             "NPS",     "{nps} / {nps-max}",
+            "Ticks",   "{tick} / {tick-total} / {tick-rem}",
             "Polyphony", "{plph} / {plph-max}",
             "BPM",     "{bpm}",
             "PPQN",    "{ppqn}",
@@ -509,6 +510,8 @@ static void draw_frame(GLFWwindow* window) {
     ImGui::Checkbox("Poly##c", &g_ui.s.commas.polyphony);
     ImGui::SameLine();
     ImGui::Checkbox("NPS##c", &g_ui.s.commas.nps);
+    ImGui::SameLine();
+    ImGui::Checkbox("Ticks##c", &g_ui.s.commas.ticks);
     ImGui::SameLine();
     ImGui::Checkbox("CC##c", &g_ui.s.commas.cc);
     ImGui::Checkbox("Leading zeros (pad each stat to its own maximum)", &g_ui.s.pad.enabled);
