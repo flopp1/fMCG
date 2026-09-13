@@ -787,7 +787,11 @@ static void draw_frame(GLFWwindow* window) {
             rs.width = g_app.vid_width;
             rs.height = g_app.vid_height;
             rs.fps = g_app.fps;
-            rs.total_duration = g_app.total_duration + g_app.start_delay + g_app.end_delay;
+            rs.total_duration = g_app.total_duration + g_app.start_delay;
+            // NOTE: g_app.total_duration is frames.back().timestamp_sec, which
+            // ALREADY includes the end-delay tail (the engine extends the
+            // frames through it). Adding end_delay here again would make
+            // ffmpeg's -d run past the last ASS dialogue -> black tail.
             rs.ffmpeg_threads = g_ui.s.ffmpeg_threads;
             rs.bg_color_aabbggrr = g_app.bg_colour_ass;
             g_app.done = false;
@@ -992,7 +996,7 @@ static void draw_frame(GLFWwindow* window) {
             // speed is shown live on the progress bar during the render.
             const double wc = g_app.render_wallclock.load();
             const double speed = (wc > 0.0 && g_app.total_duration > 0.0)
-                               ? (g_app.total_duration + g_app.start_delay + g_app.end_delay) / wc : 0.0;
+                               ? (g_app.total_duration + g_app.start_delay) / wc : 0.0;
             char spd_txt[32] = "";
             if (speed > 0.0) snprintf(spd_txt, sizeof(spd_txt), " (%.2fx speed)", speed);
             ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Rendered: %s%s",

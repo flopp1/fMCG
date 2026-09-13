@@ -259,7 +259,11 @@ void render_preview_popup() {
     }
 
     // Compute popup size matching output aspect ratio
-    double total_len = g_app.total_duration + g_app.start_delay + g_app.end_delay;   // lead-in + song + tail
+    // total_duration is frames.back().timestamp_sec: it ALREADY spans the
+    // end-delay tail (engine extends frames through it), so only the start
+    // delay lead-in is added here. (Adding end_delay again would desync the
+    // scrub bar and the render-progress mirror with the actual video.)
+    double total_len = g_app.total_duration + g_app.start_delay;   // lead-in + song + tail
     double total_len_song = total_len - g_app.start_delay;         // song time span (incl. tail)
     if (total_len_song < 0.0) total_len_song = 0.0;
     float max_w = display.x * 0.8f;
