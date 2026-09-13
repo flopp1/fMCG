@@ -890,14 +890,16 @@ static void draw_frame(GLFWwindow* window) {
             ImGui::Text("This MIDI's tick count breaks the MIDI spec (28-bit delta-time limit).\n"
                         "The normal single-pass engine would need many gigabytes of RAM.");
             ImGui::Spacing();
-            ImGui::TextWrapped("Proceeding with the single-pass engine will try to allocate\n"
-                               "memory proportional to the song's tick count. On a file like\n"
-                               "this that can reach tens of gigabytes; if RAM runs out the\n"
-                               "system will stutter, swap (thrash) heavily, and the operation\n"
+            // No manual line breaks: the button row below fixes the modal's
+            // width, and TextWrapped fills that width for the whole block.
+            ImGui::TextWrapped("Proceeding with the single-pass engine will try to allocate "
+                               "memory proportional to the song's tick count. On a file like "
+                               "this that can reach tens of gigabytes; if RAM runs out the "
+                               "system will stutter, swap (thrash) heavily, and the operation "
                                "may fail or freeze the whole PC -- not just this program.");
             ImGui::Spacing();
-            ImGui::TextWrapped("Two-pass mode re-reads the file (roughly doubling the\n"
-                               "decode/parse time) but keeps RAM small regardless of tick\n"
+            ImGui::TextWrapped("Two-pass mode re-reads the file (roughly doubling the "
+                               "decode/parse time) but keeps RAM small regardless of tick "
                                "count. Cancel aborts now.");
             ImGui::Spacing();
             if (ImGui::Button("Proceed (single-pass)", ImVec2(190, 0))) {
@@ -909,6 +911,9 @@ static void draw_frame(GLFWwindow* window) {
                 g_app.spec_choice.store(1);
                 ImGui::CloseCurrentPopup();
             }
+            ImGui::SameLine();
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX()
+                                 + ImGui::GetContentRegionAvail().x - 190.0f);   // flush right
             if (ImGui::Button("Cancel", ImVec2(190, 0))) {
                 g_app.spec_choice.store(2);
                 ImGui::CloseCurrentPopup();
