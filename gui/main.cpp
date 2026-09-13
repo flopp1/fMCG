@@ -887,6 +887,11 @@ static void draw_frame(GLFWwindow* window) {
         }
         if (ImGui::BeginPopupModal("MIDI exceeds spec", nullptr,
                                    ImGuiWindowFlags_AlwaysAutoResize)) {
+            // Minimum content width for the three-button row: auto-resize
+            // otherwise sizes the window to the two-button row and a flush-
+            // right Cancel would overlap "Two-pass".
+            const float btn_w = 190.0f;
+            ImGui::Dummy(ImVec2(btn_w * 3.0f + ImGui::GetStyle().ItemSpacing.x * 2.0f, 1.0f));
             ImGui::Text("This MIDI's tick count breaks the MIDI spec (28-bit delta-time limit).\n"
                         "The normal single-pass engine would need many gigabytes of RAM.");
             ImGui::Spacing();
@@ -902,19 +907,19 @@ static void draw_frame(GLFWwindow* window) {
                                "decode/parse time) but keeps RAM small regardless of tick "
                                "count. Cancel aborts now.");
             ImGui::Spacing();
-            if (ImGui::Button("Proceed (single-pass)", ImVec2(190, 0))) {
+            if (ImGui::Button("Proceed (single-pass)", ImVec2(btn_w, 0))) {
                 g_app.spec_choice.store(0);
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            if (ImGui::Button("Two-pass (low memory)", ImVec2(190, 0))) {
+            if (ImGui::Button("Two-pass (low memory)", ImVec2(btn_w, 0))) {
                 g_app.spec_choice.store(1);
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
             ImGui::SetCursorPosX(ImGui::GetCursorPosX()
-                                 + ImGui::GetContentRegionAvail().x - 190.0f);   // flush right
-            if (ImGui::Button("Cancel", ImVec2(190, 0))) {
+                                 + ImGui::GetContentRegionAvail().x - btn_w);   // flush right
+            if (ImGui::Button("Cancel", ImVec2(btn_w, 0))) {
                 g_app.spec_choice.store(2);
                 ImGui::CloseCurrentPopup();
             }
