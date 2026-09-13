@@ -102,7 +102,11 @@ public:
     BinaryReader& operator=(const BinaryReader&) = delete;
 
     size_t  get_file_size() const { return file_size; }
+    size_t  tell() const { return pos; }
     size_t read_raw(void* dst, size_t n);
+    // Asynchronous readahead for sequential scans (Win32 PrefetchVirtualMemory
+    // / POSIX madvise). Best-effort: failure is silently ignored.
+    void prefetch(size_t offset, size_t len);
 };
 
 // MIDI Processor -- routes all inputs through the single-pass streaming engine.

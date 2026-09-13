@@ -354,34 +354,26 @@ void render_preview_popup() {
             // Same child + controls as the song branch (unified layout).
             bool in_delay = g_app.preview_time < g_app.start_delay;
             FrameStats delay_fs;
-            FrameStats tail_fs;
             const FrameStats* fs_ptr;
             if (in_delay) {
                 delay_fs.bpm = g_app.frames_data.front().bpm;
                 delay_fs.timestamp_sec = g_app.preview_time - g_app.start_delay;
                 // Negative song ticks counting up to 0, matching the ASS
-                // delay block's formula (initial tempo from the first frame).
-                const double us0 = 60000000.0 / (delay_fs.bpm > 0.0 ? delay_fs.bpm : 120.0);
-                delay_fs.tick = (int64_t)std::llround(delay_fs.timestamp_sec
-                                * (double)g_app.ppqn * 1e6 / us0);
+                // delay block: linear back-extrapolation at the initial
+                // tempo from the song's first frame (safe even when the
+                // first tempo change sits after tick 0).
+                const FrameStats& front = g_app.frames_data.front();
+                const double us0 = 60000000.0 / (front.bpm > 0.0 ? front.bpm : 120.0);
+                delay_fs.tick = front.tick
+                    + (int64_t)std::llround(delay_fs.timestamp_sec
+                        * (double)g_app.ppqn * 1e6 / us0);
                 fs_ptr = &delay_fs;
             } else {
-                const FrameStats& last = g_app.frames_data.back();
-                double song_t = g_app.preview_time - g_app.start_delay;
-                if (song_t > last.timestamp_sec) {
-                    // End-delay tail: frozen stats, time keeps counting and
-                    // {tick} advances at the last tempo -- same as the ASS
-                    // tail block.
-                    tail_fs = last;
-                    tail_fs.timestamp_sec = song_t;
-                    const double us_last = 60000000.0 / (last.bpm > 0.0 ? last.bpm : 120.0);
-                    tail_fs.tick = last.tick
-                        + (int64_t)std::llround((song_t - last.timestamp_sec)
-                            * (double)g_app.ppqn * 1e6 / us_last);
-                    fs_ptr = &tail_fs;
-                } else {
-                    fs_ptr = &find_frame(song_t);
-                }
+                // Song and end-delay tail alike: the engine's frames vector
+                // already carries tail frames (resting stats, counting time,
+                // last-tempo ticks); find_frame returns the latest one at or
+                // before the song time.
+                fs_ptr = &find_frame(g_app.preview_time - g_app.start_delay);
             }
             const FrameStats& fs = *fs_ptr;
             std::string text = format_frame_text(fs);

@@ -45,10 +45,24 @@ public:
 
 class FileSrc : public DataSrc {
     BinaryReader r;
+    static constexpr size_t READAHEAD = 16u << 20;   // 16MB async readahead
+    uint64_t prefetched_to = 0;                      // prefetched up to this offset
 public:
     explicit FileSrc(const std::string& path) : r(path, 0, /*mmap=*/true) {}
     bool ok() const override { return r.get_file_size() > 0; }
-    size_t read(void* dst, size_t n) override { return r.read_raw(dst, n); }
+    size_t read(void* dst, size_t n) override {
+        // Keep the OS pulling disk sectors ~16MB ahead of the parse position:
+        // on a cold HDD this converts the 512KB request pattern into long
+        // sequential reads instead of the reader stalling on page faults.
+        const uint64_t pos = bytes_read() + n;
+        if (pos + READAHEAD > prefetched_to) {
+            const uint64_t from = prefetched_to ? prefetched_to : pos;
+            r.prefetch((size_t)from, (size_t)((pos + READAHEAD) - from));
+            prefetched_to = pos + READAHEAD;
+        }
+        return r.read_raw(dst, n);
+    }
+    uint64_t bytes_read() const override { return (uint64_t)r.tell(); }
     const char* kind() const override { return "mmap"; }
     uint64_t total_bytes() const override { return (uint64_t)r.get_file_size(); }
 };
@@ -616,7 +630,7 @@ struct TickData {
     }
     void note_on(uint64_t t) { ensure(t); cells[t].ons++; cells[t].delta++; total_ons++; }
     void delta_at(uint64_t t, int64_t d) { ensure(t); cells[t].delta += (int32_t)d; }
-    // CC accumulation (only touched when CC stats are enabled).
+    // CC accumulation (always counted; the {cc} stats read it).
     std::vector<uint32_t> dense_cc;      // per-tick control-change counts
     uint64_t total_cc = 0;
     void cc_at(uint64_t t) {
@@ -885,6 +899,21 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
 
 // ---- anchor-interpolated sweep: tick buckets -> FrameStats --------------------
 
+// Sub-frame peak resolution: note events are accumulated into bins of width
+// 1/(FMCG_FINE_BINS*fps) seconds so {nps-max} and {plph-max} reflect the true
+// peaks instead of frame-aligned ones (other counters show ~1% higher peaks
+// because on/off pairs inside one frame partially cancel there). Both engines
+// use identical bins so their outputs stay equivalent.
+static constexpr int FMCG_FINE_BINS = 8;
+
+struct FinePeaks { double peak_nps; int64_t peak_poly; };
+
+// Peak NPS: max sum over a sliding window of exactly W*FMCG_FINE_BINS bins
+// (== W frames == the same ~1s span the per-frame {nps} uses, on a finer
+// grid). Peak polyphony: max prefix sum over the delta bins (the running
+// polyphony's maximum occurs right after some note-on, so bin-end states
+// capture it to within one bin).
+
 // Build the tempo map exactly like the parallel engine: default entry,
 // stable sort by tick, dedup keeping the LAST change at each tick, then
 // anchor times. Shared by the tick-space sweep and the frame-bucket path.
@@ -933,6 +962,7 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
     size_t cur_frame = 0;
     size_t conv = 0;   // anchor for tick->sec conversion (walked by tick)
     size_t bpmw = 0;   // tempo walk for frame BPM (walked by time)
+    size_t song_frames = SIZE_MAX;   // set before the tail loop; frames >= it rest at zero
 
     // Tick-space inversion shared by the frame push: anchor walked by time.
     size_t iconv = 0;                       // anchor for sec->tick conversion
@@ -942,14 +972,56 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
                     * ((double)ppqn * 1e6) / (double)tm[iconv].us_per_quarter);
     };
 
+    // ---- fine grid for sub-frame peaks -----------------------------------
+    // Events land in 1/(FMCG_FINE_BINS*fps)-second bins; a sliding window
+    // (exactly W frames wide, on the fine grid) gives the true peak NPS and
+    // a prefix sum gives the true peak polyphony. The cursor advances frame
+    // by frame so each frame's displayed peaks include every event of that
+    // frame (bins of frame k are indices [FMCG_FINE_BINS*k, FMCG_FINE_BINS*(k+1)).
+    std::vector<uint32_t> fons;      // note-ons per fine bin
+    std::vector<int32_t>  fdeltas;   // poly delta per fine bin
+    size_t n_bins = 0;               // vector size; readable zero-padded tail
+    auto fine_ensure = [&](size_t bin) {
+        if (bin >= fons.size()) {
+            size_t n = fons.size() ? fons.size() : 4096;
+            while (n <= bin) n *= 2;
+            fons.resize(n, 0);
+            fdeltas.resize(n, 0);
+            n_bins = n;
+        }
+    };
+    size_t wlen = W * FMCG_FINE_BINS;
+    size_t fine_next = 0;            // bins < fine_next are in the running peaks
+    uint64_t wsum = 0;               // notes in the last wlen bins
+    int64_t  psum = 0;               // polyphony prefix over bins
+    uint32_t run_nps = 0;            // running maxima (monotonic)
+    int64_t  run_poly = 0;
+
     auto push_frame = [&](size_t k) {
-        while (bpmw + 1 < tm.size() && tm[bpmw + 1].time_sec <= (double)k / fps) bpmw++;
+        // Frame-end tempo: a tempo change inside frame k must show from k on
+        // (the very last tempo is never hidden by the frame boundary).
+        while (bpmw + 1 < tm.size() && tm[bpmw + 1].time_sec <= (double)(k + 1) / fps) bpmw++;
+        size_t cend = (k + 1) * FMCG_FINE_BINS;
+        if (cend > n_bins) cend = n_bins;
+        for (; fine_next < cend; ++fine_next) {
+            wsum += fons[fine_next];
+            if (fine_next >= wlen) wsum -= fons[fine_next - wlen];
+            if (wsum > run_nps) run_nps = (uint32_t)wsum;
+            psum += fdeltas[fine_next];
+            if (psum > run_poly) run_poly = psum;
+        }
         uint64_t prev_cum = (k >= W) ? out[k - W].cumulative_notes : 0;
         double nps = (double)(cum - prev_cum);
-        peak_nps = std::max(peak_nps, nps);
-        peak_poly = std::max(peak_poly, poly);
+        int64_t cur_poly = poly;
+        if (k >= song_frames) {          // end-delay tail: all event activity
+            nps = 0;                     // is over -- nps and polyphony drop
+            cur_poly = 0;                // to their resting values
+        } else {
+            peak_nps = std::max(peak_nps, (double)run_nps);
+            peak_poly = std::max(peak_poly, run_poly);
+        }
         out.push_back({k, (double)k / fps, cum, cum_cc, nps, peak_nps,
-                       std::max<int64_t>(0, poly), peak_poly, tm[bpmw].bpm, (int64_t)tick_at((double)k / fps)});
+                       std::max<int64_t>(0, cur_poly), peak_poly, tm[bpmw].bpm, (int64_t)tick_at((double)k / fps)});
     };
 
     for (uint64_t t = 0; t < nticks; ++t) {
@@ -970,6 +1042,12 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
         // their end-of-frame state is the current running state.
         while (cur_frame < fi) push_frame(cur_frame++);
 
+        // Sub-frame peaks: place this tick's events into their fine bin.
+        size_t bin = (size_t)(sec * fps * (double)FMCG_FINE_BINS);
+        fine_ensure(bin);
+        fons[bin] += (uint32_t)o;
+        fdeltas[bin] += (int32_t)d;
+
         cum += o;
         poly += d;
         if (c) cum_cc += c;
@@ -979,9 +1057,10 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
     while (conv + 1 < tm.size() && tm[conv + 1].tick <= td.max_tick) conv++;
     double max_time = tm[conv].time_sec
                     + (double)(td.max_tick - tm[conv].tick) * (double)tm[conv].us_per_quarter * inv;
-    // End-delay tail: extra frames past the song's end. Stats freeze at their
-    // final values (the tail push_frame loop naturally stops accumulating);
-    // {tick} keeps advancing at the last tempo via tick_at's linear inverse.
+    song_frames = (size_t)std::ceil(max_time * fps) + 1;   // tail frames (>= this) rest at zero
+    // End-delay tail: extra frames past the song's end. Notes/poly/NPS are at
+    // their resting values (final polyphony -- 0 for a clean ending); time
+    // keeps counting and {tick} advances at the last tempo via tick_at.
     if (end_delay > 0.0) max_time += end_delay;
     size_t total_frames = (size_t)std::ceil(max_time * fps) + 1;
     while (cur_frame < total_frames) push_frame(cur_frame++);
@@ -1001,6 +1080,11 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
 struct FrameBuckets {
     std::vector<uint32_t> ons, cc;
     std::vector<int32_t> deltas;   // signed: transient negatives must not wrap
+    // Fine-grid mirrors (FMCG_FINE_BINS bins per frame) feeding the sub-frame
+    // peak computation, identical to the single-pass engine's.
+    std::vector<uint32_t> fons;
+    std::vector<int32_t>  ffdeltas;
+    size_t nbins = 0;
     uint64_t total_ons = 0, total_cc = 0;
     uint64_t total_events_seen = 0;   // one walk's worth, same metric as the pings
     uint64_t max_tick = 0;            // highest tick seen (song-horizon source)
@@ -1015,14 +1099,25 @@ struct FrameBuckets {
             nframes = n;
         }
     }
+    void fine_ensure(size_t bin) {
+        if (bin >= fons.size()) {
+            size_t n = fons.size() ? fons.size() : 4096;
+            while (n <= bin) n *= 2;
+            fons.resize(n, 0); ffdeltas.resize(n, 0);
+            nbins = n;
+        }
+    }
     // Bucket growth is on demand; guarantee capacity for the final sizing.
     void reserve_exact(size_t n) {
         ons.resize(n, 0); deltas.resize(n, 0);
         if (!cc.empty()) cc.resize(n, 0);
         if (nframes < n) nframes = n;
+        fons.resize(n * FMCG_FINE_BINS, 0); ffdeltas.resize(n * FMCG_FINE_BINS, 0);
+        if (nbins < n * FMCG_FINE_BINS) nbins = n * FMCG_FINE_BINS;
     }
-    void note_on(size_t fi)  { ensure(fi); ons[fi]++;    deltas[fi]++;    total_ons++; }
-    void note_off(size_t fi) { ensure(fi); deltas[fi]--; }
+    // Note events are addressed by FINE bin; the frame index is bin/8.
+    void note_on(size_t bin)  { size_t fi = bin / FMCG_FINE_BINS; ensure(fi); ons[fi]++; deltas[fi]++; total_ons++; fine_ensure(bin); fons[bin]++; ffdeltas[bin]++; }
+    void note_off(size_t bin) { size_t fi = bin / FMCG_FINE_BINS; ensure(fi); deltas[fi]--;           fine_ensure(bin); ffdeltas[bin]--; }
     void add_cc(size_t fi)   { ensure(fi); cc[fi]++;     total_cc++; }
 };
 
@@ -1097,6 +1192,12 @@ bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
         double f = sec * fps;
         return f <= 0.0 ? 0 : (size_t)f;
     };
+    // Fine bin for note events (sub-frame peak resolution; bin/8 = frame).
+    auto fine_of = [&](uint64_t t) -> size_t {
+        const double sec = seg_time + (double)(t - tick_base) * seg_us * inv;
+        double f = sec * fps * (double)FMCG_FINE_BINS;
+        return f <= 0.0 ? 0 : (size_t)f;
+    };
 
     while (true) {
         int64_t tag = rd32();
@@ -1158,11 +1259,11 @@ bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
                     if (explicit_status) running = status; // 0xFx never reaches here
                     if (et == 0x90 && (n2 > 0 || !vel0_as_note_off)) {
                         refcount[status & 0x0F][n1]++;
-                        fb.note_on(frame_of(tick));
+                        fb.note_on(fine_of(tick));
                     } else if (et == 0x90 || et == 0x80) {
                         if (refcount[status & 0x0F][n1] > 0) {
                             refcount[status & 0x0F][n1]--;
-                            fb.note_off(frame_of(tick));
+                            fb.note_off(fine_of(tick));
                         }
                     } else if (et == 0xB0 && count_cc) {
                         fb.add_cc(frame_of(tick));
@@ -1220,9 +1321,9 @@ bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
                     uint8_t ch = status & 0x0F, note = (uint8_t)n1e, vel = (uint8_t)n2e;
                     if (et == 0x90 && (vel > 0 || !vel0_as_note_off)) {
                         refcount[ch][note]++;
-                        fb.note_on(frame_of(tick));
+                        fb.note_on(fine_of(tick));
                     } else if (et == 0x90 || et == 0x80) {
-                        if (refcount[ch][note] > 0) { refcount[ch][note]--;                             fb.note_off(frame_of(tick)); }
+                        if (refcount[ch][note] > 0) { refcount[ch][note]--;                             fb.note_off(fine_of(tick)); }
                     } else if (et == 0xB0 && count_cc) {
                         fb.add_cc(frame_of(tick));
                     }
@@ -1243,7 +1344,7 @@ bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
         // Held notes close at the track's final tick.
         for (int ch = 0; ch < 16; ++ch)
             for (int n = 0; n < 128; ++n)
-                if (refcount[ch][n] > 0)                             fb.note_off(frame_of(tick));
+                if (refcount[ch][n] > 0)                             fb.note_off(fine_of(tick));
         if (tick > fb.max_tick) fb.max_tick = tick;
 
         size_t consumed = bs.consumed();
@@ -1265,6 +1366,8 @@ std::vector<FrameStats> buckets_to_frames(FrameBuckets& fb, double fps,
                                           double end_delay = 0.0) {
     if (end_delay > 0.0) max_time_sec += end_delay;   // frozen-stats tail frames
     const size_t total_frames = (size_t)std::ceil(max_time_sec * fps) + 1;
+    const size_t song_frames = (size_t)std::ceil((end_delay > 0.0
+        ? max_time_sec - end_delay : max_time_sec) * fps) + 1;
     fb.reserve_exact(total_frames);   // grow (or zero-extend) to the horizon
 
     std::vector<FrameStats> out;
@@ -1275,6 +1378,15 @@ std::vector<FrameStats> buckets_to_frames(FrameBuckets& fb, double fps,
     size_t bpmw = 0;
     const size_t W = (size_t)std::round(fps);
 
+    // Sub-frame peaks from the fine-grid buckets -- same sliding window and
+    // prefix sums as sweep_to_frames, so both engines agree.
+    const size_t wlen = W * FMCG_FINE_BINS;
+    size_t fine_next = 0;
+    uint64_t wsum = 0;
+    int64_t  psum = 0;
+    uint32_t run_nps = 0;
+    int64_t  run_poly = 0;
+
     // Tick-space inversion, same as sweep_to_frames: anchor walked by time.
     size_t iconv = 0;
     auto tick_at = [&](double sec) -> uint64_t {
@@ -1284,16 +1396,32 @@ std::vector<FrameStats> buckets_to_frames(FrameBuckets& fb, double fps,
     };
 
     for (size_t k = 0; k < total_frames; ++k) {
-        while (bpmw + 1 < tm.size() && tm[bpmw + 1].time_sec <= (double)k / fps) bpmw++;
+        // Frame-end tempo: a tempo change inside frame k must show from k on.
+        while (bpmw + 1 < tm.size() && tm[bpmw + 1].time_sec <= (double)(k + 1) / fps) bpmw++;
         cum  += fb.ons[k];
         poly += fb.deltas[k];
         if (with_cc) cum_cc += fb.cc[k];
+        size_t cend = (k + 1) * FMCG_FINE_BINS;
+        if (cend > fb.nbins) cend = fb.nbins;
+        for (; fine_next < cend; ++fine_next) {
+            wsum += fb.fons[fine_next];
+            if (fine_next >= wlen) wsum -= fb.fons[fine_next - wlen];
+            if (wsum > run_nps) run_nps = (uint32_t)wsum;
+            psum += fb.ffdeltas[fine_next];
+            if (psum > run_poly) run_poly = psum;
+        }
         uint64_t prev_cum = (k >= W) ? out[k - W].cumulative_notes : 0;
         double nps = (double)(cum - prev_cum);
-        peak_nps = std::max(peak_nps, nps);
-        peak_poly = std::max(peak_poly, poly);
+        int64_t cur_poly = poly;
+        if (k >= song_frames) {          // end-delay tail: all event activity
+            nps = 0;                     // is over -- nps and polyphony drop
+            cur_poly = 0;                // to their resting values
+        } else {
+            peak_nps = std::max(peak_nps, (double)run_nps);
+            peak_poly = std::max(peak_poly, run_poly);
+        }
         out.push_back({k, (double)k / fps, cum, cum_cc, nps, peak_nps,
-                       std::max<int64_t>(0, poly), peak_poly, tm[bpmw].bpm, (int64_t)tick_at((double)k / fps)});
+                       std::max<int64_t>(0, cur_poly), peak_poly, tm[bpmw].bpm, (int64_t)tick_at((double)k / fps)});
     }
     return out;
 }

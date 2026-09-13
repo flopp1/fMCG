@@ -638,7 +638,7 @@ static void draw_frame(GLFWwindow* window) {
     {
         bool odialog_active = g_app.dialog_busy.load();
         if (odialog_active) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
-        if (ImGui::Button("Browse...##out") && !odialog_active) {
+        if (ImGui::Button("Browse##out") && !odialog_active) {
             std::string cmd;
 #if defined(_WIN32)
             cmd = "powershell -NoProfile -Command \""

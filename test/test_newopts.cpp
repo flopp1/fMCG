@@ -99,35 +99,37 @@ int main() {
         char buf[8]; snprintf(buf, sizeof(buf), "%d", npos);
         check("lead-in frame count", buf, "122");   // 2s delay x 60fps + 2 song frames
     }
-    {   // End-delay tail: frozen notes, counting time, last-tempo ticks.
-        std::vector<FrameStats> frames;
-        for (int k = 0; k < 20; ++k) {
-            FrameStats f; f.frame_index = k; f.timestamp_sec = k / 10.0;
-            f.cumulative_notes = k; f.bpm = 120.0; f.tick = k * 240;
-            frames.push_back(f);
-        }
-        AssConfig ac; ac.fps = 10.0; ac.end_delay = 1.5; ac.total_ticks = 4560;
-        generate_ass("_t.ass", frames, {"N:{nc} T:{sec} K:{tick}/{tick-total} R:{tick-rem}"},
-                     20, 0, 480, ac, 4560);
-        std::ifstream f("_t.ass");
-        std::string all((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-        std::remove("_t.ass");
-        int npos = 0;
-        for (size_t at = all.find("\\pos("); at != std::string::npos; at = all.find("\\pos(", at + 1)) npos++;
-        char buf[8]; snprintf(buf, sizeof(buf), "%d", npos);
-        check("tail frame count", buf, "35");       // 20 song + 15 tail (1.5s x 10fps)
-        // Every tail line (dialogue 21 onward) must show the frozen 19.
-        size_t line_at = 0; int seen = 0;
-        for (int i = 0; i < 20; ++i) line_at = all.find("Dialogue", line_at) + 1;
-        for (size_t at = all.find("Dialogue", line_at); at != std::string::npos;
-             at = all.find("Dialogue", at + 1)) {
-            size_t eol = all.find('\n', at);
-            if (all.find("N:19 ", at) < eol) seen++;
-        }
-        snprintf(buf, sizeof(buf), "%d", seen);
-        std::string seen_s = buf;
-        check("tail notes frozen", seen_s, "15");
-        check("tail tick advance", all.find("K:6,000/4,560 R:0") != std::string::npos ? "yes" : "no", "yes");
+    {   // End-delay tail: engine-produced tail frames. A note held 1920 ticks
+        // (=2s at 120bpm, ppqn 480) at 10fps plus a 1.5s tail: 21 song frames
+        // + 15 tail; notes stay at 1, polyphony drops to 0 (clean ending),
+        // nps 0, time keeps counting, ticks advance at 960/s (120bpm).
+        const uint8_t mid[] = {
+            'M','T','h','d', 0,0,0,6, 0,0, 0,1, 0x01,0xE0,
+            'M','T','r','k', 0,0,0,24,
+            0x00, 0xFF,0x51,0x03, 0x07,0xA1,0x20,   // tempo 500000 (120bpm)
+            0x00, 0x90,0x3C,0x40,                    // note on
+            0x8F,0x00, 0x80,0x3C,0x00,               // +1920 ticks: note off
+            0x00, 0xFF,0x2F,0x00 };                  // end of track
+        std::ofstream mf("_tail.mid", std::ios::binary);
+        mf.write((const char*)mid, sizeof mid);
+        mf.close();
+        uint16_t div = 0; uint64_t tn = 0, tt = 0;
+        auto frames = fmcg_stream::process_streaming("_tail.mid", 10.0, div, tn, true, tt, {}, 1.5);
+        std::remove("_tail.mid");
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%zu", frames.size());
+        check("tail frame count", buf, "36");       // ceil(2*10)+1 song + 15 tail
+        const FrameStats& last_song = frames[20];   // song's final frame (2.0s)
+        const FrameStats& tail1     = frames[21];   // first tail frame (2.1s)
+        const FrameStats& tail_end  = frames.back();// 3.5s song time
+        check("song notes", std::to_string(last_song.cumulative_notes), "1");
+        check("tail notes frozen", std::to_string(tail1.cumulative_notes), "1");
+        check("tail poly rests", std::to_string(tail1.polyphony), "0");
+        check("tail nps zero", std::to_string((int)tail1.notes_per_second), "0");
+        check("tail bpm last", std::to_string((int)tail_end.bpm), "120");
+        // 3.5s - 2.1s = 1.4s of tail at 960 ticks/s.
+        check("tail tick advance", std::to_string((int)(tail_end.tick - tail1.tick)), "1344");
+        check("tail tick-rem clamped", std::to_string((int)std::max<int64_t>(0, (int64_t)tt - tail_end.tick)), "0");
     }
     {   // ffmpeg colour spec conversion (ASS &H00BBGGRR -> 0xRRGGBB).
         check("ffmpeg color spec", ffmpeg_color_spec("&H00FF8040"), "0x4080FF");

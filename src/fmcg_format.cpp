@@ -207,13 +207,13 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
             double t_end = (k + 1) * frame_dur;
             if (t_end > cfg.start_delay) t_end = cfg.start_delay;
             zero_fs.timestamp_sec = t_start - cfg.start_delay;   // negative song time
-            // Negative song ticks, counting up to 0: the same linear inverse
-            // the {sec} fields use. Ticks are linear in song time at the
-            // initial tempo, taken from the first frame's BPM
-            // (us_per_quarter = 60e6 / bpm).
+            // Negative song ticks, counting up to 0: linear back-extrapolation
+            // at the initial tempo from the song's first frame (safe even when
+            // the first tempo change sits after tick 0).
             const double us0 = 60000000.0 / (frames.front().bpm > 0.0 ? frames.front().bpm : 120.0);
-            zero_fs.tick = (int64_t)std::llround(zero_fs.timestamp_sec
-                            * (double)ppqn * 1e6 / us0);
+            zero_fs.tick = frames.front().tick
+                + (int64_t)std::llround(zero_fs.timestamp_sec
+                    * (double)ppqn * 1e6 / us0);
             zero_fs.frame_index = (size_t)k;
             std::string text_block;
             std::vector<std::string> rendered;
@@ -229,7 +229,9 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
         }
     }
 
-    // Song frames, offset by the start delay.
+    // Song frames (the engine already extends `frames` with the end-delay
+    // tail: resting stats, counting time, last-tempo ticks), offset by the
+    // start delay.
     const double frame_dur = 1.0 / cfg.fps;
     for (size_t fi = 0; fi < frames.size(); ++fi) {
         const auto& f = frames[fi];
@@ -245,40 +247,9 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
 
         double t_start = f.timestamp_sec + cfg.start_delay;
         double t_end = (fi + 1 < frames.size()) ? frames[fi + 1].timestamp_sec + cfg.start_delay
-                                                 : t_start + 1.0 / cfg.fps;
+                                                 : t_start + frame_dur;
         ass << "Dialogue: 0," << to_ass_time(t_start) << "," << to_ass_time(t_end)
             << ",Default,,0,0,0,,{\\pos(" << pos_x << "," << pos_y << ")}" << text_block << "\n";
-    }
-
-    // End-delay tail: the song's last frame's stats freeze, but the time
-    // fields keep counting forward (the template's {sec}/{time-*} derive
-    // from the frame timestamp) and {tick} advances at the last tempo via
-    // the same linear inverse the engine's tail frames use.
-    if (cfg.end_delay > 0.0 && !frames.empty()) {
-        FrameStats tail = frames.back();   // frozen counters
-        const long long n_tail = (long long)std::floor(cfg.end_delay * cfg.fps);
-        const double last_end = frames.back().timestamp_sec + frame_dur;
-        for (long long k = 0; k < n_tail; ++k) {
-            double t_start = last_end + k * frame_dur;
-            tail.timestamp_sec = frames.back().timestamp_sec + (t_start - last_end) + frame_dur;
-            // Linear tick advance at the last tempo (the final frame's BPM
-            // is the last tempo anchor's; us_per_quarter = 60e6 / bpm).
-            const double us_last = 60000000.0 / (frames.back().bpm > 0.0 ? frames.back().bpm : 120.0);
-            tail.tick = frames.back().tick
-                + (int64_t)std::llround((tail.timestamp_sec - frames.back().timestamp_sec)
-                    * (double)ppqn * 1e6 / us_last);
-            std::string text_block;
-            std::vector<std::string> rendered;
-            for (size_t i = 0; i < template_lines.size(); ++i) {
-                std::string row = ProcessTemplateLine(template_lines[i], tail, total_notes, total_cc, total_duration, ppqn, cfg.commas, cfg.pad, cfg.bpm, total_ticks);
-                rendered.push_back(row);
-                text_block += row;
-                if (i + 1 < template_lines.size()) text_block += "\\N";
-            }
-            clamp_pos(rendered);
-            ass << "Dialogue: 0," << to_ass_time(t_start) << "," << to_ass_time(t_start + frame_dur)
-                << ",Default,,0,0,0,,{\\pos(" << pos_x << "," << pos_y << ")}" << text_block << "\n";
-        }
     }
     ass.close();
 }

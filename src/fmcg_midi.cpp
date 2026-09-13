@@ -137,6 +137,23 @@ BinaryReader::~BinaryReader() {
 #endif
 }
 
+void BinaryReader::prefetch(size_t offset, size_t len) {
+    if (!use_mmap || mmap_len == 0) return;
+    if (offset >= mmap_len) return;
+    if (len > mmap_len - offset) len = mmap_len - offset;
+    if (len == 0) return;
+#if defined(_WIN32)
+    WIN32_MEMORY_RANGE_ENTRY e;
+    e.VirtualAddress = mmap_ptr + offset;
+    e.NumberOfBytes = len;
+    PrefetchVirtualMemory(GetCurrentProcess(), 1, &e, 0);
+#else
+#ifdef MADV_WILLNEED
+    madvise(mmap_ptr + offset, len, MADV_WILLNEED);
+#endif
+#endif
+}
+
 BinaryReader::BinaryReader(BinaryReader&& o) noexcept
     : use_mmap(o.use_mmap),
       mmap_ptr(o.mmap_ptr), mmap_len(o.mmap_len),
