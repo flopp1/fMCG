@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <random>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,7 @@ static std::string gen_track(std::mt19937& rng, uint32_t tseed, int ppqn) {
     std::mt19937 g(tseed);
     std::string s;
     uint8_t running = 0;
+    bool running_two = false;   // running status is a 2-data-byte message?
     const int events = 200 + (int)(g() % 3000);
 
     // Occasional tempo meta at the head (varied us_per_quarter).
@@ -62,21 +64,22 @@ static std::string gen_track(std::mt19937& rng, uint32_t tseed, int ppqn) {
             st = (uint8_t)(kind == 0 ? 0x80 : kind == 1 ? 0x90 : kind == 2 ? 0xB0
                             : kind == 3 ? 0xA0 : 0xE0);
             st |= (uint8_t)(g() % 16);
-            if (running == st || (g() % 2)) { /* explicit below */ }
-            if (g() % 2) { s += (char)st; running = st; }   // explicit status
-            else if (!running) { s += (char)st; running = st; }  // must set
-            // else: use running status (data bytes only)
+            // Running status is only legal within the same data-byte class;
+            // a 0xCx/0xDx running status would make a 2-data-byte event
+            // unparseable. Chaining is only allowed from a 2-data-byte status.
+            // else: chain (use running status, data bytes only) -- legal only
+            // when running holds a 2-data-byte status (running_two == true)
+            if (!running_two || g() % 2) { s += (char)st; running = st; running_two = true; }
             uint8_t n1 = (uint8_t)(g() % 128);
             uint8_t n2 = (uint8_t)(g() % 128);
             if (st == 0x90 && (g() % 6 == 0)) n2 = 0;   // vel-0 note-ons
             s += (char)n1; s += (char)n2;
         } else if (what < 72) {                // 1-data-byte messages (0xC0/0xD0)
             uint8_t st = (uint8_t)(((g() % 2) ? 0xC0 : 0xD0) | (g() % 16));
-            s += (char)st; running = st;
+            s += (char)st; running = st; running_two = false;
             s += (char)(g() % 128);
         } else if (what < 84) {                // meta events (incl. tempo)
-            put_vlq(s, 0);                     // metas usually on their own tick
-            s += (char)0xFF; running = 0;
+            s += (char)0xFF; running = 0; running_two = false;
             if (g() % 4 == 0) {
                 s += (char)0x51; s += (char)0x03;
                 uint32_t us = 300000 + (g() % 900000);
@@ -88,18 +91,18 @@ static std::string gen_track(std::mt19937& rng, uint32_t tseed, int ppqn) {
                 for (int k = 0; k < len; ++k) s += (char)(g() & 0x7F);  // text-ish
             }
         } else if (what < 90) {                // sysex
-            s += (char)((g() % 2) ? 0xF0 : 0xF7); running = 0;
+            s += (char)((g() % 2) ? 0xF0 : 0xF7); running = 0; running_two = false;
             uint8_t len = (uint8_t)(g() % 15);
             put_vlq(s, len);
             for (int k = 0; k < len; ++k) s += (char)(0x01 + g() % 0x7F);
         } else if (what < 94) {                // system common (F1/F2/F3)
             uint8_t st = (uint8_t)(0xF1 + g() % 3);
-            s += (char)st; running = 0;
+            s += (char)st; running = 0; running_two = false;
             if (st == 0xF1 || st == 0xF3) s += (char)(g() % 128);
             else { s += (char)(g() % 128); s += (char)(g() % 128); }
         } else {                               // note-off via 0x80 to balance
             uint8_t st = (uint8_t)(0x80 | (g() % 16));
-            s += (char)st; running = st;
+            s += (char)st; running = st; running_two = true;
             s += (char)(g() % 128); s += (char)(g() % 128);
         }
     }
@@ -181,7 +184,7 @@ static int run_pair(const std::string& ref_exe, const std::string& file,
 #endif
     // Reference (byte-wise only) via subprocess; its stdout ends with a marker
     // line "SIG <division> <notes> <sig>".
-    std::string cmd = ref_norm + " " + file_norm
+    std::string cmd = ref_norm + " --single " + file_norm
                     + " " + std::to_string(fps)
                     + " " + (vel0 ? "1" : "0")
                     + " " + (cc ? "1" : "0");
@@ -238,16 +241,58 @@ static int run_pair(const std::string& ref_exe, const std::string& file,
 
 
 // ---- byte-wise reference mode (compiled with -DFMCG_NO_BURST) --------------
-// Parses one file and prints "SIG <division> <notes>" followed by the frame
-// signature on the next line. The driver compares this against the burst build.
+// Two reference modes:
+//   --single <file> <fps> <vel0> <cc>   one file, one SIG block (used by the
+//                                       run_pair comparison path)
+//   --batch <gen.exe> <seeds>           regenerate every seed IN THIS PROCESS
+//                                       (identical mt19937 streams, since the
+//                                       generator is compiled in both builds)
+//                                       and print one SIG block per seed. One
+//                                       process spawn for the whole run --
+//                                       per-seed spawning cost ~10s each was
+//                                       pure cmd.exe + AV re-scan overhead.
 #ifdef FMCG_NO_BURST
-int main_ref(int argc, char** argv) {
-    if (argc < 5) { std::printf("reference needs: file fps vel0 cc\n"); return 2; }
-    Result r = parse(argv[1], std::atof(argv[2]), std::atoi(argv[3]) != 0,
-                     std::atoi(argv[4]) != 0);
-    std::printf("SIG %u %llu\n", (unsigned)r.division, (unsigned long long)r.notes);
-    std::printf("%s\n", r.sig.c_str());
-    return 0;
+static int main_ref(int argc, char** argv) {
+    if (argc >= 2 && std::strcmp(argv[1], "--single") == 0) {
+        if (argc < 6) { std::printf("reference needs: --single file fps vel0 cc\n"); return 2; }
+        Result r = parse(argv[2], std::atof(argv[3]), std::atoi(argv[4]) != 0,
+                         std::atoi(argv[5]) != 0);
+        std::printf("SIG %u %llu\n", (unsigned)r.division, (unsigned long long)r.notes);
+        std::printf("%s\n", r.sig.c_str());
+        return 0;
+    }
+    if (argc >= 2 && std::strcmp(argv[1], "--batch") == 0) {
+        if (argc < 4) { std::printf("reference needs: --batch <gen.exe> <seeds>\n"); return 2; }
+        // The generator is deterministic on the seed only, so the batch child
+        // regenerates byte-identical files to the driver's.
+        const int seeds = std::atoi(argv[3]);
+        for (int seed = 1; seed <= seeds; ++seed) {
+            std::mt19937 rng(seed);
+            const std::string midi = gen_midi(rng, (uint32_t)seed);
+            // Write to the same temp path the driver uses (argv[2]).
+            {
+                FILE* f;
+#ifdef _WIN32
+                if (fopen_s(&f, argv[2], "wb") != 0) f = nullptr;
+#else
+                f = std::fopen(argv[2], "wb");
+#endif
+                if (!f) { std::printf("FAIL: cannot write %s\n", argv[2]); return 1; }
+                std::fwrite(midi.data(), 1, midi.size(), f);
+                std::fclose(f);
+            }
+            const double fps = (seed % 3 == 0) ? 30.0 : 60.0;
+            const bool vel0  = (seed % 4 != 0);
+            const bool cc    = (seed % 2 == 1);
+            Result r = parse(argv[2], fps, vel0, cc);
+            std::printf("SIG %u %llu\n", (unsigned)r.division, (unsigned long long)r.notes);
+            std::printf("%s\n", r.sig.c_str());
+            std::fflush(stdout);
+        }
+        return 0;
+    }
+    std::printf("reference needs: --single file fps vel0 cc | --batch file seeds\n");
+    return 2;
 }
 #define main main_unused_by_ref_mode
 #endif
@@ -283,6 +328,56 @@ int main(int argc, char** argv) {
     if (realpath(file.c_str(), filep)) file = filep;
 #endif
 
+    // ---- ONE batch reference run: all seeds in a single subprocess --------
+    // The old design spawned the reference once per seed (~10s each: cmd.exe
+    // startup plus antivirus re-scans); batching removes all of it but one.
+#ifdef _WIN32
+    std::string ref_norm = ref_exe, file_norm = file;
+    for (auto& c : ref_norm) if (c == '/') c = '\\';
+    for (auto& c : file_norm) if (c == '/') c = '\\';
+    if (ref_norm.find(' ') != std::string::npos || file_norm.find(' ') != std::string::npos) {
+        std::printf("FAIL: Windows reference spawn requires space-free paths\n");
+        return 1;
+    }
+#else
+    const std::string& ref_norm = ref_exe;
+    const std::string& file_norm = file;
+#endif
+    std::string batch_cmd = ref_norm + " --batch " + file_norm + " " + std::to_string(seeds);
+    FILE* pipe;
+#ifdef _WIN32
+    pipe = ::_popen(batch_cmd.c_str(), "r");
+#else
+    pipe = ::popen(batch_cmd.c_str(), "r");
+#endif
+    if (!pipe) { std::printf("FAIL: cannot spawn reference\n"); return 1; }
+    std::string batch_out;
+    char buf[4096];
+    while (std::fgets(buf, sizeof buf, pipe)) batch_out += buf;
+    const int ref_ret = ::pclose(pipe);
+
+    // Split the batch output into per-seed SIG blocks. Each block is exactly
+    // the SIG header line plus the one-line signature; engine log lines land
+    // between seeds and must not be glued onto the previous block's sig.
+    std::vector<std::string> ref_blocks;
+    size_t scan = 0;
+    while (true) {
+        const size_t p = batch_out.find("SIG ", scan);
+        if (p == std::string::npos) break;
+        const size_t hdr_end = batch_out.find('\n', p);
+        if (hdr_end == std::string::npos) break;                 // truncated
+        const size_t sig_end = batch_out.find('\n', hdr_end + 1);
+        if (sig_end == std::string::npos) break;
+        ref_blocks.push_back(batch_out.substr(p, sig_end - p));
+        scan = sig_end;
+    }
+    if ((int)ref_blocks.size() != seeds || ref_ret != 0) {
+        std::printf("FAIL: reference produced %zu/%d SIG blocks (exit %d). Output:\n%.400s\n",
+                    ref_blocks.size(), seeds, ref_ret, batch_out.c_str());
+        std::remove(file.c_str());
+        return 1;
+    }
+
     int total_fails = 0;
     for (int seed = 1; seed <= seeds; ++seed) {
         std::mt19937 rng(seed);
@@ -298,13 +393,42 @@ int main(int argc, char** argv) {
             std::fwrite(midi.data(), 1, midi.size(), f);
             std::fclose(f);
         }
-        // Vary fps, vel0 handling, and CC counting across seeds.
+        // Must mirror the batch child's per-seed variation exactly.
         const double fps = (seed % 3 == 0) ? 30.0 : 60.0;
         const bool vel0  = (seed % 4 != 0);
         const bool cc    = (seed % 2 == 1);
 
-        Result burst;
-        const int fails = run_pair(ref_exe, file, fps, vel0, cc, burst);
+        // Parse the reference SIG block.
+        Result ref;
+        const std::string& blk = ref_blocks[seed - 1];
+        if (std::sscanf(blk.c_str(), "SIG %hu %llu",
+                        &ref.division, (unsigned long long*)&ref.notes) != 2) {
+            std::printf("seed %d: FAIL (bad SIG header)\n", seed); ++total_fails; continue;
+        }
+        const size_t nl = blk.find('\n');
+        ref.sig = (nl == std::string::npos) ? "" : blk.substr(nl + 1);
+        while (!ref.sig.empty() && (ref.sig.back() == '\n' || ref.sig.back() == '\r'))
+            ref.sig.pop_back();
+
+        Result burst = parse(file.c_str(), fps, vel0, cc);
+
+        int fails = 0;
+        if (ref.division != burst.division) { std::printf("  division mismatch\n"); ++fails; }
+        if (ref.notes != burst.notes) {
+            std::printf("  notes mismatch: ref=%llu burst=%llu\n",
+                        (unsigned long long)ref.notes, (unsigned long long)burst.notes);
+            ++fails;
+        }
+        if (ref.sig != burst.sig) {
+            std::printf("  frame signature mismatch (len %zu vs %zu)\n",
+                        ref.sig.size(), burst.sig.size());
+            const size_t n = std::min(ref.sig.size(), burst.sig.size());
+            size_t i = 0;
+            while (i < n && ref.sig[i] == burst.sig[i]) ++i;
+            std::printf("  first diff at %zu: ref '%.60s' burst '%.60s'\n", i,
+                        ref.sig.c_str() + i, burst.sig.c_str() + i);
+            ++fails;
+        }
         if (fails) {
             std::printf("seed %d: FAIL (fps=%.0f vel0=%d cc=%d, %zu frames)\n",
                         seed, fps, (int)vel0, (int)cc, burst.frames.size());
