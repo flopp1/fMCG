@@ -440,7 +440,6 @@ static void draw_frame(GLFWwindow* window) {
             ImGui::EndTable();
         }
         ImGui::Spacing();
-        ImGui::TextDisabled("{cc*} needs 'Count CC events' enabled.");
         if (ImGui::Button("Close", ImVec2(120, 0)))
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();

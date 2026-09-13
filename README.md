@@ -115,7 +115,7 @@ The layout textbox defines the overlay. **Each line becomes one overlay row**, a
 | `{nc-total}` | Total notes |
 | `{nc-rem}` | Notes remaining |
 
-### Control changes (enable "Count CC events" to populate)
+### Control changes
 | Token | Meaning |
 |---|---|
 | `{cc}` | Current CC events |
@@ -145,9 +145,9 @@ During the start delay, `{sec}`/`{time}`/`{time-milli}` run from negative and co
 - **Leading zeros** — pads every number with zeros so digits line up; each stat pads toward its own maximum (notes → total notes, polyphony → peak polyphony, seconds → total seconds), so no width needs to be set.
 - **BPM decimals** — how many decimal places `{bpm}` renders (0 = whole numbers like `120`; default 2; capped at 6). Saved with the pattern.
 - **Vel-0 as Note-Off** — treat `note-on` with velocity 0 as a note-off (standard MIDI behaviour; disable for unusual files).
-- **Count CC events** — enables the `{cc}` stats. Disabled costs nothing; the scanner skips CC tracking entirely.
 - **Counter position** — *Corners* places the block via the Alignment dropdown (**Top/Bottom Left/Right/Center**); *Custom x,y* places the **top-left of the text block** at exact video pixels. The valid ranges (`0..width`, `0..height`) are shown next to the fields, and out-of-range values are clamped so the anchor can never leave the frame.
 - **Start delay (seconds)** — black lead-in before the song, with stats at zero and a negative time countdown.
+- **End delay (seconds)** — tail after the song: event stats freeze at their resting values, time keeps counting and `{tick}` advances at the last tempo received (default 0).
 - **Text / Background colour** — click the swatch to open a compact picker with R/G/B sliders and a live preview; the hex value updates in real time.
 - **Resolution / FPS / Font** — output video size, frame rate, and overlay font family + size.
 - **Preview without a MIDI** — the Preview button always works: with no file processed it shows the current pattern (layout, font, colours, position) with all stats at zero over the chosen background, including the start-delay countdown.
