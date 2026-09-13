@@ -15,7 +15,10 @@ namespace fmcg_preview {
 
 std::string format_frame_text(const FrameStats& fs) {
     std::string result;
-    double max_time = g_app.total_duration;
+    // {time-max} must show the MIDI song horizon, not the end-delay-extended
+    // video length (total_duration already spans the tail the engine appended).
+    double max_time = g_app.total_duration - g_app.end_delay;
+    if (max_time < 0.0) max_time = 0.0;
     uint64_t total_cc = g_app.frames_data.empty() ? 0 : g_app.frames_data.back().cumulative_cc;
     for (size_t i = 0; i < g_app.template_lines.size(); ++i) {
         result += ProcessTemplateLine(g_app.template_lines[i], fs, g_app.total_notes, total_cc,

@@ -178,7 +178,12 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
     else if (cfg.ass_alignment == 2) { pos_x = cfg.width / 2;   pos_y = cfg.height - 30; } // Bottom Center
 
     double total_duration = frames.empty() ? 0.0 : frames.back().timestamp_sec;
-
+    // {time-max} / {sec-max} / {tick-rem} describe the MIDI SONG horizon, not
+    // the end-delay-extended video: subtract the tail the engine appended.
+    // {time} itself keeps counting past it and ends at the extended time.
+    double midi_duration = total_duration - cfg.end_delay;
+    if (midi_duration < 0.0) midi_duration = 0.0;
+    const double max_time_for_totals = midi_duration;
     // Per-frame clamping for custom positions: the text block must stay fully
     // on screen (bottom-right included). Block extents vary as counters grow
     // (e.g. "999 -> 1,000" gains a digit), so measure each frame's rendered
@@ -218,7 +223,7 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
             std::string text_block;
             std::vector<std::string> rendered;
             for (size_t i = 0; i < template_lines.size(); ++i) {
-                std::string row = ProcessTemplateLine(template_lines[i], zero_fs, total_notes, 0, total_duration, ppqn, cfg.commas, cfg.pad, cfg.bpm, 0);
+                std::string row = ProcessTemplateLine(template_lines[i], zero_fs, total_notes, 0, max_time_for_totals, ppqn, cfg.commas, cfg.pad, cfg.bpm, 0);
                 rendered.push_back(row);
                 text_block += row;
                 if (i + 1 < template_lines.size()) text_block += "\\N";
@@ -238,7 +243,7 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
         std::string text_block;
         std::vector<std::string> rendered;
         for (size_t i = 0; i < template_lines.size(); ++i) {
-            std::string row = ProcessTemplateLine(template_lines[i], f, total_notes, total_cc, total_duration, ppqn, cfg.commas, cfg.pad, cfg.bpm, total_ticks);
+            std::string row = ProcessTemplateLine(template_lines[i], f, total_notes, total_cc, max_time_for_totals, ppqn, cfg.commas, cfg.pad, cfg.bpm, total_ticks);
             rendered.push_back(row);
             text_block += row;
             if (i + 1 < template_lines.size()) text_block += "\\N";

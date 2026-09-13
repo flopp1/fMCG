@@ -130,6 +130,19 @@ int main() {
         // 3.5s - 2.1s = 1.4s of tail at 960 ticks/s.
         check("tail tick advance", std::to_string((int)(tail_end.tick - tail1.tick)), "1344");
         check("tail tick-rem clamped", std::to_string((int)std::max<int64_t>(0, (int64_t)tt - tail_end.tick)), "0");
+        // {time-max} shows the MIDI song horizon (2s), NOT the extended 3.5s:
+        // generate the ASS and inspect the first/last dialogue lines.
+        {
+            AssConfig ac; ac.fps = 10.0; ac.end_delay = 1.5;
+            generate_ass("_tmax.ass", frames, {"T:{time} / {time-max} R:{time-rem}"}, tn, 0, 480, ac, tt);
+            std::ifstream f("_tmax.ass"); std::string line, first, last;
+            while (std::getline(f, line)) if (line.rfind("Dialogue:", 0) == 0) { if (first.empty()) first = line; last = line; }
+            std::remove("_tmax.ass");
+            size_t p = first.find('}') + 1;
+            check("time-max is MIDI horizon", first.substr(p), "T:00:00 / 00:02 R:00:02");
+            p = last.find('}') + 1;
+            check("tail time counts past song", last.substr(p), "T:00:03 / 00:02 R:00:00");
+        }
     }
     {   // Exact peak-NPS window: note-ons in any literal 1.000000s window,
         // half-open (t-1, t]. Clumps of simultaneous note-ons at 120bpm
