@@ -71,7 +71,7 @@ endif
 
 # --- Dear ImGui (git submodule at vendor/imgui) ----------------------------------
 IMGUI_DIR  ?= vendor/imgui
-IMGUI_CFLAGS ?= -I$(IMGUI_DIR)
+IMGUI_CFLAGS ?= -I$(IMGUI_DIR) -I$(IMGUI_DIR)/backends
 IMGUI_SOURCES ?= $(IMGUI_DIR)/imgui.cpp \
                  $(IMGUI_DIR)/imgui_draw.cpp \
                  $(IMGUI_DIR)/imgui_tables.cpp \
