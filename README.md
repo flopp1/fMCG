@@ -42,7 +42,10 @@ brew install pkg-config glfw libarchive
 git submodule update --init   # fetch Dear ImGui (pinned v1.92.9b)
 make                          # builds ./fMCG_gui (default target)
 make debug                    # variant: keeps ffmpeg's stderr log in <name>_fMCG_progress.txt
+make profile                  # -O3 plus debug symbols + frame pointers, for perf
 ```
+
+`make profile` keeps every optimisation and adds `-g -fno-omit-frame-pointer`, so the optimised binary can be profiled: `perf record --call-graph fp ./fMCG_gui`, then `perf report`. Switching between `make` and `make profile` automatically rebuilds the objects with the new flags (a `.build_mode` stamp tracks the current mode), and the modes combine: `make profile DEBUG=1`.
 
 Dear ImGui is a git submodule compiled from `vendor/imgui` (no standard distro package). To use a system copy instead: `make IMGUI_CFLAGS=-I/usr/include/imgui IMGUI_SOURCES=`.
 

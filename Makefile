@@ -20,6 +20,11 @@
 #   make debug        build with FMCG_DEBUG=1 (keeps ffmpeg's stderr log in
 #                     <name>_fMCG_progress.txt next to the output; release
 #                     builds discard it)
+#   make profile      build with -O3 PLUS debug symbols (-g) and frame
+#                     pointers, for profiling the optimised binary with
+#                     perf:  perf record --call-graph fp ./fMCG_gui
+#                     (objects are rebuilt automatically when switching
+#                     between 'make' and 'make profile')
 #   make test         build and run both test suites (test/)
 #   make release      build + test + package dist/fMCG-linux.tar.gz
 #   make clean
@@ -80,6 +85,22 @@ IMGUI_SOURCES ?= $(IMGUI_DIR)/imgui.cpp \
                  $(IMGUI_DIR)/backends/imgui_impl_glfw.cpp \
                  $(IMGUI_DIR)/backends/imgui_impl_opengl3.cpp
 
+# --- build modes ----------------------------------------------------------------
+#   make            release  (-O3)
+#   make profile    -O3 PLUS -g and frame pointers, for perf:
+#                     perf record --call-graph fp ./fMCG_gui
+#   make debug      -O3 + FMCG_DEBUG (keeps ffmpeg's stderr log file)
+# Modes combine, e.g. `make profile DEBUG=1`.
+#
+# NOTE: the mode flags must be appended BEFORE ALL_CFLAGS is built below,
+# since `:=` snapshots CXXFLAGS at parse time.
+ifeq ($(PROFILE),1)
+CXXFLAGS := $(CXXFLAGS) -g -fno-omit-frame-pointer
+endif
+ifeq ($(DEBUG),1)
+CXXFLAGS := $(CXXFLAGS) -DFMCG_DEBUG=1
+endif
+
 ALL_CFLAGS := $(CXXFLAGS) $(GLFW_CFLAGS) $(ARCH_CFLAGS) $(IMGUI_CFLAGS) -Isrc -Igui -I.
 ALL_LIBS   := $(GLFW_LIBS) $(ARCH_LIBS) $(GL_LDLIBS) -lpthread
 
@@ -90,21 +111,39 @@ GUI_SOURCES  := gui/app_state.cpp gui/dialogs.cpp gui/jobs.cpp gui/preview.cpp g
                 gui/colour_edit.cpp gui/settings_store.cpp
 GUI_OBJECTS  := $(GUI_SOURCES:.cpp=.o)
 
+# A stamp file records which mode the objects were built with. The objects
+# depend on it, so switching modes wipes them and everything rebuilds with
+# the new flags -- no stale objects, and no manual `make clean` needed.
+PROFILE_STAMP := .build_mode
+
 # 'all' must stay the FIRST target -- GNU Make treats it as the default.
-.PHONY: all run debug test release clean
+.PHONY: all run debug profile test release clean
 
 all: fMCG_gui
 
-debug: CXXFLAGS += -DFMCG_DEBUG=1
-debug: fMCG_gui
+debug:
+	@$(MAKE) DEBUG=1 all
+
+profile:
+	@$(MAKE) PROFILE=1 all
+
+# Stamp rule: objects depend on it, so a mode switch (release <-> profile
+# <-> debug) wipes them and everything rebuilds with the new flags.
+.PHONY: FORCE
+FORCE:
+
+$(PROFILE_STAMP): FORCE
+	@printf 'profile=%s debug=%s\n' '$(PROFILE)' '$(DEBUG)' > $@.tmp
+	@if cmp -s $@.tmp $@; then rm -f $@.tmp; \
+	else rm -f $(CORE_OBJECTS) $(GUI_OBJECTS) fMCG_gui; mv -f $@.tmp $@; fi
 
 fMCG_gui: $(GUI_OBJECTS) $(CORE_OBJECTS) $(IMGUI_SOURCES)
 	$(CXX) $(ALL_CFLAGS) -o $@ $(GUI_OBJECTS) $(CORE_OBJECTS) $(IMGUI_SOURCES) $(LDFLAGS) $(ALL_LIBS)
 
-src/%.o: src/%.cpp $(wildcard src/*.h) fMCG_core.h
+src/%.o: src/%.cpp $(wildcard src/*.h) fMCG_core.h $(PROFILE_STAMP)
 	$(CXX) $(CXXFLAGS) $(ARCH_CFLAGS) -Isrc -I. -c $< -o $@
 
-gui/%.o: gui/%.cpp $(wildcard gui/*.h) $(wildcard src/*.h) fMCG_core.h
+gui/%.o: gui/%.cpp $(wildcard gui/*.h) $(wildcard src/*.h) fMCG_core.h $(PROFILE_STAMP)
 	$(CXX) $(ALL_CFLAGS) -c $< -o $@
 
 run: fMCG_gui
@@ -123,7 +162,7 @@ test/test_twopass: test/test_twopass.cpp $(CORE_OBJECTS) $(wildcard src/*.h) fMC
 	$(CXX) $(CXXFLAGS) -Isrc -I. -o $@ test/test_twopass.cpp $(CORE_OBJECTS) $(ARCH_CFLAGS) $(LDFLAGS) $(ARCH_LIBS) -lpthread
 
 clean:
-	rm -rf fMCG_gui $(CORE_OBJECTS) $(GUI_OBJECTS) test/test_newopts test/test_harness dist
+	rm -rf fMCG_gui $(CORE_OBJECTS) $(GUI_OBJECTS) test/test_newopts test/test_harness dist .build_mode
 
 # Assemble a ready-to-share release: binary + licences + README.
 release: all test

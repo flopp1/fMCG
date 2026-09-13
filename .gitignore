@@ -11,6 +11,7 @@ test_newopts
 # --- third-party dependencies (populated by bootstrap.bat / submodule) --------
 vendor/
 build_cache/
+.build_mode
 lib/
 dist/
 
