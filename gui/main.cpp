@@ -68,9 +68,9 @@ static void save_globals_now() {
     g_ui.globals.width = g_ui.s.width;
     g_ui.globals.height = g_ui.s.height;
     g_ui.globals.fps = g_ui.s.fps;
-    g_ui.globals.cc_stats = g_ui.s.cc_stats;
     g_ui.globals.vel0_note_off = g_ui.s.vel0_note_off;
     g_ui.globals.start_delay = g_ui.s.start_delay;
+    g_ui.globals.end_delay = g_ui.s.end_delay;
     g_ui.globals.ffmpeg_threads = g_ui.s.ffmpeg_threads;
     g_ui.globals_dirty = false;
     g_ui.last_globals_save = ImGui::GetTime();
@@ -583,8 +583,15 @@ static void draw_frame(GLFWwindow* window) {
         if (delay_input >= 0) { g_ui.s.start_delay = delay_input; mark_globals_dirty(); }
     }
 
+    ImGui::Text("End delay (seconds): ");
+    ImGui::SameLine(170);
+    ImGui::SetNextItemWidth(100);
+    double edelay_input = g_ui.s.end_delay;
+    if (ImGui::InputDouble("##edelay", &edelay_input, 0, 0, "%.2f")) {
+        if (edelay_input >= 0) { g_ui.s.end_delay = edelay_input; mark_globals_dirty(); }
+    }
+
     if (ImGui::Checkbox("Vel-0 as Note-Off", &g_ui.s.vel0_note_off)) mark_globals_dirty();
-    if (ImGui::Checkbox("Count CC events (enables {cc} stats)", &g_ui.s.cc_stats)) mark_globals_dirty();
 
     ImGui::Text("Resolution");
     ImGui::SameLine(120);
@@ -671,16 +678,10 @@ static void draw_frame(GLFWwindow* window) {
         bool can_process = (g_ui.midi_buf[0] != '\0') && !g_app.busy.load();
         bool can_render  = g_app.processed.load() && !g_app.busy.load();
 
-        // Guard: the layout uses {cc*} tokens but CC counting is off.
-        // Those tokens would silently render as 0/0/0 forever.
-        bool layout_uses_cc = strstr(g_ui.layout_buf, "{cc") != nullptr;
-        bool cc_mismatch = layout_uses_cc && !g_ui.s.cc_stats;
+        // CC is always counted, so {cc*} tokens always render real values.
 
         if (!can_process) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
         if (ImGui::Button("Process", ImVec2(140, 30)) && can_process) {
-            if (cc_mismatch) {
-                ImGui::OpenPopup("CC stats not enabled");
-            } else {
             g_ui.s.midi_file = g_ui.midi_buf;
             g_ui.s.output_video = g_ui.output_buf;
             g_ui.s.layout_text = g_ui.layout_buf;
@@ -691,36 +692,8 @@ static void draw_frame(GLFWwindow* window) {
             g_app.preview_time = 0.0;
             g_app.busy = true;  // set before detach so the button disables immediately
             std::thread(run_process, g_ui.s).detach();
-            }
         }
         if (!can_process) ImGui::PopStyleVar();
-
-        // CC mismatch: tell the user and offer the one-click fix.
-        if (ImGui::BeginPopupModal("CC stats not enabled", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::Text("Your layout uses {cc} stats, but 'Count CC events' is off.\n");
-            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f),
-                "CC counters would show 0/0/0 for the whole video.");
-            ImGui::Spacing();
-            if (ImGui::Button("Enable CC counting & process", ImVec2(240, 0))) {
-                g_ui.s.cc_stats = true;
-                mark_globals_dirty();
-                g_ui.s.midi_file = g_ui.midi_buf;
-                g_ui.s.output_video = g_ui.output_buf;
-                g_ui.s.layout_text = g_ui.layout_buf;
-                g_app.processed = false;
-                g_app.done = false;
-                g_app.log_lines.clear();
-                g_app.preview_playing = false;
-                g_app.preview_time = 0.0;
-                g_app.busy = true;
-                std::thread(run_process, g_ui.s).detach();
-                ImGui::CloseCurrentPopup();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Cancel", ImVec2(100, 0)))
-                ImGui::CloseCurrentPopup();
-            ImGui::EndPopup();
-        }
 
         ImGui::SameLine();
         // Cancel while processing or rendering (checked at ~1M-event pings
@@ -784,6 +757,7 @@ static void draw_frame(GLFWwindow* window) {
                 g_app.vid_width = g_ui.s.width;
                 g_app.vid_height = g_ui.s.height;
                 g_app.start_delay = g_ui.s.start_delay;
+                g_app.end_delay = g_ui.s.end_delay;
                 g_app.preview_font_reload = true;
             }
             g_app.show_preview = true;
@@ -813,7 +787,7 @@ static void draw_frame(GLFWwindow* window) {
             rs.width = g_app.vid_width;
             rs.height = g_app.vid_height;
             rs.fps = g_app.fps;
-            rs.total_duration = g_app.total_duration + g_app.start_delay;
+            rs.total_duration = g_app.total_duration + g_app.start_delay + g_app.end_delay;
             rs.ffmpeg_threads = g_ui.s.ffmpeg_threads;
             rs.bg_color_aabbggrr = g_app.bg_colour_ass;
             g_app.done = false;
@@ -1018,7 +992,7 @@ static void draw_frame(GLFWwindow* window) {
             // speed is shown live on the progress bar during the render.
             const double wc = g_app.render_wallclock.load();
             const double speed = (wc > 0.0 && g_app.total_duration > 0.0)
-                               ? (g_app.total_duration + g_app.start_delay) / wc : 0.0;
+                               ? (g_app.total_duration + g_app.start_delay + g_app.end_delay) / wc : 0.0;
             char spd_txt[32] = "";
             if (speed > 0.0) snprintf(spd_txt, sizeof(spd_txt), " (%.2fx speed)", speed);
             ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.2f, 1.0f), "Rendered: %s%s",
@@ -1176,9 +1150,9 @@ int main() {
     g_ui.s.width = g_ui.globals.width;
     g_ui.s.height = g_ui.globals.height;
     g_ui.s.fps = g_ui.globals.fps;
-    g_ui.s.cc_stats = g_ui.globals.cc_stats;
     g_ui.s.vel0_note_off = g_ui.globals.vel0_note_off;
     g_ui.s.start_delay = g_ui.globals.start_delay;
+    g_ui.s.end_delay = g_ui.globals.end_delay;
     g_ui.s.ffmpeg_threads = g_ui.globals.ffmpeg_threads;
 
     // Refresh the variant cache for the bootstrapped family.

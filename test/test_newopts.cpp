@@ -99,6 +99,36 @@ int main() {
         char buf[8]; snprintf(buf, sizeof(buf), "%d", npos);
         check("lead-in frame count", buf, "122");   // 2s delay x 60fps + 2 song frames
     }
+    {   // End-delay tail: frozen notes, counting time, last-tempo ticks.
+        std::vector<FrameStats> frames;
+        for (int k = 0; k < 20; ++k) {
+            FrameStats f; f.frame_index = k; f.timestamp_sec = k / 10.0;
+            f.cumulative_notes = k; f.bpm = 120.0; f.tick = k * 240;
+            frames.push_back(f);
+        }
+        AssConfig ac; ac.fps = 10.0; ac.end_delay = 1.5; ac.total_ticks = 4560;
+        generate_ass("_t.ass", frames, {"N:{nc} T:{sec} K:{tick}/{tick-total} R:{tick-rem}"},
+                     20, 0, 480, ac, 4560);
+        std::ifstream f("_t.ass");
+        std::string all((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        std::remove("_t.ass");
+        int npos = 0;
+        for (size_t at = all.find("\\pos("); at != std::string::npos; at = all.find("\\pos(", at + 1)) npos++;
+        char buf[8]; snprintf(buf, sizeof(buf), "%d", npos);
+        check("tail frame count", buf, "35");       // 20 song + 15 tail (1.5s x 10fps)
+        // Every tail line (dialogue 21 onward) must show the frozen 19.
+        size_t line_at = 0; int seen = 0;
+        for (int i = 0; i < 20; ++i) line_at = all.find("Dialogue", line_at) + 1;
+        for (size_t at = all.find("Dialogue", line_at); at != std::string::npos;
+             at = all.find("Dialogue", at + 1)) {
+            size_t eol = all.find('\n', at);
+            if (all.find("N:19 ", at) < eol) seen++;
+        }
+        snprintf(buf, sizeof(buf), "%d", seen);
+        std::string seen_s = buf;
+        check("tail notes frozen", seen_s, "15");
+        check("tail tick advance", all.find("K:6,000/4,560 R:0") != std::string::npos ? "yes" : "no", "yes");
+    }
     {   // ffmpeg colour spec conversion (ASS &H00BBGGRR -> 0xRRGGBB).
         check("ffmpeg color spec", ffmpeg_color_spec("&H00FF8040"), "0x4080FF");
         check("ffmpeg color default", ffmpeg_color_spec("junk"), "0x000000");

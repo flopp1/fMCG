@@ -55,9 +55,9 @@ struct GlobalSettings {
     int         width = 1920;
     int         height = 1080;
     double      fps = 60.0;
-    bool        cc_stats = false;
     bool        vel0_note_off = true;
     double      start_delay = 3.0;
+    double      end_delay = 0.0;
     int         ffmpeg_threads = 0;   // 0 = ffmpeg auto-selects encoder threads
     std::string output_dir;           // last output video folder
 };

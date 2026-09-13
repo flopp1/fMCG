@@ -259,8 +259,8 @@ void render_preview_popup() {
     }
 
     // Compute popup size matching output aspect ratio
-    double total_len = g_app.total_duration + g_app.start_delay;   // includes black lead-in
-    double total_len_song = total_len - g_app.start_delay;         // MIDI-time span
+    double total_len = g_app.total_duration + g_app.start_delay + g_app.end_delay;   // lead-in + song + tail
+    double total_len_song = total_len - g_app.start_delay;         // song time span (incl. tail)
     if (total_len_song < 0.0) total_len_song = 0.0;
     float max_w = display.x * 0.8f;
     float max_h = display.y * 0.85f;
@@ -354,6 +354,7 @@ void render_preview_popup() {
             // Same child + controls as the song branch (unified layout).
             bool in_delay = g_app.preview_time < g_app.start_delay;
             FrameStats delay_fs;
+            FrameStats tail_fs;
             const FrameStats* fs_ptr;
             if (in_delay) {
                 delay_fs.bpm = g_app.frames_data.front().bpm;
@@ -365,7 +366,22 @@ void render_preview_popup() {
                                 * (double)g_app.ppqn * 1e6 / us0);
                 fs_ptr = &delay_fs;
             } else {
-                fs_ptr = &find_frame(g_app.preview_time - g_app.start_delay);
+                const FrameStats& last = g_app.frames_data.back();
+                double song_t = g_app.preview_time - g_app.start_delay;
+                if (song_t > last.timestamp_sec) {
+                    // End-delay tail: frozen stats, time keeps counting and
+                    // {tick} advances at the last tempo -- same as the ASS
+                    // tail block.
+                    tail_fs = last;
+                    tail_fs.timestamp_sec = song_t;
+                    const double us_last = 60000000.0 / (last.bpm > 0.0 ? last.bpm : 120.0);
+                    tail_fs.tick = last.tick
+                        + (int64_t)std::llround((song_t - last.timestamp_sec)
+                            * (double)g_app.ppqn * 1e6 / us_last);
+                    fs_ptr = &tail_fs;
+                } else {
+                    fs_ptr = &find_frame(song_t);
+                }
             }
             const FrameStats& fs = *fs_ptr;
             std::string text = format_frame_text(fs);

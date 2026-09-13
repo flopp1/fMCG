@@ -195,14 +195,15 @@ bool load_global_settings(GlobalSettings& out) {
     out.width        = get_int(kv, "width", 1920);
     out.height       = get_int(kv, "height", 1080);
     out.fps          = get_dbl(kv, "fps", 60.0);
-    out.cc_stats     = get_bool(kv, "cc_stats", false);
     out.vel0_note_off= get_bool(kv, "vel0_note_off", true);
     out.start_delay  = get_dbl(kv, "start_delay", 3.0);
+    out.end_delay    = get_dbl(kv, "end_delay", 0.0);
     out.ffmpeg_threads = get_int(kv, "ffmpeg_threads", 0);
     if (out.fps <= 0) out.fps = 60.0;
     if (out.width <= 0) out.width = 1920;
     if (out.height <= 0) out.height = 1080;
     if (out.start_delay < 0) out.start_delay = 0.0;
+    if (out.end_delay   < 0) out.end_delay   = 0.0;
     if (out.ffmpeg_threads < 0) out.ffmpeg_threads = 0;
     return true;
 }
@@ -217,9 +218,9 @@ bool save_global_settings(const GlobalSettings& s) {
     ss << "width = " << s.width << "\n";
     ss << "height = " << s.height << "\n";
     ss << "fps = " << s.fps << "\n";
-    ss << "cc_stats = " << (s.cc_stats ? 1 : 0) << "\n";
     ss << "vel0_note_off = " << (s.vel0_note_off ? 1 : 0) << "\n";
     ss << "start_delay = " << s.start_delay << "\n";
+    ss << "end_delay = " << s.end_delay << "\n";
     ss << "ffmpeg_threads = " << s.ffmpeg_threads << "\n";
     return write_file_atomic(fs::path(dir) / "settings.ini", ss.str());
 }

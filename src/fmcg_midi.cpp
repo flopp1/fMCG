@@ -182,11 +182,11 @@ size_t BinaryReader::read_raw(void* dst, size_t n) {
 std::vector<FrameStats> ScaleMidiProcessor::process_midi(
     const std::string& filename, double fps, uint16_t& out_division,
     uint64_t& out_total_notes, bool vel0_as_note_off,
-    uint64_t& out_total_ticks, const ProgressCallbacks& cb)
+    uint64_t& out_total_ticks, const ProgressCallbacks& cb, double end_delay)
 {
     out_total_ticks = 0;
     return fmcg_stream::process_streaming(filename, fps, out_division,
-                                          out_total_notes, vel0_as_note_off, out_total_ticks, cb);
+                                          out_total_notes, vel0_as_note_off, out_total_ticks, cb, end_delay);
 }
 
 std::vector<FrameStats> ScaleMidiProcessor::process_midi(

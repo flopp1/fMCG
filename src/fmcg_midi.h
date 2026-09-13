@@ -56,7 +56,8 @@ struct ProgressCallbacks {
     // branch-cheap): events parsed so far, elapsed seconds, events/second, and
     // a stream fraction 0..1 (negative when the total size is unknown).
     std::function<void(uint64_t events, double elapsed_sec, double ev_per_s, double frac)> on_scan_progress;
-    bool cc_stats = false;   // count control-change events (hot path stays free when false)
+    // CC events are always counted (kept for source compatibility; ignored).
+    bool cc_stats = true;
     // Set (from another thread) to abort the scan at the next progress ping.
     std::atomic<bool>* cancel_flag = nullptr;
     // MIDI spec guard: a running tick beyond the 28-bit VLQ range (1 << 28)
@@ -111,7 +112,8 @@ public:
     static std::vector<FrameStats> process_midi(
         const std::string& filename, double fps, uint16_t& out_division,
         uint64_t& out_total_notes, bool vel0_as_note_off,
-        uint64_t& out_total_ticks, const ProgressCallbacks& cb = {});
+        uint64_t& out_total_ticks, const ProgressCallbacks& cb = {},
+        double end_delay = 0.0);
     // Back-compat form used by tests/benchmarks (total ticks not reported).
     static std::vector<FrameStats> process_midi(
         const std::string& filename, double fps, uint16_t& out_division,

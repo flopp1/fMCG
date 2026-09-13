@@ -654,7 +654,7 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
     const bool accumulate = (mode == ScanMode::ACCUMULATE);
     // In TEMPO_ONLY mode the accumulation arrays are never touched (that is
     // the point) and CC counting is meaningless.
-    const bool count_cc = cb.cc_stats && accumulate;
+    const bool count_cc = accumulate;
     if (!accumulate) td.reset();
 
     // Continuous progress bookkeeping (checked once per ~1M events).
@@ -910,7 +910,8 @@ static std::vector<TempoChange> build_tempo_map(const std::vector<TempoChange>& 
 
 std::vector<FrameStats> sweep_to_frames(TickData& td,
                                                std::vector<TempoChange>& tempo_raw,
-                                               uint16_t ppqn, double fps, bool with_cc = false) {
+                                               uint16_t ppqn, double fps, bool with_cc = false,
+                                               double end_delay = 0.0) {
     std::vector<TempoChange> tm = build_tempo_map(tempo_raw, ppqn);
 
     const uint64_t nticks = td.max_tick + 1;
@@ -978,6 +979,10 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
     while (conv + 1 < tm.size() && tm[conv + 1].tick <= td.max_tick) conv++;
     double max_time = tm[conv].time_sec
                     + (double)(td.max_tick - tm[conv].tick) * (double)tm[conv].us_per_quarter * inv;
+    // End-delay tail: extra frames past the song's end. Stats freeze at their
+    // final values (the tail push_frame loop naturally stops accumulating);
+    // {tick} keeps advancing at the last tempo via tick_at's linear inverse.
+    if (end_delay > 0.0) max_time += end_delay;
     size_t total_frames = (size_t)std::ceil(max_time * fps) + 1;
     while (cur_frame < total_frames) push_frame(cur_frame++);
 
@@ -1027,7 +1032,7 @@ bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
                        const std::vector<TempoChange>& tm, uint16_t ppqn, double fps,
                        const ProgressCallbacks& cb) {
     ByteStream bs(src);
-    const bool count_cc = cb.cc_stats;
+    const bool count_cc = true;
 
     using clock = std::chrono::steady_clock;
     const clock::time_point t_start = clock::now();
@@ -1256,7 +1261,9 @@ bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
 // per-frame values the sweep would have produced).
 std::vector<FrameStats> buckets_to_frames(FrameBuckets& fb, double fps,
                                           const std::vector<TempoChange>& tm,
-                                          double max_time_sec, bool with_cc, uint16_t ppqn) {
+                                          double max_time_sec, bool with_cc, uint16_t ppqn,
+                                          double end_delay = 0.0) {
+    if (end_delay > 0.0) max_time_sec += end_delay;   // frozen-stats tail frames
     const size_t total_frames = (size_t)std::ceil(max_time_sec * fps) + 1;
     fb.reserve_exact(total_frames);   // grow (or zero-extend) to the horizon
 
@@ -1296,7 +1303,7 @@ std::vector<FrameStats> buckets_to_frames(FrameBuckets& fb, double fps,
 std::vector<FrameStats> process_streaming(
     const std::string& filename, double fps, uint16_t& out_division,
     uint64_t& out_total_notes, bool vel0_as_note_off, uint64_t& out_total_ticks,
-    const ProgressCallbacks& cb)
+    const ProgressCallbacks& cb, double end_delay)
 {
     using clock = std::chrono::steady_clock;
     out_total_notes = 0;
@@ -1361,7 +1368,8 @@ std::vector<FrameStats> process_streaming(
             if (td.desync_tracks > 0)
                 emit(cb, "Warning: " + std::to_string(td.desync_tracks)
                          + " track(s) consumed a different number of bytes than declared (possible parser desync).\n", true);
-            frames = sweep_to_frames(td, tempo_raw, division, fps, cb.cc_stats);
+            frames = sweep_to_frames(td, tempo_raw, division, fps, true,
+                                     end_delay);
             out_total_notes = td.total_ons;
             out_total_ticks = td.max_tick;
             nev = td.total_events_seen;   // all events walked, same as the live counter
@@ -1380,7 +1388,7 @@ std::vector<FrameStats> process_streaming(
             src = open_src();
             if (!src->ok()) { emit(cb, "Error: failed to re-open input for pass 2.\n", true); return {}; }
             FrameBuckets fb;
-            if (cb.cc_stats) fb.cc.resize(4096, 0);
+            fb.cc.resize(4096, 0);
             if (!scan_image_frames(*src, vel0_as_note_off, fb, tm, division, fps, cb))
                 return {};
             dec_bytes = src->bytes_read();
@@ -1395,7 +1403,8 @@ std::vector<FrameStats> process_streaming(
                 const double max_time = tm[conv].time_sec
                     + (double)(fb.max_tick - tm[conv].tick)
                       * (double)tm[conv].us_per_quarter / ((double)division * 1e6);
-                frames = buckets_to_frames(fb, fps, tm, max_time, cb.cc_stats, division);
+                frames = buckets_to_frames(fb, fps, tm, max_time, true, division,
+                                           end_delay);
             }
             out_total_notes = fb.total_ons;
             out_total_ticks = fb.max_tick;

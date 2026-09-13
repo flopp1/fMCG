@@ -230,6 +230,7 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
     }
 
     // Song frames, offset by the start delay.
+    const double frame_dur = 1.0 / cfg.fps;
     for (size_t fi = 0; fi < frames.size(); ++fi) {
         const auto& f = frames[fi];
         std::string text_block;
@@ -247,6 +248,37 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
                                                  : t_start + 1.0 / cfg.fps;
         ass << "Dialogue: 0," << to_ass_time(t_start) << "," << to_ass_time(t_end)
             << ",Default,,0,0,0,,{\\pos(" << pos_x << "," << pos_y << ")}" << text_block << "\n";
+    }
+
+    // End-delay tail: the song's last frame's stats freeze, but the time
+    // fields keep counting forward (the template's {sec}/{time-*} derive
+    // from the frame timestamp) and {tick} advances at the last tempo via
+    // the same linear inverse the engine's tail frames use.
+    if (cfg.end_delay > 0.0 && !frames.empty()) {
+        FrameStats tail = frames.back();   // frozen counters
+        const long long n_tail = (long long)std::floor(cfg.end_delay * cfg.fps);
+        const double last_end = frames.back().timestamp_sec + frame_dur;
+        for (long long k = 0; k < n_tail; ++k) {
+            double t_start = last_end + k * frame_dur;
+            tail.timestamp_sec = frames.back().timestamp_sec + (t_start - last_end) + frame_dur;
+            // Linear tick advance at the last tempo (the final frame's BPM
+            // is the last tempo anchor's; us_per_quarter = 60e6 / bpm).
+            const double us_last = 60000000.0 / (frames.back().bpm > 0.0 ? frames.back().bpm : 120.0);
+            tail.tick = frames.back().tick
+                + (int64_t)std::llround((tail.timestamp_sec - frames.back().timestamp_sec)
+                    * (double)ppqn * 1e6 / us_last);
+            std::string text_block;
+            std::vector<std::string> rendered;
+            for (size_t i = 0; i < template_lines.size(); ++i) {
+                std::string row = ProcessTemplateLine(template_lines[i], tail, total_notes, total_cc, total_duration, ppqn, cfg.commas, cfg.pad, cfg.bpm, total_ticks);
+                rendered.push_back(row);
+                text_block += row;
+                if (i + 1 < template_lines.size()) text_block += "\\N";
+            }
+            clamp_pos(rendered);
+            ass << "Dialogue: 0," << to_ass_time(t_start) << "," << to_ass_time(t_start + frame_dur)
+                << ",Default,,0,0,0,,{\\pos(" << pos_x << "," << pos_y << ")}" << text_block << "\n";
+        }
     }
     ass.close();
 }

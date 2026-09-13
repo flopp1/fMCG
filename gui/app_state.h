@@ -32,8 +32,8 @@ struct GuiSettings {
     CommaOpts   commas;
     PadOpts     pad;
     BpmOpts     bpm;
-    bool        cc_stats = false;
     double      start_delay = 3.0;
+    double      end_delay = 0.0;
     // 0 = corner alignment dropdown, 1 = explicit x/y (top-left of text block)
     int         pos_mode = 0;
     int         pos_x = 30;
@@ -129,6 +129,7 @@ struct AppState {
     // this; on render completion the timeline resumes from here.
     double                    preview_saved_pos{0.0};
     double                    start_delay{0.0};   // black lead-in before the song starts
+    double                    end_delay{0.0};     // frozen-stats tail after the song ends
     int                       pos_mode{0};        // 0 = corners, 1 = explicit x/y
     int                       pos_x{30};
     int                       pos_y{30};

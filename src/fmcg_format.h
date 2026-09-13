@@ -55,6 +55,7 @@ struct AssConfig {
     PadOpts pad;
     BpmOpts bpm;
     double start_delay = 0.0;   // lead-in seconds: zero stats, negative countdown
+    double end_delay = 0.0;     // tail seconds after the song: frozen stats, time/tick keep counting
     uint64_t total_ticks = 0;   // song horizon in ticks ({tick-total}); 0 hides it
 };
 
