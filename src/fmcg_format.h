@@ -11,6 +11,7 @@ struct CommaOpts {
     bool polyphony = true;   // {plph} {plph-max}
     bool nps       = true;   // {nps} {nps-max}
     bool cc        = false;  // {cc} {cc-total} {cc-rem}
+    bool ticks     = true;   // {tick} {tick-total} {tick-rem}
 };
 
 // Padding: a single "pad with leading zeros" checkbox. When on, each numeric
@@ -31,7 +32,7 @@ std::string ProcessTemplateLine(const std::string& line, const FrameStats& fs,
                                 uint64_t total_notes, uint64_t total_cc_events,
                                 double max_time_sec, uint16_t ppqn,
                                 const CommaOpts& commas = {}, PadOpts pad = {},
-                                BpmOpts bpm = {});
+                                BpmOpts bpm = {}, uint64_t total_ticks = 0);
 
 struct AssConfig {
     int width = 1920;
@@ -54,8 +55,10 @@ struct AssConfig {
     PadOpts pad;
     BpmOpts bpm;
     double start_delay = 0.0;   // lead-in seconds: zero stats, negative countdown
+    uint64_t total_ticks = 0;   // song horizon in ticks ({tick-total}); 0 hides it
 };
 
 void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>& frames,
                   const std::vector<std::string>& template_lines, uint64_t total_notes,
-                  uint64_t total_cc, uint16_t ppqn, const AssConfig& cfg);
+                  uint64_t total_cc, uint16_t ppqn, const AssConfig& cfg,
+                  uint64_t total_ticks = 0);

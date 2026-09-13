@@ -21,6 +21,7 @@ namespace fmcg_stream {
 // and produce per-frame statistics.
 std::vector<FrameStats> process_streaming(
     const std::string& filename, double fps, uint16_t& out_division,
-    uint64_t& out_total_notes, bool vel0_as_note_off, const ProgressCallbacks& cb);
+    uint64_t& out_total_notes, bool vel0_as_note_off, uint64_t& out_total_ticks,
+    const ProgressCallbacks& cb);
 
 } // namespace fmcg_stream

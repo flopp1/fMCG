@@ -43,7 +43,8 @@ static int block_height(int lines, int font_size) {
 std::string ProcessTemplateLine(const std::string& line, const FrameStats& fs,
                                        uint64_t total_notes, uint64_t total_cc_events,
                                        double max_time_sec, uint16_t ppqn,
-                                       const CommaOpts& commas, PadOpts pad, BpmOpts bpm) {
+                                       const CommaOpts& commas, PadOpts pad, BpmOpts bpm,
+                                       uint64_t total_ticks) {
     std::string result = line;
     auto replace = [&](const std::string& token, const std::string& val) {
         size_t pos = 0;
@@ -61,6 +62,7 @@ std::string ProcessTemplateLine(const std::string& line, const FrameStats& fs,
     const int w_poly  = p ? w(static_cast<uint64_t>(std::max<int64_t>(0, fs.peak_polyphony))) : 0;
     const int w_nps   = p ? w(static_cast<uint64_t>(std::max<double>(0, std::round(fs.peak_nps)))) : 0;
     const int w_sec   = p ? w(static_cast<uint64_t>(std::max<double>(0, max_time_sec))) : 0;
+    const int w_tick  = p ? w(total_ticks) : 0;
 
     auto fmt = [&](bool commas_on, uint64_t v, int width) -> std::string {
         // Pad the raw digits first, then group with commas, so the pad always
@@ -83,6 +85,7 @@ std::string ProcessTemplateLine(const std::string& line, const FrameStats& fs,
     auto fmt_poly  = [&](uint64_t v) { return fmt(commas.polyphony, v, w_poly); };
     auto fmt_nps   = [&](uint64_t v) { return fmt(commas.nps, v, w_nps); };
     auto fmt_cc    = [&](uint64_t v) { return fmt(commas.cc, v, w_cc); };
+    auto fmt_tick  = [&](uint64_t v) { return fmt(commas.ticks, v, w_tick); };
 
     replace("{nc}", fmt_notes(fs.cumulative_notes));
     replace("{nc-total}", fmt_notes(total_notes));
@@ -91,6 +94,18 @@ std::string ProcessTemplateLine(const std::string& line, const FrameStats& fs,
     replace("{cc}", fmt_cc(fs.cumulative_cc));
     replace("{cc-total}", fmt_cc(total_cc_events));
     replace("{cc-rem}", fmt_cc(total_cc_events > fs.cumulative_cc ? total_cc_events - fs.cumulative_cc : 0));
+
+    // Ticks: signed so the start-delay countdown can run negative and count
+    // up (mirrors the {sec}/{time} fields).
+    auto fmt_tick_signed = [&](int64_t v) -> std::string {
+        if (v >= 0) return fmt_tick((uint64_t)v);
+        std::string s = fmt_tick((uint64_t)(-v));
+        return "-" + s;
+    };
+
+    replace("{tick}", fmt_tick_signed(fs.tick));
+    replace("{tick-total}", fmt_tick(total_ticks));
+    replace("{tick-rem}", fmt_tick((uint64_t)std::max<int64_t>(0, (int64_t)total_ticks - fs.tick)));
 
     // Signed seconds, truncating toward zero (start-delay countdown runs
     // negative and counts up to 0).
@@ -137,7 +152,8 @@ std::string ProcessTemplateLine(const std::string& line, const FrameStats& fs,
 
 void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>& frames,
                           const std::vector<std::string>& template_lines, uint64_t total_notes,
-                          uint64_t total_cc, uint16_t ppqn, const AssConfig& cfg) {
+                          uint64_t total_cc, uint16_t ppqn, const AssConfig& cfg,
+                          uint64_t total_ticks) {
     std::ofstream ass(ass_filename);
     ass << "[Script Info]\nScriptType: v4.00+\nPlayResX: " << cfg.width << "\nPlayResY: " << cfg.height << "\n\n";
     ass << "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n";
@@ -191,11 +207,18 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
             double t_end = (k + 1) * frame_dur;
             if (t_end > cfg.start_delay) t_end = cfg.start_delay;
             zero_fs.timestamp_sec = t_start - cfg.start_delay;   // negative song time
+            // Negative song ticks, counting up to 0: the same linear inverse
+            // the {sec} fields use. Ticks are linear in song time at the
+            // initial tempo, taken from the first frame's BPM
+            // (us_per_quarter = 60e6 / bpm).
+            const double us0 = 60000000.0 / (frames.front().bpm > 0.0 ? frames.front().bpm : 120.0);
+            zero_fs.tick = (int64_t)std::llround(zero_fs.timestamp_sec
+                            * (double)ppqn * 1e6 / us0);
             zero_fs.frame_index = (size_t)k;
             std::string text_block;
             std::vector<std::string> rendered;
             for (size_t i = 0; i < template_lines.size(); ++i) {
-                std::string row = ProcessTemplateLine(template_lines[i], zero_fs, total_notes, 0, total_duration, ppqn, cfg.commas, cfg.pad, cfg.bpm);
+                std::string row = ProcessTemplateLine(template_lines[i], zero_fs, total_notes, 0, total_duration, ppqn, cfg.commas, cfg.pad, cfg.bpm, 0);
                 rendered.push_back(row);
                 text_block += row;
                 if (i + 1 < template_lines.size()) text_block += "\\N";
@@ -212,7 +235,7 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
         std::string text_block;
         std::vector<std::string> rendered;
         for (size_t i = 0; i < template_lines.size(); ++i) {
-            std::string row = ProcessTemplateLine(template_lines[i], f, total_notes, total_cc, total_duration, ppqn, cfg.commas, cfg.pad, cfg.bpm);
+            std::string row = ProcessTemplateLine(template_lines[i], f, total_notes, total_cc, total_duration, ppqn, cfg.commas, cfg.pad, cfg.bpm, total_ticks);
             rendered.push_back(row);
             text_block += row;
             if (i + 1 < template_lines.size()) text_block += "\\N";

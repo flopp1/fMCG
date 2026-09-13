@@ -29,6 +29,7 @@ struct FrameStats {
     int64_t polyphony = 0;
     int64_t peak_polyphony = 0;
     double bpm = 120.0;
+    int64_t tick = 0;                    // song tick at this frame ({tick} stat); negative during the start-delay countdown
 };
 
 struct TempoChange {
@@ -106,6 +107,12 @@ public:
 // MIDI Processor -- routes all inputs through the single-pass streaming engine.
 class ScaleMidiProcessor {
 public:
+    // Preferred form: also reports the song's total tick count ({tick-total}).
+    static std::vector<FrameStats> process_midi(
+        const std::string& filename, double fps, uint16_t& out_division,
+        uint64_t& out_total_notes, bool vel0_as_note_off,
+        uint64_t& out_total_ticks, const ProgressCallbacks& cb = {});
+    // Back-compat form used by tests/benchmarks (total ticks not reported).
     static std::vector<FrameStats> process_midi(
         const std::string& filename, double fps, uint16_t& out_division,
         uint64_t& out_total_notes, bool vel0_as_note_off = true,

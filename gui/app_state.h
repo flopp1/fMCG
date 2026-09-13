@@ -90,6 +90,7 @@ struct AppState {
     int                       vid_height{1080};
     uint16_t                  ppqn{480};
     uint64_t                  total_notes{0};
+    uint64_t                  total_ticks{0};
 
     // ---- preview data ---------------------------------------------------------
     std::vector<FrameStats>   frames_data;

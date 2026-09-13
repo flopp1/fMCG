@@ -277,6 +277,7 @@ bool save_pattern(const std::string& name, const PatternData& p) {
     ss << "comma_poly = " << (p.commas.polyphony ? 1 : 0) << "\n";
     ss << "comma_nps = " << (p.commas.nps ? 1 : 0) << "\n";
     ss << "comma_cc = " << (p.commas.cc ? 1 : 0) << "\n";
+    ss << "comma_ticks = " << (p.commas.ticks ? 1 : 0) << "\n";
     ss << "pad_enabled = " << (p.pad.enabled ? 1 : 0) << "\n";
     int bpm_dec = p.bpm.decimals;
     if (bpm_dec < 0) bpm_dec = 0;
@@ -306,6 +307,7 @@ bool load_pattern(const std::string& name, PatternData& out) {
     out.commas.polyphony     = get_bool(kv, "comma_poly", true);
     out.commas.nps           = get_bool(kv, "comma_nps", true);
     out.commas.cc            = get_bool(kv, "comma_cc", false);
+    out.commas.ticks         = get_bool(kv, "comma_ticks", true);
     out.pad.enabled          = get_bool(kv, "pad_enabled", false);
     out.bpm.decimals         = get_int(kv, "bpm_decimals", 2);
     if (out.bpm.decimals < 0) out.bpm.decimals = 0;

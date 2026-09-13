@@ -71,6 +71,7 @@ void run_process(GuiSettings s) {
 
     uint16_t ppqn = 480;
     uint64_t total_notes = 0;
+    uint64_t total_ticks = 0;
 
     ProgressCallbacks cb;
     cb.on_progress = [](const char* pass, int percent) { g_app.gui_progress(pass, percent); };
@@ -112,7 +113,7 @@ void run_process(GuiSettings s) {
     app.gui_log(("Processing MIDI: " + s.midi_file + "...").c_str(), false);
 
     auto frames = ScaleMidiProcessor::process_midi(s.midi_file, s.fps, ppqn, total_notes,
-                                                    s.vel0_note_off, cb);
+                                                    s.vel0_note_off, total_ticks, cb);
     if (spec_prompt_used) {
         app.spec_prompt_open.store(false);
         app.spec_choice.store(-1);
@@ -151,8 +152,9 @@ void run_process(GuiSettings s) {
     acfg.bpm = s.bpm;
     acfg.bg_color_ass = s.bg_color_aabbggrr;
     acfg.start_delay = s.start_delay;
+    acfg.total_ticks = total_ticks;
 
-    generate_ass(ass_filename, frames, template_lines, total_notes, total_cc, ppqn, acfg);
+    generate_ass(ass_filename, frames, template_lines, total_notes, total_cc, ppqn, acfg, total_ticks);
 
     app.ass_path = ass_filename;
     app.midi_dir = midi_dir;
@@ -163,6 +165,7 @@ void run_process(GuiSettings s) {
     app.vid_height = s.height;
     app.ppqn = ppqn;
     app.total_notes = total_notes;
+    app.total_ticks = total_ticks;
     app.start_delay = s.start_delay;
     app.preview_commas = s.commas;
     app.preview_pad = s.pad;

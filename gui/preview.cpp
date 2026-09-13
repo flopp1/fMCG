@@ -8,6 +8,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cstdio>
+#include <cmath>
 
 
 namespace fmcg_preview {
@@ -19,7 +20,7 @@ std::string format_frame_text(const FrameStats& fs) {
     for (size_t i = 0; i < g_app.template_lines.size(); ++i) {
         result += ProcessTemplateLine(g_app.template_lines[i], fs, g_app.total_notes, total_cc,
                                       max_time, g_app.ppqn, g_app.preview_commas, g_app.preview_pad,
-                                      g_app.preview_bpm);
+                                      g_app.preview_bpm, g_app.total_ticks);
         if (i + 1 < g_app.template_lines.size()) result += '\n';
     }
     return result;
@@ -357,6 +358,11 @@ void render_preview_popup() {
             if (in_delay) {
                 delay_fs.bpm = g_app.frames_data.front().bpm;
                 delay_fs.timestamp_sec = g_app.preview_time - g_app.start_delay;
+                // Negative song ticks counting up to 0, matching the ASS
+                // delay block's formula (initial tempo from the first frame).
+                const double us0 = 60000000.0 / (delay_fs.bpm > 0.0 ? delay_fs.bpm : 120.0);
+                delay_fs.tick = (int64_t)std::llround(delay_fs.timestamp_sec
+                                * (double)g_app.ppqn * 1e6 / us0);
                 fs_ptr = &delay_fs;
             } else {
                 fs_ptr = &find_frame(g_app.preview_time - g_app.start_delay);
