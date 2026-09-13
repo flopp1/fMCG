@@ -53,6 +53,25 @@ Dear ImGui is a git submodule compiled from `vendor/imgui` (no standard distro p
 
 Rendering uses **FFmpeg** (the `subtitles` filter, i.e. a build with libass) and must be on PATH: `ffmpeg -version`. Any recent [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) full build works on Windows.
 
+## Running a prebuilt Linux binary
+
+The Linux release binary is built on Ubuntu in WSL and links GLFW, libarchive, OpenGL and libstdc++ **dynamically**. You only need the runtime libraries (no `-dev` packages) and FFmpeg to run it:
+
+```bash
+# Debian/Ubuntu
+sudo apt install libglfw3 libarchive libgl1 ffmpeg
+# Fedora
+sudo dnf install glfw libarchive mesa-libGL ffmpeg
+# Arch
+sudo pacman -S glfw libarchive mesa ffmpeg
+```
+
+Notes:
+
+- A desktop with X11 or Wayland is required (the app is a GUI). Under WSL itself, WSLg provides this on Windows 10/11.
+- The binary was built against the glibc of the Ubuntu it was built on, so it runs on that Ubuntu or any newer distro. If it fails with a `GLIBC_x.yy not found` error, your distro is older than the build system — build from source instead (section above).
+- FFmpeg is only needed for rendering; parsing and previewing work without it.
+
 ## Distributing Windows binaries
 
 A built `fMCG_gui.exe` links libarchive **dynamically** and needs `libarchive.dll` sitting in the same folder (the build copies it there; `bootstrap.bat` fetches it into `vendor\libarchive\bin\`). Without it the exe starts but fails the moment it touches a MIDI file.
