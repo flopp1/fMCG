@@ -723,8 +723,33 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
         uint8_t running = 0;
         uint32_t refcount[16][128] = {};   // black-MIDI tracks hold >255 overlapping instances of one note
 
+        // ---- pending-tick registers (hot-path optimisation) ----------------
+        // Black MIDIs stack thousands of events on the SAME tick via zero-delta
+        // chains. Instead of a read-modify-write into the multi-GB cells[]
+        // array per event, events accumulate in these register locals and are
+        // committed to cells[] once, when the walk moves past the tick (or the
+        // track ends). Cost drops from per-event memory ops to per-tick.
+        bool     has_pending = false;
+        uint64_t pend_tick = 0;
+        uint32_t pend_ons = 0, pend_cc = 0;
+        int32_t  pend_delta = 0;
+        auto flush_pending = [&]() {
+            if (!has_pending) return;
+            td.ensure(pend_tick);
+            if (pend_ons)   td.cells[pend_tick].ons   += pend_ons;
+            if (pend_delta) td.cells[pend_tick].delta += pend_delta;
+            if (pend_cc) {
+                if (td.dense_cc.size() < td.cells.size()) td.dense_cc.resize(td.cells.size(), 0);
+                td.dense_cc[pend_tick] += pend_cc;
+                td.total_cc += pend_cc;
+            }
+            td.total_ons += pend_ons;
+            has_pending = false; pend_ons = 0; pend_delta = 0; pend_cc = 0;
+        };
+
         while (bs.at_end() == false) {
             tick += bs.vlq();
+            if (has_pending && tick != pend_tick) flush_pending();   // commit before the tick advances
             // MIDI spec guard: delta times are at most 28-bit VLQs, so a tick
             // beyond 1<<28 cannot be represented within the spec. At that
             // point the per-tick arrays also grow toward gigabytes. Fire the
@@ -777,14 +802,14 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
                     if (explicit_status) running = status; // 0xFx never reaches here
                     if (et == 0x90 && (n2 > 0 || !vel0_as_note_off)) {
                         refcount[status & 0x0F][n1]++;
-                        if (accumulate) td.note_on(tick);
+                        if (accumulate) { pend_tick = tick; has_pending = true; pend_ons++; pend_delta++; }
                     } else if (et == 0x90 || et == 0x80) {
                         if (refcount[status & 0x0F][n1] > 0) {
                             refcount[status & 0x0F][n1]--;
-                            if (accumulate) td.delta_at(tick, -1);
+                            if (accumulate) { pend_tick = tick; has_pending = true; pend_delta--; }
                         }
                     } else if (et == 0xB0 && count_cc) {
-                        td.cc_at(tick);
+                        pend_tick = tick; has_pending = true; pend_cc++;
                     }
                     // 0xA0/0xE0 and uncounted CC consume 3 bytes, touch nothing.
                     if (++ev_count >= 1000000) {
@@ -853,11 +878,11 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
                     uint8_t ch = status & 0x0F, note = (uint8_t)n1, vel = (uint8_t)n2;
                     if (et == 0x90 && (vel > 0 || !vel0_as_note_off)) {
                         refcount[ch][note]++;
-                        if (accumulate) td.note_on(tick);
+                        if (accumulate) { pend_tick = tick; has_pending = true; pend_ons++; pend_delta++; }
                     } else if (et == 0x90 || et == 0x80) {
-                        if (refcount[ch][note] > 0) { refcount[ch][note]--;                             if (accumulate) td.delta_at(tick, -1); }
+                        if (refcount[ch][note] > 0) { refcount[ch][note]--;                             if (accumulate) { pend_tick = tick; has_pending = true; pend_delta--; } }
                     } else if (et == 0xB0 && count_cc) {
-                                                td.cc_at(tick);   // control change: counted only when the CC stat is on
+                                                pend_tick = tick; has_pending = true; pend_cc++;   // control change: counted only when the CC stat is on
                     }
                 }
             }
@@ -877,6 +902,7 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
         }
 
         // Close held notes at the track's final tick (parallel-engine end-of-track flush).
+        flush_pending();   // commit the final tick's pending events first
         for (int ch = 0; ch < 16; ++ch)
             for (int n = 0; n < 128; ++n)
                 if (refcount[ch][n] > 0 && accumulate) td.delta_at(tick, -(int64_t)refcount[ch][n]);
@@ -900,19 +926,21 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
 // ---- anchor-interpolated sweep: tick buckets -> FrameStats --------------------
 
 // Sub-frame peak resolution: note events are accumulated into bins of width
-// 1/(FMCG_FINE_BINS*fps) seconds so {nps-max} and {plph-max} reflect the true
-// peaks instead of frame-aligned ones (other counters show ~1% higher peaks
-// because on/off pairs inside one frame partially cancel there). Both engines
-// use identical bins so their outputs stay equivalent.
+// 1/(FMCG_FINE_BINS*fps) seconds so {nps-max} reflects the true peak instead
+// of a frame-aligned one (other counters show ~1% higher peaks because on/off
+// pairs inside one frame partially cancel there).
 static constexpr int FMCG_FINE_BINS = 8;
 
-struct FinePeaks { double peak_nps; int64_t peak_poly; };
+// {plph-max} is EXACT in the single-pass engine, no bins involved: the sweep
+// walks every tick in order and a tick is the finest time unit MIDI has
+// (same-tick events are simultaneous by definition, so the net-per-tick
+// polyphony state IS the instantaneous count). The running max of `poly` over
+// ticks is therefore the true maximum-concurrent-notes value.
 
 // Peak NPS: max sum over a sliding window of exactly W*FMCG_FINE_BINS bins
 // (== W frames == the same ~1s span the per-frame {nps} uses, on a finer
-// grid). Peak polyphony: max prefix sum over the delta bins (the running
-// polyphony's maximum occurs right after some note-on, so bin-end states
-// capture it to within one bin).
+// grid). Evaluated at every fine-bin boundary; the only approximation is the
+// bin quantization of the window position (~2ms), invisible in practice.
 
 // Build the tempo map exactly like the parallel engine: default entry,
 // stable sort by tick, dedup keeping the LAST change at each tick, then
@@ -978,24 +1006,20 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
     // a prefix sum gives the true peak polyphony. The cursor advances frame
     // by frame so each frame's displayed peaks include every event of that
     // frame (bins of frame k are indices [FMCG_FINE_BINS*k, FMCG_FINE_BINS*(k+1)).
-    std::vector<uint32_t> fons;      // note-ons per fine bin
-    std::vector<int32_t>  fdeltas;   // poly delta per fine bin
+    std::vector<uint32_t> fons;      // note-ons per fine bin (NPS window only)
     size_t n_bins = 0;               // vector size; readable zero-padded tail
     auto fine_ensure = [&](size_t bin) {
         if (bin >= fons.size()) {
             size_t n = fons.size() ? fons.size() : 4096;
             while (n <= bin) n *= 2;
             fons.resize(n, 0);
-            fdeltas.resize(n, 0);
             n_bins = n;
         }
     };
     size_t wlen = W * FMCG_FINE_BINS;
     size_t fine_next = 0;            // bins < fine_next are in the running peaks
     uint64_t wsum = 0;               // notes in the last wlen bins
-    int64_t  psum = 0;               // polyphony prefix over bins
-    uint32_t run_nps = 0;            // running maxima (monotonic)
-    int64_t  run_poly = 0;
+    uint32_t run_nps = 0;            // running NPS max (monotonic)
 
     auto push_frame = [&](size_t k) {
         // Frame-end tempo: a tempo change inside frame k must show from k on
@@ -1007,8 +1031,6 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
             wsum += fons[fine_next];
             if (fine_next >= wlen) wsum -= fons[fine_next - wlen];
             if (wsum > run_nps) run_nps = (uint32_t)wsum;
-            psum += fdeltas[fine_next];
-            if (psum > run_poly) run_poly = psum;
         }
         uint64_t prev_cum = (k >= W) ? out[k - W].cumulative_notes : 0;
         double nps = (double)(cum - prev_cum);
@@ -1018,7 +1040,8 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
             cur_poly = 0;                // to their resting values
         } else {
             peak_nps = std::max(peak_nps, (double)run_nps);
-            peak_poly = std::max(peak_poly, run_poly);
+            // peak_poly is maintained exactly per tick in the tick walk;
+            // already monotonic and covers every event of frames < tail.
         }
         out.push_back({k, (double)k / fps, cum, cum_cc, nps, peak_nps,
                        std::max<int64_t>(0, cur_poly), peak_poly, tm[bpmw].bpm, (int64_t)tick_at((double)k / fps)});
@@ -1042,14 +1065,14 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
         // their end-of-frame state is the current running state.
         while (cur_frame < fi) push_frame(cur_frame++);
 
-        // Sub-frame peaks: place this tick's events into their fine bin.
+        // Sub-frame peaks: place this tick's note-ons into their fine bin.
         size_t bin = (size_t)(sec * fps * (double)FMCG_FINE_BINS);
         fine_ensure(bin);
         fons[bin] += (uint32_t)o;
-        fdeltas[bin] += (int32_t)d;
 
         cum += o;
         poly += d;
+        if (poly > peak_poly) peak_poly = poly;   // exact per-tick peak
         if (c) cum_cc += c;
     }
 
