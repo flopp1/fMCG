@@ -189,14 +189,14 @@ static void draw_frame(GLFWwindow* window) {
             cmd = "powershell -NoProfile -Command \""
                   "Add-Type -AssemblyName System.Windows.Forms; "
                   "$f = New-Object System.Windows.Forms.OpenFileDialog; "
-                  "$f.Filter = 'MIDI & archives (*.mid;*.midi;*.7z;*.xz;*.rar)|*.mid;*.midi;*.7z;*.xz;*.rar|All files (*.*)|*.*'; "
+                  "$f.Filter = 'MIDI & archives (*.mid;*.midi;*.7z;*.xz;*.rar;*.gz;*.bz2;*.zst;*.lz4)|*.mid;*.midi;*.7z;*.xz;*.rar;*.gz;*.bz2;*.zst;*.lz4|All files (*.*)|*.*'; "
                   "$f.Title = 'Select MIDI file'; "
                   "if ($f.ShowDialog() -eq 'OK') { $f.FileName }\"";
 #elif defined(__APPLE__)
             cmd = "osascript -e 'tell application \"System Events\" to set f to (choose file with prompt \"Select MIDI file\") as alias' -e 'POSIX path of f'";
 #else
-            cmd = "zenity --file-selection --title='Select MIDI file' --file-filter='MIDI & archives | *.mid *.midi *.7z *.xz *.rar' 2>/dev/null || "
-                  "kdialog --getopenfilename . 'MIDI & archives (*.mid *.midi *.7z *.xz *.rar)' 'Select MIDI file' 2>/dev/null";
+            cmd = "zenity --file-selection --title='Select MIDI file' --file-filter='MIDI & archives | *.mid *.midi *.7z *.xz *.rar *.gz *.bz2 *.zst *.lz4' 2>/dev/null || "
+                  "kdialog --getopenfilename . 'MIDI & archives (*.mid *.midi *.7z *.xz *.rar *.gz *.bz2 *.zst *.lz4)' 'Select MIDI file' 2>/dev/null";
 #endif
             launch_dialog(cmd, "midi");
         }
