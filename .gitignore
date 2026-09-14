@@ -26,6 +26,7 @@ temp_stats.ass
 
 # --- generated test files (test/gen_midi.py etc.) -----------------------------
 test/generated/
+test/__pycache__/
 test/*.mid
 test/*.midi
 test/*.7z
