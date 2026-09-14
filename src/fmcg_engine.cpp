@@ -42,6 +42,10 @@ public:
     virtual uint64_t bytes_read() const { return 0; }  // decoded bytes pushed through
     virtual uint64_t total_bytes() const { return 0; } // 0 = unknown (archives)
     virtual bool errored() const { return false; }     // stream died before clean EOF
+    // Optional capability: a direct pointer to the whole stream image (used by
+    // the zero-copy RawStream walk). Only mmap-backed plain files provide it;
+    // the default keeps archives/pipes on the chunked ByteStream path.
+    virtual const uint8_t* image(size_t& n) { (void)n; return nullptr; }
 };
 
 class FileSrc : public DataSrc {
@@ -66,6 +70,10 @@ public:
     uint64_t bytes_read() const override { return (uint64_t)r.tell(); }
     const char* kind() const override { return "mmap"; }
     uint64_t total_bytes() const override { return (uint64_t)r.get_file_size(); }
+    const uint8_t* image(size_t& n) override {
+        n = r.mmap_size();
+        return r.mmap_data();
+    }
 };
 
 class ArchiveSrc : public DataSrc {
@@ -630,6 +638,87 @@ public:
     }
 };
 
+// ---- zero-copy stream over an in-memory image (raw mmap walk) ----------------
+//
+// Same interface as ByteStream, but the "window" is the mapping itself: no
+// ring buffer, no memcpy, no virtual read() per fill. Plain mmap-backed files
+// scan straight over the image; everything else (archives, pipes, failed
+// mmaps) keeps the chunked ByteStream. Limits and EOF semantics mirror
+// ByteStream exactly so the scanner bodies behave identically.
+class RawStream {
+    const uint8_t* data_;
+    size_t len_;
+    size_t lo_ = 0;
+    size_t limit_remaining_ = (size_t)-1;
+    size_t limit_total_ = 0;
+public:
+    explicit RawStream(const uint8_t* d, size_t n) : data_(d), len_(n) {}
+
+    uint8_t* fast_p = nullptr;
+
+    uint64_t bytes_pulled() const { return lo_; }
+    void set_limit(size_t n) { limit_remaining_ = n; limit_total_ = n; }
+    size_t consumed() const { return limit_total_ - std::min(limit_total_, limit_remaining_); }
+
+    size_t avail() {
+        size_t a = len_ - lo_;
+        if (a > limit_remaining_) a = limit_remaining_;
+        return a;
+    }
+    bool at_end() { return avail() == 0; }
+
+    int get() {
+        if (limit_remaining_ == 0 || lo_ >= len_) return -1;
+        limit_remaining_--;
+        return data_[lo_++];
+    }
+    int peek() {
+        if (limit_remaining_ == 0 || lo_ >= len_) return -1;
+        return data_[lo_];
+    }
+
+    void skip(size_t n) {
+        if (n > limit_remaining_) n = limit_remaining_;
+        if (n > len_ - lo_) n = len_ - lo_;
+        lo_ += n;
+        limit_remaining_ -= n;
+    }
+
+    size_t read(void* dst, size_t n) {   // interface parity (not on the hot path)
+        if (n > limit_remaining_) n = limit_remaining_;
+        if (n > len_ - lo_) n = len_ - lo_;
+        std::memcpy(dst, data_ + lo_, n);
+        lo_ += n;
+        limit_remaining_ -= n;
+        return n;
+    }
+
+    uint64_t vlq() {
+        uint64_t val = 0;
+        for (int i = 0; i < 4; ++i) {
+            int b = get();
+            if (b < 0) break;
+            val = (val << 7) | (uint64_t)(b & 0x7F);
+            if (!(b & 0x80)) break;
+        }
+        return val;
+    }
+
+    // Whole remaining track (clamped to the declared chunk limit) in one
+    // window: the scanner bursts across it exactly as over ByteStream's ring.
+    size_t acquire_window() {
+        size_t run = len_ - lo_;
+        if (run > limit_remaining_) run = limit_remaining_;
+        fast_p = const_cast<uint8_t*>(data_ + lo_);
+        return run;
+    }
+    void commit_window(size_t used) {
+        lo_ += used;
+        limit_remaining_ -= used;
+        fast_p = nullptr;
+    }
+};
+
 // ---- accumulation targets ---------------------------------------------------
 
 struct TickData {
@@ -682,15 +771,29 @@ struct TickData {
 
 // Result of a single walk over the image.
 enum class ScanMode { ACCUMULATE, TEMPO_ONLY };
-
 // Aborted via the MIDI-spec guard; the caller restarts the walk in TEMPO_ONLY
 // mode (two-pass fallback for spec-breaking tick spans).
 struct SpecAbort {};
 
+// Forward declarations: the scan bodies are stream-generic (templated over
+// ByteStream or RawStream) and defined further below, after FrameBuckets.
+template <typename StreamT>
+static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickData& td,
+                        std::vector<TempoChange>& tempo_raw, uint16_t& out_division,
+                        const ProgressCallbacks& cb, ScanMode mode);
+
 bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
-                       std::vector<TempoChange>& tempo_raw, uint16_t& out_division,
-                       const ProgressCallbacks& cb, ScanMode mode = ScanMode::ACCUMULATE) {
+                std::vector<TempoChange>& tempo_raw, uint16_t& out_division,
+                const ProgressCallbacks& cb, ScanMode mode = ScanMode::ACCUMULATE) {
     ByteStream bs(src);
+    return scan_stream(bs, src, vel0_as_note_off, td, tempo_raw, out_division, cb, mode);
+}
+
+// ---- single sequential walk over the image (stream-generic) ------------------
+template <typename StreamT>
+static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickData& td,
+                        std::vector<TempoChange>& tempo_raw, uint16_t& out_division,
+                        const ProgressCallbacks& cb, ScanMode mode) {
     const bool accumulate = (mode == ScanMode::ACCUMULATE);
     // In TEMPO_ONLY mode the accumulation arrays are never touched (that is
     // the point) and CC counting is meaningless.
@@ -1177,10 +1280,10 @@ struct FrameBuckets {
 
 // Pass 2 walk: same event grammar as scan_image, but events land in frame
 // buckets through the precomputed tempo map. Tick-space is never materialized.
-bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
-                       const std::vector<TempoChange>& tm, uint16_t ppqn, double fps,
-                       const ProgressCallbacks& cb) {
-    ByteStream bs(src);
+template <typename StreamT>
+static bool scan_frames_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
+                               const std::vector<TempoChange>& tm, uint16_t ppqn, double fps,
+                               const ProgressCallbacks& cb) {
     const bool count_cc = true;
 
     using clock = std::chrono::steady_clock;
@@ -1414,6 +1517,32 @@ bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
     return true;
 }
 
+// ---- dispatch: raw mmap walk when the source exposes an image -----------------
+
+static bool scan_any(DataSrc& src, bool vel0_as_note_off, TickData& td,
+                     std::vector<TempoChange>& tempo_raw, uint16_t& out_division,
+                     const ProgressCallbacks& cb, ScanMode mode = ScanMode::ACCUMULATE) {
+    size_t n = 0;
+    if (const uint8_t* img = src.image(n); img && n > 0) {
+        RawStream bs(img, n);
+        return scan_stream(bs, src, vel0_as_note_off, td, tempo_raw, out_division, cb, mode);
+    }
+    ByteStream bs(src);
+    return scan_stream(bs, src, vel0_as_note_off, td, tempo_raw, out_division, cb, mode);
+}
+
+static bool scan_any_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
+                            const std::vector<TempoChange>& tm, uint16_t ppqn, double fps,
+                            const ProgressCallbacks& cb) {
+    size_t n = 0;
+    if (const uint8_t* img = src.image(n); img && n > 0) {
+        RawStream bs(img, n);
+        return scan_frames_stream(bs, src, vel0_as_note_off, fb, tm, ppqn, fps, cb);
+    }
+    ByteStream bs(src);
+    return scan_frames_stream(bs, src, vel0_as_note_off, fb, tm, ppqn, fps, cb);
+}
+
 // Convert frame buckets to FrameStats. Pass-1-style semantics: running sums
 // and extrema accumulate in frame order (buckets already hold exactly the
 // per-frame values the sweep would have produced).
@@ -1528,7 +1657,7 @@ std::vector<FrameStats> process_streaming(
                 return {};
             }
             try {
-                if (!scan_image(*src, vel0_as_note_off, td, tempo_raw, division, cb)) return {};
+                if (!scan_any(*src, vel0_as_note_off, td, tempo_raw, division, cb)) return {};
             } catch (const SpecAbort&) {
                 // User chose the low-memory path at the spec-violation prompt:
                 // re-walk collecting the tempo map only (no per-tick arrays),
@@ -1564,7 +1693,7 @@ std::vector<FrameStats> process_streaming(
             t_scan = clock::now();   // restart the clock: the stats line should reflect the two passes, not the aborted attempt
             src = open_src();
             if (!src->ok()) { emit(cb, "Error: failed to re-open input for pass 1.\n", true); return {}; }
-            if (!scan_image(*src, vel0_as_note_off, td, tempo_raw, division, cb, ScanMode::TEMPO_ONLY))
+            if (!scan_any(*src, vel0_as_note_off, td, tempo_raw, division, cb, ScanMode::TEMPO_ONLY))
                 return {};
             out_division = division;
             const std::vector<TempoChange> tm = build_tempo_map(tempo_raw, division);
@@ -1574,7 +1703,7 @@ std::vector<FrameStats> process_streaming(
             if (!src->ok()) { emit(cb, "Error: failed to re-open input for pass 2.\n", true); return {}; }
             FrameBuckets fb;
             fb.cc.resize(4096, 0);
-            if (!scan_image_frames(*src, vel0_as_note_off, fb, tm, division, fps, cb))
+            if (!scan_any_frames(*src, vel0_as_note_off, fb, tm, division, fps, cb))
                 return {};
             dec_bytes = src->bytes_read();
             dec_err = src->errored();

@@ -103,6 +103,9 @@ public:
 
     size_t  get_file_size() const { return file_size; }
     size_t  tell() const { return pos; }
+    // Direct access to the mmap window (null when not mmap-backed).
+    uint8_t* mmap_data() { return use_mmap ? mmap_ptr : nullptr; }
+    size_t   mmap_size() const { return use_mmap ? mmap_len : 0; }
     size_t read_raw(void* dst, size_t n);
     // Asynchronous readahead for sequential scans (Win32 PrefetchVirtualMemory
     // / POSIX madvise). Best-effort: failure is silently ignored.
