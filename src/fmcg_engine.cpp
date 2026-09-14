@@ -680,6 +680,14 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
     const uint64_t total_bytes = src.total_bytes();   // 0 = unknown fraction
     const uint64_t spec_limit = cb.spec_tick_limit ? cb.spec_tick_limit : ((uint64_t)1 << 28);
     bool spec_warned = false;              // one-shot: ask at most once per scan
+    bool data_oor = false;                 // one-shot: out-of-range data bytes seen
+    auto note_data_oor = [&]() {
+        if (!data_oor) {
+            emit(cb, "  Warning: file contains note data bytes above 127 (invalid MIDI); "
+                     "they are clamped to 127. Stats for those events may be approximate.\n", true);
+            data_oor = true;
+        }
+    };
 
     auto ping = [&]() {
         if (!cb.on_scan_progress) return;
@@ -798,9 +806,11 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
                         burst_at_event = true; break;      // meta/system family
                     }
                     if (pend - q < 2) { burst_at_event = true; break; }    // both data bytes must be in-window
-                    const uint8_t n1 = *q++, n2 = *q++;
+                    uint8_t n1 = *q++;
+                    const uint8_t n2 = *q++;
                     p = q;                                 // event fully consumed
                     if (explicit_status) running = status; // 0xFx never reaches here
+                    if (n1 > 0x7F) { note_data_oor(); n1 &= 0x7F; }   // invalid data byte: clamp (protects refcount[16][128])
                     if (et == 0x90 && (n2 > 0 || !vel0_as_note_off)) {
                         refcount[status & 0x0F][n1]++;
                         if (accumulate) { pend_tick = tick; has_pending = true; pend_ons++; pend_delta++; }
@@ -877,6 +887,7 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
                     int n2 = bs.get();
                     if (n2 < 0) break;
                     uint8_t ch = status & 0x0F, note = (uint8_t)n1, vel = (uint8_t)n2;
+                    if (note > 0x7F) { note_data_oor(); note &= 0x7F; }   // invalid data byte: clamp (protects refcount[16][128])
                     if (et == 0x90 && (vel > 0 || !vel0_as_note_off)) {
                         refcount[ch][note]++;
                         if (accumulate) { pend_tick = tick; has_pending = true; pend_ons++; pend_delta++; }
@@ -1272,9 +1283,11 @@ bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
                         burst_at_event = true; break;      // meta/system family
                     }
                     if (pend - q < 2) { burst_at_event = true; break; }    // both data bytes must be in-window
-                    const uint8_t n1 = *q++, n2 = *q++;
+                    uint8_t n1 = *q++;
+                    const uint8_t n2 = *q++;
                     p = q;                                 // event fully consumed
                     if (explicit_status) running = status; // 0xFx never reaches here
+                    if (n1 > 0x7F) n1 &= 0x7F;   // invalid data byte: clamp (protects refcount[16][128])
                     if (et == 0x90 && (n2 > 0 || !vel0_as_note_off)) {
                         refcount[status & 0x0F][n1]++;
                         fb.note_on(fine_of(tick));
@@ -1337,6 +1350,7 @@ bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
                     int n2e = bs.get();
                     if (n2e < 0) break;
                     uint8_t ch = status & 0x0F, note = (uint8_t)n1e, vel = (uint8_t)n2e;
+                    if (note > 0x7F) note &= 0x7F;   // invalid data byte: clamp (protects refcount[16][128])
                     if (et == 0x90 && (vel > 0 || !vel0_as_note_off)) {
                         refcount[ch][note]++;
                         fb.note_on(fine_of(tick));
