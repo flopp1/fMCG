@@ -482,7 +482,7 @@ public:
 // (the declared MTrk length) at consume time: bytes beyond the limit are
 // neither consumed nor discarded, so the next chunk's header stays intact.
 
-class ByteStream {
+class alignas(64) ByteStream {
     DataSrc& src;
     static constexpr size_t CAP = 1 << 19;   // 512 KB: fewer fill() round-trips (was 64 KB)
     uint8_t data[CAP];
@@ -594,6 +594,31 @@ public:
     }
 
     uint64_t vlq() {
+        // Fast path: the common 1-byte delta (zero-delta chains in black MIDIs
+        // make this the overwhelmingly dominant case). Peak >= 4 buffered
+        // bytes allows an unconditional 4-byte decode with no per-byte limit
+        // checks (same shape as cobalt/cpp-midi's varlen_decode).
+        if (limit_remaining > 0) {
+            if (lo == hi) { fill(); if (lo == hi) return 0; }
+            size_t buffered = hi - lo;
+            if (buffered >= 4 && limit_remaining >= 4) {
+                const uint8_t* p = data + lo;
+                uint32_t b0 = *p++;
+                if (__builtin_expect(b0 < 0x80, 1)) { lo++; limit_remaining--; return b0; }
+                uint64_t v = b0 & 0x7F;
+                uint32_t b1 = *p++;
+                v = (v << 7) | (b1 & 0x7F);
+                if (b1 < 0x80) { lo = (size_t)(p - data); limit_remaining -= 2; return v; }
+                uint32_t b2 = *p++;
+                v = (v << 7) | (b2 & 0x7F);
+                if (b2 < 0x80) { lo = (size_t)(p - data); limit_remaining -= 3; return v; }
+                uint32_t b3 = *p++;
+                v = (v << 7) | (b3 & 0x7F);
+                lo = (size_t)(p - data);
+                limit_remaining -= 4;
+                return v;
+            }
+        }
         uint64_t val = 0;
         for (int i = 0; i < 4; ++i) {
             int b = get();
@@ -793,16 +818,16 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
                     const uint8_t* q = p;                  // classification cursor
                     uint8_t status;
                     bool explicit_status = false;
-                    if (*q < 0x80) {
+                    if (__builtin_expect(*q < 0x80, 1)) {
                         status = running;                  // running status
                     } else {
                         status = *q++;                     // explicit status byte
                         explicit_status = true;
                     }
-                    if (status < 0x80) { burst_at_event = true; break; }   // running == 0
+                    if (__builtin_expect(status < 0x80, 0)) { burst_at_event = true; break; }   // running == 0
                     const uint8_t et = status & 0xF0;
-                    if (et == 0xC0 || et == 0xD0) { burst_at_event = true; break; }
-                    if (et != 0x80 && et != 0x90 && et != 0xA0 && et != 0xB0 && et != 0xE0) {
+                    if (__builtin_expect(et == 0xC0 || et == 0xD0, 0)) { burst_at_event = true; break; }
+                    if (__builtin_expect(et != 0x80 && et != 0x90 && et != 0xA0 && et != 0xB0 && et != 0xE0, 0)) {
                         burst_at_event = true; break;      // meta/system family
                     }
                     if (pend - q < 2) { burst_at_event = true; break; }    // both data bytes must be in-window
@@ -852,7 +877,7 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
             int st = bs.peek();
             if (st < 0) break;
             uint8_t status;
-            if (st < 0x80) {
+            if (__builtin_expect(st < 0x80, 1)) {
                 status = running;
             } else {
                 bs.get();   // consume the status byte
@@ -860,7 +885,7 @@ bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
                 running = (status < 0xF0) ? status : 0;
             }
 
-            if (status >= 0xF0) {
+            if (__builtin_expect(status >= 0xF0, 0)) {
                 // Rare system/meta family, kept out of the channel hot path.
                 if (status == 0xFF) {
                     int type = bs.get();
@@ -1270,16 +1295,16 @@ bool scan_image_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
                     const uint8_t* q = p;                  // classification cursor
                     uint8_t status;
                     bool explicit_status = false;
-                    if (*q < 0x80) {
+                    if (__builtin_expect(*q < 0x80, 1)) {
                         status = running;                  // running status
                     } else {
                         status = *q++;                     // explicit status byte
                         explicit_status = true;
                     }
-                    if (status < 0x80) { burst_at_event = true; break; }   // running == 0
+                    if (__builtin_expect(status < 0x80, 0)) { burst_at_event = true; break; }   // running == 0
                     const uint8_t et = status & 0xF0;
-                    if (et == 0xC0 || et == 0xD0) { burst_at_event = true; break; }
-                    if (et != 0x80 && et != 0x90 && et != 0xA0 && et != 0xB0 && et != 0xE0) {
+                    if (__builtin_expect(et == 0xC0 || et == 0xD0, 0)) { burst_at_event = true; break; }
+                    if (__builtin_expect(et != 0x80 && et != 0x90 && et != 0xA0 && et != 0xB0 && et != 0xE0, 0)) {
                         burst_at_event = true; break;      // meta/system family
                     }
                     if (pend - q < 2) { burst_at_event = true; break; }    // both data bytes must be in-window
