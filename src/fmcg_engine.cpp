@@ -8,8 +8,17 @@
 #include <chrono>
 #include <deque>
 
+#include "fmcg_util.h"
+
 #include "archive.h"
 #include "archive_entry.h"
+
+#if defined(_WIN32)
+#include <windows.h>
+#elif defined(__unix__) || defined(__APPLE__)
+#include <pthread.h>
+#include <time.h>
+#endif
 
 
 //
@@ -417,6 +426,13 @@ class PipelinedSrc : public DataSrc {
     bool piped = false;              // producer thread actually running
     bool closed = false;             // consumer abandoned the stream
     uint64_t decoded = 0;
+    // Bound attribution: how long each side spent waiting on the other.
+    // consumer_wait = parser starved (decode/disk could not keep up ->
+    // decode-bound); producer_wait = decoder blocked because the parser was
+    // still chewing the full queue (-> parser-bound). Stored as nanoseconds
+    // in atomics (C++17 has no floating-point fetch_add).
+    std::atomic<uint64_t> consumer_wait_ns{0};
+    std::atomic<uint64_t> producer_wait_ns{0};
 
     void produce() {
         std::unique_lock<std::mutex> lk(mu);
@@ -431,8 +447,15 @@ class PipelinedSrc : public DataSrc {
                 q_bytes += n;
                 decoded += n;
                 cv_data.notify_one();
-                while (q_bytes >= Q_CAP && !closed)
-                    cv_slot.wait(lk);
+                if (q_bytes >= Q_CAP && !closed) {
+                    const auto p0 = std::chrono::steady_clock::now();
+                    while (q_bytes >= Q_CAP && !closed)
+                        cv_slot.wait(lk);
+                    producer_wait_ns.fetch_add(
+                        (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - p0).count(),
+                        std::memory_order_relaxed);
+                }
                 if (closed) return;
             }
         } catch (...) {
@@ -460,6 +483,11 @@ public:
     const char* kind() const override { return piped ? "libarchive, pipelined decode" : "libarchive"; }
     uint64_t bytes_read() const override { return piped ? decoded : arc.bytes_read(); }
     bool errored() const override { return arc.errored(); }
+    void get_waits(double& consumer_s, double& producer_s) const {
+        consumer_s = (double)consumer_wait_ns.load(std::memory_order_relaxed) * 1e-9;
+        producer_s = (double)producer_wait_ns.load(std::memory_order_relaxed) * 1e-9;
+    }
+    bool is_piped() const { return piped; }
 
     // Blocks until >=1 byte is available or true EOF; never returns 0 mid-stream
     // (ByteStream treats a 0 short read as permanent EOF).
@@ -471,7 +499,12 @@ public:
         while (out < n) {
             if (q.empty()) {
                 if (done) break;
+                const auto w0 = std::chrono::steady_clock::now();
                 cv_data.wait(lk);
+                consumer_wait_ns.fetch_add(
+                    (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - w0).count(),
+                    std::memory_order_relaxed);
                 continue;
             }
             const auto& blk = q.front();
@@ -1612,6 +1645,30 @@ std::vector<FrameStats> buckets_to_frames(FrameBuckets& fb, double fps,
     return out;
 }
 
+// CPU time consumed by the calling thread (the scan thread), for the
+// disk-bound vs parser-bound attribution. Falls back to wall time if the
+// platform call fails (attribution then reads as parser-bound, the historic
+// behaviour).
+static double thread_cpu_seconds() {
+#if defined(_WIN32)
+    FILETIME c, e, k, u;
+    if (GetThreadTimes(GetCurrentThread(), &c, &e, &k, &u)) {
+        auto to_s = [](const FILETIME& ft) {
+            return (double)(((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime) * 1e-7;
+        };
+        return to_s(k) + to_s(u);
+    }
+    return 0.0;
+#elif defined(__unix__) || defined(__APPLE__)
+    timespec ts;
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0)
+        return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+    return 0.0;
+#else
+    return 0.0;
+#endif
+}
+
 // ---- entry point --------------------------------------------------------------
 
 std::vector<FrameStats> process_streaming(
@@ -1649,6 +1706,10 @@ std::vector<FrameStats> process_streaming(
         bool two_pass = false;
         uint64_t dec_bytes = 0;
         bool dec_err = false;
+        double bound_cpu_s = 0.0;      // scan-thread CPU time (bound attribution)
+        double cons_wait_s = 0.0;      // pipeliner: parser starved of decoded bytes
+        double prod_wait_s = 0.0;      // pipeliner: decoder blocked on full queue
+        bool pipeliner_waits_known = false;
         {
             src = open_src();
             if (!src->ok()) {
@@ -1656,6 +1717,7 @@ std::vector<FrameStats> process_streaming(
                                     : "Error: cannot open file.\n", true);
                 return {};
             }
+            const double cpu0 = thread_cpu_seconds();
             try {
                 if (!scan_any(*src, vel0_as_note_off, td, tempo_raw, division, cb)) return {};
             } catch (const SpecAbort&) {
@@ -1666,7 +1728,17 @@ std::vector<FrameStats> process_streaming(
                 td.reset();
                 tempo_raw.clear();
             }
+            bound_cpu_s = thread_cpu_seconds() - cpu0;
+            if (compressed) {
+                if (auto* p = dynamic_cast<PipelinedSrc*>(src.get()); p && p->is_piped()) {
+                    p->get_waits(cons_wait_s, prod_wait_s);
+                    pipeliner_waits_known = true;
+                }
+            }
             dec_bytes = src->bytes_read();
+            // The raw mmap walk never advances the reader's position, so for
+            // plain files report the image size instead of bytes served.
+            if (dec_bytes == 0) dec_bytes = src->total_bytes();
             dec_err = src->errored();
             src.reset();   // release before any re-open
         }
@@ -1733,11 +1805,35 @@ std::vector<FrameStats> process_streaming(
         std::ostringstream st;
         st << "  Stats: " << format_with_commas(nev) << " events in " << std::fixed << std::setprecision(2)
            << t_scan_s << "s scan (" << format_with_commas((uint64_t)rate(nev, t_scan_s)) << " ev/s)";
+        if (dec_bytes > 0) st << ", " << format_file_size(dec_bytes) << " decoded in "
+                        << std::setprecision(2) << t_scan_s << "s ("
+                        << format_file_size_rate(dec_bytes, t_scan_s) << ")";
         if (compressed) {
-            if (dec_bytes > 0) st << ", " << (dec_bytes >> 20) << " MB decoded in "
-                            << std::setprecision(2) << t_scan_s << "s ("
-                            << std::setprecision(1) << rate(dec_bytes, t_scan_s) / 1e6 << " MB/s)";
             if (dec_err) st << "\n  Warning: archive stream reported an error before EOF.";
+        } else if (!two_pass && bound_cpu_s > 0.0) {
+            // Plain files: the scan thread either burns CPU (parser-bound) or
+            // sleeps in the kernel on page faults (disk-bound). CPU/wall is a
+            // direct duty cycle; ~1.0 -> parser-bound, well below -> disk-bound.
+            const double duty = bound_cpu_s / t_scan_s;
+            st << "\n  Bound: ";
+            if (duty >= 0.85)      st << "parser (CPU " << std::setprecision(0) << duty * 100.0 << "% of wall)";
+            else if (duty >= 0.50) st << "mixed (CPU " << std::setprecision(0) << duty * 100.0 << "% of wall)";
+            else                   st << "disk (CPU " << std::setprecision(0) << duty * 100.0 << "% of wall)";
+        }
+        if (compressed && pipeliner_waits_known) {
+            // Decode vs parse attribution from the pipeliner's wait side.
+            const double waits = cons_wait_s + prod_wait_s;
+            if (waits > 0.05 * t_scan_s) {
+                st << "\n  Bound: ";
+                if (cons_wait_s >= prod_wait_s)
+                    st << "decode (parser starved " << std::setprecision(0) << cons_wait_s << "s of "
+                       << std::setprecision(2) << t_scan_s << "s)";
+                else
+                    st << "parser (decoder blocked " << std::setprecision(0) << prod_wait_s << "s of "
+                       << std::setprecision(2) << t_scan_s << "s)";
+            } else {
+                st << "\n  Bound: balanced (decode and parser kept pace)";
+            }
         }
         st << ", " << std::setprecision(2) << t_sweep_s << "s sweep\n";
         emit(cb, st.str());

@@ -29,6 +29,11 @@ std::string format_file_size(uint64_t bytes) {
 
 // ---------------------------------------------------------------------------
 
+std::string format_file_size_rate(uint64_t bytes, double seconds) {
+    if (seconds <= 0.0) return "0 B/s";
+    return format_file_size((uint64_t)((double)bytes / seconds)) + "/s";
+}
+
 std::string format_with_commas(uint64_t val) {
     std::string s = std::to_string(val);
     int insert_pos = static_cast<int>(s.length()) - 3;
