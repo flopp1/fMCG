@@ -25,10 +25,16 @@ namespace fmcg_stream {
 // the per-tick arrays. 0 or 1 = the sequential walk (also used for compressed
 // inputs, whose single stream cannot split). Compressed files ignore the
 // setting; their decode pipeline is already threaded.
+//
+// track_dedup: optional content-deduplication fast path for concatenated
+// files (the "base MIDI duplicated N times, then compressed" construction).
+// When enabled, a track whose raw bytes match one seen earlier in the same
+// scan is replayed from a cached summary instead of being parsed again --
+// O(unique bytes) instead of O(total bytes). Off by default.
 std::vector<FrameStats> process_streaming(
     const std::string& filename, double fps, uint16_t& out_division,
     uint64_t& out_total_notes, bool vel0_as_note_off, uint64_t& out_total_ticks,
     const ProgressCallbacks& cb, double end_delay = 0.0,
-    int parse_threads = 0);
+    int parse_threads = 0, bool track_dedup = false);
 
 } // namespace fmcg_stream

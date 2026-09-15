@@ -73,6 +73,7 @@ static void save_globals_now() {
     g_ui.globals.end_delay = g_ui.s.end_delay;
     g_ui.globals.ffmpeg_threads = g_ui.s.ffmpeg_threads;
     g_ui.globals.parse_threads  = g_ui.s.parse_threads;
+    g_ui.globals.track_dedup    = g_ui.s.track_dedup;
     g_ui.globals_dirty = false;
     g_ui.last_globals_save = ImGui::GetTime();
     save_global_settings(g_ui.globals);
@@ -629,6 +630,10 @@ static void draw_frame(GLFWwindow* window) {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Worker threads for parsing plain (uncompressed) MIDI files.\n0 = all cores (default). 1 = sequential.\nCompressed inputs and the two-pass fallback always parse sequentially.");
 
+    ImGui::Checkbox("Track dedup", &g_ui.s.track_dedup);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Skip re-parsing byte-identical duplicate tracks (the 'one MIDI\nduplicated N times, then compressed' construction). Off by default." );
+
     ImGui::Text("FFmpeg threads");
     ImGui::SameLine(120);
     ImGui::SetNextItemWidth(120);
@@ -1175,6 +1180,7 @@ int main() {
     g_ui.s.end_delay = g_ui.globals.end_delay;
     g_ui.s.ffmpeg_threads = g_ui.globals.ffmpeg_threads;
     g_ui.s.parse_threads  = g_ui.globals.parse_threads;
+    g_ui.s.track_dedup    = g_ui.globals.track_dedup;
 
     // Refresh the variant cache for the bootstrapped family.
     g_ui.variants_for = g_ui.s.font_family;

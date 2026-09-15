@@ -200,6 +200,7 @@ bool load_global_settings(GlobalSettings& out) {
     out.end_delay    = get_dbl(kv, "end_delay", 0.0);
     out.ffmpeg_threads = get_int(kv, "ffmpeg_threads", 0);
     out.parse_threads  = get_int(kv, "parse_threads", 0);
+    out.track_dedup    = get_bool(kv, "track_dedup", false);
     if (out.fps <= 0) out.fps = 60.0;
     if (out.width <= 0) out.width = 1920;
     if (out.height <= 0) out.height = 1080;
@@ -225,6 +226,7 @@ bool save_global_settings(const GlobalSettings& s) {
     ss << "end_delay = " << s.end_delay << "\n";
     ss << "ffmpeg_threads = " << s.ffmpeg_threads << "\n";
     ss << "parse_threads = " << s.parse_threads << "\n";
+    ss << "track_dedup = " << (s.track_dedup ? 1 : 0) << "\n";
     return write_file_atomic(fs::path(dir) / "settings.ini", ss.str());
 }
 
