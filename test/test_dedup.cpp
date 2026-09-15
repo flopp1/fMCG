@@ -117,6 +117,20 @@ static uint64_t dedup_hits(const std::string& log) {
     return strtoull(log.c_str() + b, nullptr, 10);
 }
 
+// The Stats line's event count: must be identical with dedup on or off on
+// both paths (a past bug accumulated the 1M-event ping deltas AND the body's
+// return value, inflating the reported total ~2x on huge files).
+static uint64_t reported_events(const std::string& log) {
+    const size_t p = log.find("Stats:");
+    if (p == std::string::npos) return (uint64_t)-1;
+    std::string num;
+    for (size_t i = p; i < log.size(); ++i) {
+        if (log.compare(i, 7, " events") == 0) break;
+        if (isdigit((unsigned char)log[i])) num += log[i];
+    }
+    return num.empty() ? (uint64_t)-1 : strtoull(num.c_str(), nullptr, 10);
+}
+
 int main() {
     const std::string path = "test/_dedup_case.mid";
     const std::string dup = dup_track(300, 0);
@@ -139,9 +153,11 @@ int main() {
         RunResult s0 = run(path, 1, false), s1 = run(path, 1, true);
         check("dedup == plain (sequential)", equal(s0, s1));
         check("sequential replays engaged (5 hits)", dedup_hits(s1.log) == 5);
+        check("reported events: sequential", reported_events(s1.log) == reported_events(s0.log));
         RunResult p0 = run(path, 4, false), p1 = run(path, 4, true);
         check("dedup == plain (parallel)", equal(p0, p1));
         check("parallel replays engaged", dedup_hits(p1.log) >= 1);
+        check("reported events: parallel", reported_events(p1.log) == reported_events(p0.log));
         check("parallel plain == sequential plain", equal(s0, p0));
     }
 

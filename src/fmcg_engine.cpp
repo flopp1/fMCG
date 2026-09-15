@@ -7,8 +7,10 @@
 #include <cmath>
 #include <chrono>
 #include <deque>
+#include <memory>
 
 #include "fmcg_util.h"
+#include "xxhash64.h"   // vendored single-header XXHash64 (Stephan Brumme, MIT)
 
 #include "archive.h"
 #include "archive_entry.h"
@@ -822,11 +824,18 @@ struct TrackDataDedup {
 };
 
 // 64-bit FNV-1a over a byte range (the track's raw bytes).
-static uint64_t fnv1a_track(const uint8_t* p, size_t n) {
-    uint64_t h = 1469598103934665603ull;
-    for (size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 1099511628211ull; }
-    return h;
+// Track-content hash for dedup lookups. XXHash64 (vendored single header,
+// MIT) — byte-at-a-time FNV-1a measured slower than the parser itself on
+// large tracks and dominated dedup-mode scan time; XXHash64 processes 32
+// bytes per round with a short dependency chain and removes that ceiling.
+static uint64_t dedup_hash_track(const uint8_t* p, size_t n) {
+    return XXHash64::hash(p, (uint64_t)n, 0);
 }
+
+// Chunk size for the sequential dedup candidate read: the read is chunked so
+// a cancel flag is polled between chunks (a single multi-GB read made the
+// cancel button unresponsive for the whole decode of that chunk).
+static constexpr size_t kDedupReadChunk = 4u << 20;   // 4 MiB
 
 // Shared dedup store lock. Lookups take it too: a parallel worker's records
 // merge mutates the vector, so unsynchronized iteration would be UB. One
@@ -1290,8 +1299,8 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
     // Continuous progress bookkeeping (checked once per ~1M events).
     using clock = std::chrono::steady_clock;
     const clock::time_point t_start = clock::now();
-    uint64_t ev_total = 0;
-    uint64_t ev_count = 0;
+    uint64_t ev_count = 0;      // authoritative: full counts of completed tracks
+    uint64_t ev_pinged = 0;     // live display: pinged prefix of the current track
     const uint64_t total_bytes = src.total_bytes();   // 0 = unknown fraction
     const uint64_t spec_limit = cb.spec_tick_limit ? cb.spec_tick_limit : ((uint64_t)1 << 28);
     bool spec_warned = false;              // one-shot: ask at most once per scan
@@ -1308,8 +1317,8 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
         if (!cb.on_scan_progress) return;
         double el = std::chrono::duration<double>(clock::now() - t_start).count();
         double frac = total_bytes > 0 ? (double)bs.bytes_pulled() / (double)total_bytes : -1.0;
-        cb.on_scan_progress(ev_total + ev_count, el,
-                            el > 0.0 ? (double)(ev_total + ev_count) / el : 0.0, frac);
+        cb.on_scan_progress(ev_count + ev_pinged, el,
+                            el > 0.0 ? (double)(ev_count + ev_pinged) / el : 0.0, frac);
     };
 
     auto rd32 = [&]() -> int64_t {
@@ -1354,6 +1363,9 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
     };
 
     while (true) {
+        if (cb.cancel_flag && cb.cancel_flag->load(std::memory_order_relaxed)) {
+            emit(cb, "  Cancelled.\n"); throw ScanCancelled{};
+        }
         int64_t tag = rd32();
         if (tag < 0) break;
         int64_t len = rd32();
@@ -1369,10 +1381,28 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
         // number of stream bytes as a parse would. Without dedup the parse
         // streams directly from `bs` as before (zero copies).
         if (dedup_store) {
+            // Read the whole chunk into a buffer, hashing as we go. The read
+            // is chunked so cancellation stays responsive even on multi-GB
+            // tracks (a single blocking read of a 2 GB track left the cancel
+            // button dead for the whole decode of that chunk).
             std::vector<uint8_t> buf((size_t)len);
-            const size_t got = bs.read(buf.data(), buf.size());
+            size_t got = 0;
+            XXHash64 hh(0);
+            bool cancelled_read = false;
+            while (got < (size_t)len) {
+                if (cb.cancel_flag && cb.cancel_flag->load(std::memory_order_relaxed)) {
+                    cancelled_read = true;
+                    break;
+                }
+                const size_t want = std::min(kDedupReadChunk, (size_t)len - got);
+                const size_t n = bs.read(buf.data() + got, want);
+                if (n == 0) break;             // stream ended early
+                hh.add(buf.data() + got, n);
+                got += n;
+            }
+            if (cancelled_read) { emit(cb, "  Cancelled.\n"); throw ScanCancelled{}; }
             buf.resize(got);
-            const uint64_t hash = fnv1a_track(buf.data(), buf.size());
+            const uint64_t hash = hh.hash();
             std::shared_ptr<const TrackSummary> hit;
             if (got == (size_t)len && dedup_find_cachable(*dedup_store, (uint64_t)len, hash, hit)) {
                 dedup_replay(*hit);
@@ -1384,7 +1414,11 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
                 RawStream tbs(buf.data(), buf.size());
                 TrackBodyHooks hooks;
                 hooks.ping = [&](uint64_t n) {
-                    ev_total += n;
+                    // Live counter from the pinged prefix; the authoritative
+                    // walked total comes from the body's return value per
+                    // track (accumulating both double-counted every pinged
+                    // event).
+                    ev_pinged += n;
                     ping();
                 };
                 hooks.spec_fire = [&]() -> bool {
@@ -1398,6 +1432,8 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
                 };
                 rec.events = parse_track_body(tbs, accumulate, vel0_as_note_off, td, tempo_raw,
                                               cb, spec_limit, hooks, data_oor_local, &rec);
+                ev_count += rec.events;   // walked events: same accounting as the ordinary path
+                ev_pinged = 0;            // this track's prefix is now in ev_count
                 data_oor = data_oor_local;
                 td.ntracks++;
                 const size_t consumed = (size_t)tbs.consumed();
@@ -1418,7 +1454,7 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
         {
             TrackBodyHooks hooks;
             hooks.ping = [&](uint64_t n) {
-                ev_total += n;
+                ev_pinged += n;
                 ping();
             };
             hooks.spec_fire = [&]() -> bool {
@@ -1432,6 +1468,7 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
             };
             ev_count += parse_track_body(bs, accumulate, vel0_as_note_off, td, tempo_raw,
                                          cb, spec_limit, hooks, data_oor, nullptr);
+            ev_pinged = 0;   // this track's prefix is now in ev_count
         }
         td.ntracks++;
         const size_t consumed = bs.consumed();
@@ -1442,11 +1479,9 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
         }
     }
 
-    // Final progress ping so elapsed/ev-per-s cover the whole scan. The
-    // walked total includes replayed events so event counts stay comparable
-    // with dedup off (replays replace parsing, not the events themselves).
+    // Final progress ping so elapsed/ev-per-s cover the whole scan.
     ping();
-    td.total_events_seen = ev_total + ev_count + dedup_replayed_events;
+    td.total_events_seen = ev_count + dedup_replayed_events;
     if (dedup_store && !dedup_records_mine.empty())
         dedup_merge_records(dedup_records_mine, td);
     if (dedup_store) {
@@ -1755,6 +1790,9 @@ static bool scan_frames_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off,
     };
 
     while (true) {
+        if (cb.cancel_flag && cb.cancel_flag->load(std::memory_order_relaxed)) {
+            emit(cb, "  Cancelled.\n"); throw ScanCancelled{};
+        }
         int64_t tag = rd32();
         if (tag < 0) break;
         int64_t len = rd32();
@@ -2115,8 +2153,10 @@ static uint64_t parse_track_range(const uint8_t* img, const std::vector<TrackSpa
     hooks.data_oor_atomic = &data_oor;
     hooks.cancelled_flag  = &cancelled;
     bool data_oor_local = false;   // unused: the shared atomic handles warnings
-    hooks.ping = [&](uint64_t delta) {
-        events += delta;
+    hooks.ping = [&](uint64_t) {
+        // Cancel propagation only. Walked events are accounted by the body's
+        // return value; accumulating pinged deltas here as well double-counted
+        // every pinged event.
         if (cb.cancel_flag && cb.cancel_flag->load(std::memory_order_relaxed))
             cancelled.store(true, std::memory_order_relaxed);
     };
@@ -2129,7 +2169,7 @@ static uint64_t parse_track_range(const uint8_t* img, const std::vector<TrackSpa
         // Hashes come straight from the image (no copy); lookups share the
         // store lock with record merging.
         if (dedup) {
-            const uint64_t hash = fnv1a_track(img + spans[i].off, (size_t)spans[i].len);
+            const uint64_t hash = dedup_hash_track(img + spans[i].off, (size_t)spans[i].len);
             std::shared_ptr<const TrackSummary> hit;
             if (dedup_find_cachable(*dedup, (uint64_t)spans[i].len, hash, hit)) {
                 replay_track_summary(*hit, td, tempo_raw);
@@ -2146,6 +2186,7 @@ static uint64_t parse_track_range(const uint8_t* img, const std::vector<TrackSpa
             rec.events = parse_track_body(bs, /*accumulate=*/true, vel0_as_note_off,
                                           td, tempo_raw, cb, spec_limit, hooks,
                                           data_oor_local, &rec);
+            events += rec.events;   // walked events count like every other parse
             rec.desync = ((size_t)bs.consumed() < (size_t)spans[i].len);
             if (rec.desync) td.desync_tracks++;
             td.ntracks++;
