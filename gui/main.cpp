@@ -72,6 +72,7 @@ static void save_globals_now() {
     g_ui.globals.start_delay = g_ui.s.start_delay;
     g_ui.globals.end_delay = g_ui.s.end_delay;
     g_ui.globals.ffmpeg_threads = g_ui.s.ffmpeg_threads;
+    g_ui.globals.parse_threads  = g_ui.s.parse_threads;
     g_ui.globals_dirty = false;
     g_ui.last_globals_save = ImGui::GetTime();
     save_global_settings(g_ui.globals);
@@ -612,7 +613,23 @@ static void draw_frame(GLFWwindow* window) {
         if (fps_input > 0) { g_ui.s.fps = fps_input; mark_globals_dirty(); }
     }
 
-    ImGui::Text("Threads");
+    ImGui::Text("Parsing threads");
+    ImGui::SameLine(120);
+    ImGui::SetNextItemWidth(120);
+    int par_input = g_ui.s.parse_threads;
+    if (ImGui::InputInt("##parthreads", &par_input, 0, 0)) {
+        // 0 = all cores; 1 = sequential (historic behaviour); negative makes no sense.
+        if (par_input < 0) par_input = 0;
+        if (par_input > 64) par_input = 64;
+        if (par_input != g_ui.s.parse_threads) {
+            g_ui.s.parse_threads = par_input;
+            mark_globals_dirty();
+        }
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Worker threads for parsing plain (uncompressed) MIDI files.\n0 = all cores (default). 1 = sequential.\nCompressed inputs and the two-pass fallback always parse sequentially.");
+
+    ImGui::Text("FFmpeg threads");
     ImGui::SameLine(120);
     ImGui::SetNextItemWidth(120);
     int thr_input = g_ui.s.ffmpeg_threads;
@@ -1157,6 +1174,7 @@ int main() {
     g_ui.s.start_delay = g_ui.globals.start_delay;
     g_ui.s.end_delay = g_ui.globals.end_delay;
     g_ui.s.ffmpeg_threads = g_ui.globals.ffmpeg_threads;
+    g_ui.s.parse_threads  = g_ui.globals.parse_threads;
 
     // Refresh the variant cache for the bootstrapped family.
     g_ui.variants_for = g_ui.s.font_family;

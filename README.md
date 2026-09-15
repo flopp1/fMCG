@@ -11,6 +11,7 @@ It's fast! Renders a notecounter of a 2.3 billion note MIDI in 3 minutes on a Ry
 - **Dear ImGui GUI** — process, preview the video live, and render with FFmpeg.
 - **Customizable stats overlay** — one line per stat, any text around tokens, per-stat comma separators, optional leading-zero padding that auto-sizes to each stat's own maximum, corner alignment or an exact x/y position, text and background colours.
 - **Start delay** — black lead-in where all stats sit at zero and the current-time fields count up from negative to zero.
+- **Parallel parsing** — "Parsing threads" (default: all cores) splits a plain MIDI file's tracks across worker threads; "FFmpeg threads" (default: auto) controls encoder threads at render time.
 - **Processing stats** — live event counter, events/second and elapsed time during the scan, with a smooth progress bar.
 
 ## Building
@@ -183,6 +184,7 @@ vendor/      third-party deps fetched by bootstrap.bat (imgui submodule, GLFW, l
 ## Implementation notes
 
 - Single sequential pass over the input; tick-space accumulation with an anchor-interpolated sweep converts events to per-frame stats in O(ticks + frames).
+- Plain (uncompressed) MIDI files can additionally parse tracks in parallel: the MTrk chunks are split across worker threads ("Parsing threads", default = all cores) and merged into the same per-tick arrays, whose per-tick accumulation is order-independent, so results are identical to the sequential walk. Compressed inputs (which cannot split) and the two-pass fallback always parse sequentially.
 - FFmpeg is spawned directly (no shell, no batch file), with its working directory set to the ASS's folder and a fixed bare filename (`temp_stats.ass`) passed to `subtitles=`. This is still required because ffmpeg's filter-argument parser mangles backslashes, apostrophes and colons — a user path can never be passed through `subtitles=` safely — but no `.bat` script is created and no temp files are left behind.
 - `test/` holds two self-contained suites plus fixture tooling:
     - `test_harness.cpp` — parse-correctness regression suite (note/poly/NPS/BPM/tempo-map checks on generated fixtures, compressed-vs-plain equivalence for `.7z`/`.tar.xz`, CC counting, vel-0 handling). Run standalone: `test_harness.exe <file.mid>` prints a parse summary; `test_harness.exe --csv` also dumps a comparison CSV.

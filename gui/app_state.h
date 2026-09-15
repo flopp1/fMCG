@@ -40,6 +40,7 @@ struct GuiSettings {
     int         pos_y = 30;
     bool        vel0_note_off = true;
     int         ffmpeg_threads = 0;   // 0 = ffmpeg auto-selects (no -threads flag)
+    int         parse_threads = 0;    // 0 = all cores (bounded to hw_concurrency); 1 = sequential parse
     std::string text_color_aabbggrr = "&H00FFFFFF";
     std::string bg_color_aabbggrr = "&H00000000";
 };

@@ -1645,6 +1645,355 @@ std::vector<FrameStats> buckets_to_frames(FrameBuckets& fb, double fps,
     return out;
 }
 
+// ---- per-track parallel scan (plain mmap'd files only) -----------------------
+//
+// The scan body itself is sequential and stream-generic; its ACCUMULATE work
+// is, however, commutative per tick: every track's contribution is a sum of
+// +1/-1 deltas and counters into cells[]/dense_cc[], and per-track state
+// (refcount, running status, pending registers) is entirely local. So tracks
+// can parse independently into private partial TickData and merge in any
+// order. Only plain files qualify: they expose the whole image through
+// DataSrc::image() with per-track (offset, length) readable from the chunk
+// headers, and the mmap stays shared-read-only across threads. Compressed
+// streams (libarchive) cannot split and keep the sequential walk.
+
+#include <algorithm>
+
+// Result of locating every MTrk chunk in an image.
+struct TrackSpan { uint64_t off, len; };
+
+// Walk only the chunk headers of an already-validated MIDI image. Returns
+// false if a chunk header is truncated (the caller then falls back to the
+// sequential scan, which has the fine-grained error reporting).
+static bool locate_mtrk_spans(const uint8_t* img, size_t n,
+                              size_t expected_tracks, std::vector<TrackSpan>& out) {
+    out.clear();
+    size_t pos = 8;                       // past "MThd"
+    uint32_t hlen = ((uint32_t)img[4] << 24) | ((uint32_t)img[5] << 16)
+                  | ((uint32_t)img[6] << 8) | (uint32_t)img[7];
+    if (hlen < 6 || 8 + (size_t)hlen > n) return false;
+    pos = 8 + hlen;
+    out.reserve(expected_tracks);
+    while (pos + 8 <= n) {
+        const uint32_t tag = ((uint32_t)img[pos] << 24) | ((uint32_t)img[pos+1] << 16)
+                           | ((uint32_t)img[pos+2] << 8) | (uint32_t)img[pos+3];
+        const uint32_t len = ((uint32_t)img[pos+4] << 24) | ((uint32_t)img[pos+5] << 16)
+                           | ((uint32_t)img[pos+6] << 8) | (uint32_t)img[pos+7];
+        pos += 8;
+        if (tag != 0x4D54726B) {           // not "MTrk": skip its payload like the
+            const uint64_t skip = len;     // sequential scan does (by length)
+            pos += (size_t)std::min<uint64_t>(skip, n - pos);
+            continue;
+        }
+        const uint64_t end = (uint64_t)pos + len;
+        if (end > n) return false;         // declared length past the image
+        out.push_back({pos, len});
+        pos = (size_t)end;
+    }
+    return !out.empty();
+}
+
+// Parse tracks [first, last) of the located spans into a private TickData.
+// Mirrors scan_stream's per-track state and semantics exactly, including the
+// pointer-batched zero-delta burst loop (the hot path in black MIDIs). No
+// progress pings: the parallel pass is short and the merged sequential path
+// would double-count its live counters.
+//
+// Tempo events are appended to a per-worker vector (mutex-free; merged after
+// the join). The spec-violation guard fires through cb exactly as the
+// sequential scan does: the first worker to cross the limit prompts, all
+// workers observe the choice, and `spec_abort` is set if two-pass was chosen
+// (the caller then restarts sequentially in TEMPO_ONLY mode, as with the
+// sequential scan's SpecAbort exception).
+//
+// Cancellation is polled on every worker's per-1M-event ping: one atomic
+// flag flips, each worker flips `cancelled` and exits; joined, and the
+// caller reports the cancel.
+static uint64_t parse_track_range(const uint8_t* img, const std::vector<TrackSpan>& spans,
+                              size_t first, size_t last, bool vel0_as_note_off,
+                              bool count_cc, TickData& td,
+                              std::vector<TempoChange>& tempo_raw,
+                              const ProgressCallbacks& cb,
+                              std::atomic<bool>& spec_prompted,
+                              std::atomic<int>& spec_choice,
+                              std::atomic<bool>& cancelled,
+                              std::atomic<bool>& spec_abort,
+                              std::atomic<bool>& data_oor,
+                              const uint64_t spec_limit) {
+    uint64_t events = 0;
+    auto note_data_oor = [&]() {
+        if (!data_oor.exchange(true, std::memory_order_acq_rel))
+            emit(cb, "  Warning: file contains note data bytes above 127 (invalid MIDI); "
+                     "they are clamped to 127. Stats for those events may be approximate.\n", true);
+    };
+    auto poll_cancel = [&]() -> bool {
+        if (cancelled.load(std::memory_order_relaxed)) return false;
+        if (cb.cancel_flag && cb.cancel_flag->load(std::memory_order_relaxed)) {
+            cancelled.store(true, std::memory_order_relaxed);
+            return false;
+        }
+        return true;
+    };
+    // Spec-violation protocol shared by all workers. Returns false when the
+    // scan must stop (cancel or two-pass abort). Exactly one worker prompts;
+    // the others wait for the shared answer.
+    auto spec_stop = [&]() -> bool {
+        int c = spec_choice.load(std::memory_order_acquire);
+        if (c >= 0) {
+            if (c == 2) { cancelled.store(true, std::memory_order_relaxed); return false; }
+            if (c == 1) { spec_abort = true; return false; }
+            return true;
+        }
+        bool expect = false;
+        if (spec_prompted.compare_exchange_strong(expect, true, std::memory_order_acq_rel)) {
+            c = cb.on_spec_violation ? cb.on_spec_violation(td.max_tick, td.memory_bytes()) : 0;
+            spec_choice.store(c, std::memory_order_release);
+            if (c == 2) { cancelled.store(true, std::memory_order_relaxed); return false; }
+            if (c == 1) { spec_abort = true; return false; }
+            return true;
+        }
+        while ((c = spec_choice.load(std::memory_order_acquire)) < 0) std::this_thread::yield();
+        if (c == 2) { cancelled.store(true, std::memory_order_relaxed); return false; }
+        if (c == 1) { spec_abort = true; return false; }
+        return true;
+    };
+
+    for (size_t i = first; i < last; ++i) {
+        if (cancelled.load(std::memory_order_relaxed)) return events;
+        RawStream bs(img + spans[i].off, (size_t)spans[i].len);
+        bs.set_limit((size_t)spans[i].len);
+        uint64_t tick = 0;
+        uint8_t running = 0;
+        uint32_t refcount[16][128] = {};   // black-MIDI tracks hold >255 overlapping instances of one note
+        bool     has_pending = false;
+        uint64_t pend_tick = 0;
+        uint32_t pend_ons = 0, pend_cc = 0;
+        int32_t  pend_delta = 0;
+        uint64_t ev_count = 0;             // per-1M-event poll cadence
+        auto flush_pending = [&]() {
+            if (!has_pending) return;
+            td.ensure(pend_tick);
+            if (pend_ons)   td.cells[pend_tick].ons   += pend_ons;
+            if (pend_delta) td.cells[pend_tick].delta += pend_delta;
+            if (pend_cc) {
+                if (td.dense_cc.size() < td.cells.size()) td.dense_cc.resize(td.cells.size(), 0);
+                td.dense_cc[pend_tick] += pend_cc;
+                td.total_cc += pend_cc;
+            }
+            td.total_ons += pend_ons;
+            has_pending = false; pend_ons = 0; pend_delta = 0; pend_cc = 0;
+        };
+        while (!bs.at_end()) {
+            tick += bs.vlq();
+            if (has_pending && tick != pend_tick) flush_pending();
+            if (__builtin_expect(tick > spec_limit, 0)) {
+                if (!spec_stop()) return events;
+            }
+#ifndef FMCG_NO_BURST
+            // ---- pointer-batched fast path (mirrors scan_stream's burst) --
+            bool burst_at_event = false;
+            {
+                size_t win = bs.acquire_window();
+                const uint8_t* p = bs.fast_p;
+                const uint8_t* const pend = bs.fast_p + win;
+                while (p < pend) {
+                    const uint8_t* q = p;
+                    uint8_t status;
+                    bool explicit_status = false;
+                    if (__builtin_expect(*q < 0x80, 1)) {
+                        status = running;
+                    } else {
+                        status = *q++;
+                        explicit_status = true;
+                    }
+                    if (__builtin_expect(status < 0x80, 0)) { burst_at_event = true; break; }
+                    const uint8_t et = status & 0xF0;
+                    if (__builtin_expect(et == 0xC0 || et == 0xD0, 0)) { burst_at_event = true; break; }
+                    if (__builtin_expect(et != 0x80 && et != 0x90 && et != 0xA0 && et != 0xB0 && et != 0xE0, 0)) {
+                        burst_at_event = true; break;
+                    }
+                    if (pend - q < 2) { burst_at_event = true; break; }
+                    uint8_t n1 = *q++;
+                    const uint8_t n2 = *q++;
+                    p = q;
+                    if (explicit_status) running = status;
+                    if (__builtin_expect(n1 > 0x7F, 0)) { note_data_oor(); n1 &= 0x7F; }
+                    if (et == 0x90 && (n2 > 0 || !vel0_as_note_off)) {
+                        refcount[status & 0x0F][n1]++;
+                        pend_tick = tick; has_pending = true; pend_ons++; pend_delta++;
+                    } else if (et == 0x90 || et == 0x80) {
+                        if (refcount[status & 0x0F][n1] > 0) {
+                            refcount[status & 0x0F][n1]--;
+                            pend_tick = tick; has_pending = true; pend_delta--;
+                        }
+                    } else if (et == 0xB0 && count_cc) {
+                        pend_tick = tick; has_pending = true; pend_cc++;
+                    }
+                    if (++ev_count >= 1000000) {
+                        events += (uint64_t)ev_count; ev_count = 0;
+                        if (!poll_cancel()) { bs.commit_window(p - bs.fast_p); return events; }
+                    }
+                    if (p == pend) break;
+                    if (*p != 0) break;
+                    ++p;
+                    if (p == pend) { burst_at_event = true; break; }
+                }
+                bs.commit_window(p - bs.fast_p);
+            }
+            if (!burst_at_event) continue;
+#endif
+            int st = bs.peek();
+            if (st < 0) break;
+            uint8_t status;
+            if (__builtin_expect(st < 0x80, 1)) {
+                status = running;
+            } else {
+                bs.get();
+                status = (uint8_t)st;
+                running = (status < 0xF0) ? status : 0;
+            }
+            if (__builtin_expect(status >= 0xF0, 0)) {
+                if (status == 0xFF) {
+                    int type = bs.get();
+                    if (type < 0) break;
+                    uint64_t mlen = bs.vlq();
+                    if (type == 0x51 && mlen == 3 && bs.avail() >= 3) {
+                        uint32_t us = ((uint32_t)bs.get() << 16) | ((uint32_t)bs.get() << 8) | (uint32_t)bs.get();
+                        if (us > 0) tempo_raw.push_back({tick, 0.0, us, 60000000.0 / us});
+                    } else {
+                        bs.skip((size_t)mlen);
+                    }
+                } else if (status == 0xF0 || status == 0xF7) {
+                    bs.skip((size_t)bs.vlq());
+                } else if (status >= 0xF1 && status <= 0xF6) {
+                    if (status == 0xF1 || status == 0xF3) bs.skip(1);
+                    else if (status == 0xF2) bs.skip(2);
+                }
+            } else if (status >= 0x80) {
+                uint8_t et = status & 0xF0;
+                int n1 = bs.get();
+                if (n1 < 0) break;
+                if (et != 0xC0 && et != 0xD0) {
+                    int n2 = bs.get();
+                    if (n2 < 0) break;
+                    uint8_t ch = status & 0x0F, note = (uint8_t)n1, vel = (uint8_t)n2;
+                    if (__builtin_expect(note > 0x7F, 0)) { note_data_oor(); note &= 0x7F; }
+                    if (et == 0x90 && (vel > 0 || !vel0_as_note_off)) {
+                        refcount[ch][note]++;
+                        pend_tick = tick; has_pending = true; pend_ons++; pend_delta++;
+                    } else if (et == 0x90 || et == 0x80) {
+                        if (refcount[ch][note] > 0) {
+                            refcount[ch][note]--;
+                            pend_tick = tick; has_pending = true; pend_delta--;
+                        }
+                    } else if (et == 0xB0 && count_cc) {
+                        pend_tick = tick; has_pending = true; pend_cc++;
+                    }
+                }
+            }
+            if (++ev_count >= 1000000) {
+                events += (uint64_t)ev_count; ev_count = 0;
+                if (!poll_cancel()) return events;
+            }
+        }
+        events += (uint64_t)ev_count; ev_count = 0;
+        flush_pending();
+        for (int ch = 0; ch < 16; ++ch)
+            for (int n = 0; n < 128; ++n)
+                if (refcount[ch][n] > 0) td.delta_at(tick, -(int64_t)refcount[ch][n]);
+        if (tick > td.max_tick) td.max_tick = tick;
+        td.ntracks++;
+        const size_t consumed = bs.consumed();
+        if (consumed < (size_t)spans[i].len) td.desync_tracks++;
+    }
+    return events;
+}
+
+// Parallel ACCUMULATE scan over a plain mmap'd file. Return codes:
+//   0 = file does not qualify (no image, bad chunk table, <2 tracks, or fewer
+//       than two requested threads) -- caller falls back to the sequential scan
+//  -1 = cancelled
+//  -2 = spec-violation prompt answered "two-pass" -- caller restarts in
+//       TEMPO_ONLY mode, exactly like the sequential scan's SpecAbort
+//   1 = success (td holds the merged accumulation, tempo_raw the tempo map)
+static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
+                         std::vector<TempoChange>& tempo_raw, int nthreads,
+                         const ProgressCallbacks& cb) {
+    if (nthreads < 2) return 0;
+    size_t n = 0;
+    const uint8_t* img = src.image(n);
+    if (!img || n < 14) return 0;
+    if (!(img[0] == 'M' && img[1] == 'T' && img[2] == 'h' && img[3] == 'd')) return 0;
+
+    std::vector<TrackSpan> spans;
+    if (!locate_mtrk_spans(img, n, 0, spans) || spans.size() < 2) return 0;
+
+    emit(cb, "  Parsing " + std::to_string(spans.size()) + " tracks on "
+             + std::to_string(nthreads) + " threads...\n");
+
+    td.reset();
+    const uint64_t spec_limit = cb.spec_tick_limit ? cb.spec_tick_limit : ((uint64_t)1 << 28);
+    std::atomic<bool> spec_prompted{false};
+    std::atomic<int>  spec_choice{-1};
+    std::atomic<bool> cancelled{false};
+    std::atomic<bool> data_oor{false};
+    std::atomic<bool> spec_abort{false};   // shared: "two-pass" answer
+
+    std::vector<TickData> partial((size_t)nthreads);
+    std::vector<std::vector<TempoChange>> partial_tempo((size_t)nthreads);
+    std::vector<uint64_t> partial_events((size_t)nthreads, 0);
+    std::vector<std::thread> workers;
+    workers.reserve((size_t)nthreads);
+    const size_t per = (spans.size() + (size_t)nthreads - 1) / (size_t)nthreads;
+    for (int w = 0; w < nthreads; ++w) {
+        const size_t b = std::min((size_t)w * per, spans.size());
+        const size_t e = std::min((size_t)w * per + per, spans.size());
+        if (b == e) break;
+        workers.emplace_back([&, w, b, e]() {
+            partial_events[w] = parse_track_range(
+                img, spans, b, e, vel0_as_note_off, /*count_cc=*/true, partial[w],
+                partial_tempo[w], cb, spec_prompted, spec_choice, cancelled,
+                spec_abort, data_oor, spec_limit);
+        });
+    }
+    for (auto& t : workers) t.join();
+
+    if (cancelled.load()) { emit(cb, "  Cancelled.\n"); return -1; }
+    if (spec_abort) return -2;
+
+    // K-way merge: concatenate every partial's occupied prefix. The sweep
+    // resizes to the true tick horizon and treats untouched cells as zero, so
+    // holes and overlapping growth are fine. Partials can be far larger than
+    // their occupied prefix (doubling growth), so the copy is bounded by each
+    // worker group's max tick, not by the arrays' allocated size.
+    size_t need = 1;
+    for (const auto& p : partial) need = std::max(need, (size_t)p.max_tick + 1);
+    td.cells.assign(need, TickData::TickCell{0, 0});
+    size_t cc_need = 0;
+    for (const auto& p : partial) cc_need = std::max(cc_need, p.dense_cc.size());
+    if (cc_need) td.dense_cc.assign(cc_need, 0);
+    for (size_t w = 0; w < partial.size(); ++w) {
+        auto& p = partial[w];
+        const size_t occ = std::min((size_t)p.max_tick + 1, p.cells.size());
+        for (size_t t = 0; t < occ; ++t) {
+            const auto& c = p.cells[t];
+            if (c.ons | c.delta) { td.cells[t].ons += c.ons; td.cells[t].delta += c.delta; }
+        }
+        if (!p.dense_cc.empty()) {
+            const size_t cocc = std::min(p.dense_cc.size(), td.dense_cc.size());
+            for (size_t t = 0; t < cocc; ++t) if (p.dense_cc[t]) td.dense_cc[t] += p.dense_cc[t];
+        }
+        for (const auto& tc : partial_tempo[w]) tempo_raw.push_back(tc);
+        td.total_ons  += p.total_ons;
+        td.total_cc   += p.total_cc;
+        td.max_tick    = std::max(td.max_tick, p.max_tick);
+        td.ntracks    += p.ntracks;
+        td.desync_tracks += p.desync_tracks;
+        td.total_events_seen += partial_events[w];
+    }
+    return 1;
+}
+
 // CPU time consumed by the calling thread (the scan thread), for the
 // disk-bound vs parser-bound attribution. Falls back to wall time if the
 // platform call fails (attribution then reads as parser-bound, the historic
@@ -1674,7 +2023,7 @@ static double thread_cpu_seconds() {
 std::vector<FrameStats> process_streaming(
     const std::string& filename, double fps, uint16_t& out_division,
     uint64_t& out_total_notes, bool vel0_as_note_off, uint64_t& out_total_ticks,
-    const ProgressCallbacks& cb, double end_delay)
+    const ProgressCallbacks& cb, double end_delay, int parse_threads)
 {
     using clock = std::chrono::steady_clock;
     out_total_notes = 0;
@@ -1710,6 +2059,7 @@ std::vector<FrameStats> process_streaming(
         double cons_wait_s = 0.0;      // pipeliner: parser starved of decoded bytes
         double prod_wait_s = 0.0;      // pipeliner: decoder blocked on full queue
         bool pipeliner_waits_known = false;
+        bool parsed_parallel = false;  // plain-file multi-track parallel scan ran
         {
             src = open_src();
             if (!src->ok()) {
@@ -1719,11 +2069,39 @@ std::vector<FrameStats> process_streaming(
             }
             const double cpu0 = thread_cpu_seconds();
             try {
-                if (!scan_any(*src, vel0_as_note_off, td, tempo_raw, division, cb)) return {};
+                // Parallel per-track parse of plain files (never compressed,
+                // which cannot split). The spec-violation prompt is shared
+                // with the sequential scan: the first worker past the limit
+                // asks through cb and every worker obeys the answer, so the
+                // modal appears exactly as before. -2 = two-pass chosen;
+                // -1 = cancelled; 0 = file does not qualify (sequential
+                // fallback); 1 = merged accumulation done.
+                int pr = 0;
+                if (!compressed && !two_pass) {
+                    pr = scan_parallel(*src, vel0_as_note_off, td, tempo_raw,
+                                       parse_threads, cb);
+                    if (pr == -1) return {};      // cancel message already emitted
+                    if (pr == -2) {               // user chose the low-memory path
+                        pr = 0;
+                        two_pass = true;
+                        td.reset();
+                        tempo_raw.clear();
+                    } else if (pr == 0) {
+                        td.reset();
+                        tempo_raw.clear();
+                    }
+                }
+                if (pr <= 0) {
+                    // Sequential walk. TEMPO_ONLY when two-pass was already
+                    // chosen (at the parallel prompt) so the guard does not
+                    // fire a second time; ACCUMULATE otherwise, whose guard
+                    // may throw SpecAbort for the same low-memory restart.
+                    if (!scan_any(*src, vel0_as_note_off, td, tempo_raw, division, cb,
+                                  two_pass ? ScanMode::TEMPO_ONLY : ScanMode::ACCUMULATE))
+                        return {};
+                }
             } catch (const SpecAbort&) {
-                // User chose the low-memory path at the spec-violation prompt:
-                // re-walk collecting the tempo map only (no per-tick arrays),
-                // then walk again bucketing events into video frames.
+                // Sequential path's spec prompt: same low-memory restart.
                 two_pass = true;
                 td.reset();
                 tempo_raw.clear();
@@ -1810,6 +2188,11 @@ std::vector<FrameStats> process_streaming(
                         << format_file_size_rate(dec_bytes, t_scan_s) << ")";
         if (compressed) {
             if (dec_err) st << "\n  Warning: archive stream reported an error before EOF.";
+        } else if (parsed_parallel) {
+            // Multi-threaded parse: per-thread duty cycle is not measured (the
+            // spawning thread's CPU time says nothing useful here), so just
+            // record the configuration; the ev/s rate tells the rest.
+            st << "\n  Bound: parallel parse on " << parse_threads << " threads";
         } else if (!two_pass && bound_cpu_s > 0.0) {
             // Plain files: the scan thread either burns CPU (parser-bound) or
             // sleeps in the kernel on page faults (disk-bound). CPU/wall is a

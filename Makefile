@@ -161,8 +161,11 @@ test/test_harness: test/test_harness.cpp $(CORE_OBJECTS) $(wildcard src/*.h) fMC
 test/test_twopass: test/test_twopass.cpp $(CORE_OBJECTS) $(wildcard src/*.h) fMCG_core.h
 	$(CXX) $(CXXFLAGS) -Isrc -I. -o $@ test/test_twopass.cpp $(CORE_OBJECTS) $(ARCH_CFLAGS) $(LDFLAGS) $(ARCH_LIBS) -lpthread
 
+test/test_parallel: test/test_parallel.cpp $(CORE_OBJECTS) $(wildcard src/*.h) fMCG_core.h
+	$(CXX) $(CXXFLAGS) -Isrc -I. -o $@ test/test_parallel.cpp $(CORE_OBJECTS) $(ARCH_CFLAGS) $(LDFLAGS) $(ARCH_LIBS) -lpthread
+
 clean:
-	rm -rf fMCG_gui $(CORE_OBJECTS) $(GUI_OBJECTS) test/test_newopts test/test_harness dist .build_mode
+	rm -rf fMCG_gui $(CORE_OBJECTS) $(GUI_OBJECTS) test/test_newopts test/test_harness test/test_twopass test/test_parallel dist .build_mode
 
 # Assemble a ready-to-share release: binary + licences + README.
 release: all test

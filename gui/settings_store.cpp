@@ -199,12 +199,14 @@ bool load_global_settings(GlobalSettings& out) {
     out.start_delay  = get_dbl(kv, "start_delay", 3.0);
     out.end_delay    = get_dbl(kv, "end_delay", 0.0);
     out.ffmpeg_threads = get_int(kv, "ffmpeg_threads", 0);
+    out.parse_threads  = get_int(kv, "parse_threads", 0);
     if (out.fps <= 0) out.fps = 60.0;
     if (out.width <= 0) out.width = 1920;
     if (out.height <= 0) out.height = 1080;
     if (out.start_delay < 0) out.start_delay = 0.0;
     if (out.end_delay   < 0) out.end_delay   = 0.0;
     if (out.ffmpeg_threads < 0) out.ffmpeg_threads = 0;
+    if (out.parse_threads  < 0) out.parse_threads  = 0;
     return true;
 }
 
@@ -222,6 +224,7 @@ bool save_global_settings(const GlobalSettings& s) {
     ss << "start_delay = " << s.start_delay << "\n";
     ss << "end_delay = " << s.end_delay << "\n";
     ss << "ffmpeg_threads = " << s.ffmpeg_threads << "\n";
+    ss << "parse_threads = " << s.parse_threads << "\n";
     return write_file_atomic(fs::path(dir) / "settings.ini", ss.str());
 }
 

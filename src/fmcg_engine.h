@@ -19,9 +19,16 @@ namespace fmcg_stream {
 
 // Entry point: parse any supported input (plain MIDI or compressed archive)
 // and produce per-frame statistics.
+//
+// parse_threads: number of worker threads for parsing plain (uncompressed)
+// MIDI files, whose tracks parse independently and merge commutatively into
+// the per-tick arrays. 0 or 1 = the sequential walk (also used for compressed
+// inputs, whose single stream cannot split). Compressed files ignore the
+// setting; their decode pipeline is already threaded.
 std::vector<FrameStats> process_streaming(
     const std::string& filename, double fps, uint16_t& out_division,
     uint64_t& out_total_notes, bool vel0_as_note_off, uint64_t& out_total_ticks,
-    const ProgressCallbacks& cb, double end_delay = 0.0);
+    const ProgressCallbacks& cb, double end_delay = 0.0,
+    int parse_threads = 0);
 
 } // namespace fmcg_stream

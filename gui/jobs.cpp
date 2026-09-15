@@ -112,7 +112,8 @@ void run_process(GuiSettings s) {
     app.gui_log(("Processing MIDI: " + s.midi_file + "...").c_str(), false);
 
     auto frames = ScaleMidiProcessor::process_midi(s.midi_file, s.fps, ppqn, total_notes,
-                                                    s.vel0_note_off, total_ticks, cb, s.end_delay);
+                                                    s.vel0_note_off, total_ticks, cb, s.end_delay,
+                                                    s.parse_threads);
     if (spec_prompt_used) {
         app.spec_prompt_open.store(false);
         app.spec_choice.store(-1);

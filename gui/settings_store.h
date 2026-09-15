@@ -59,6 +59,7 @@ struct GlobalSettings {
     double      start_delay = 3.0;
     double      end_delay = 0.0;
     int         ffmpeg_threads = 0;   // 0 = ffmpeg auto-selects encoder threads
+    int         parse_threads = 0;    // 0 = all cores (parallel per-track parse); 1 = sequential
     std::string output_dir;           // last output video folder
 };
 
