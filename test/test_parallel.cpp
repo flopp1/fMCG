@@ -343,6 +343,35 @@ int main() {
         check("cancel aborts parallel scan", f.empty());
     }
 
+    // ---- 13. cancel during the tick-space sweep (spec-breaking file) ------
+    // A file whose tick span exceeds the spec limit runs a long sweep after
+    // the parse; until recently the sweep had no cancel polls, so cancel did
+    // nothing until processing completed. Cancel must now abort mid-sweep.
+    // Tick 2^28+16 makes the sweep walk ~268M ticks (~0.3s+); cancel fires
+    // at 100ms, well into the sweep (the parse itself is microseconds).
+    {
+        std::string a;
+        vlq(a, 0); ev(a, NON, 0, 60, 100);
+        vlq(a, 1); ev(a, NOFF, 0, 60, 0);
+        // Chain 2-unit deltas to cross the 28-bit limit: acc tick 2^28+16.
+        for (uint32_t i = 0; i < (1u << 27); ++i) { vlq(a, 4); ev(a, NON, 0, (uint8_t)(i & 0x7F), 1); }
+        // (The above adds 2^27 note-ons at spread ticks -- keeps the sweep
+        // honest and stays under the spec guard per-delta.)
+        write_midi(path, 480, {a});
+
+        std::atomic<bool> cancel{false};
+        ProgressCallbacks cb;
+        cb.cancel_flag = &cancel;
+        cb.on_spec_violation = [](uint64_t, size_t) -> int { return 0; };   // proceed
+        uint16_t ppqn; uint64_t notes, ticks;
+        std::thread kick([&]() { std::this_thread::sleep_for(std::chrono::milliseconds(100)); cancel.store(true); });
+        auto t0 = std::chrono::steady_clock::now();
+        auto f = ScaleMidiProcessor::process_midi(path, 60.0, ppqn, notes, true, ticks, cb, 0.0, 1);
+        double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        kick.join();
+        check("cancel aborts long sweep", f.empty() && wall < 10.0);
+    }
+
     std::remove(path.c_str());
 
     if (fails == 0) { printf("test_parallel: all passed\n"); return 0; }

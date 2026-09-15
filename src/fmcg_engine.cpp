@@ -824,6 +824,10 @@ struct TrackDataDedup {
     // not cached (existing ones keep replaying; misses just parse normally).
     std::atomic<uint64_t> stored_bytes{0};
     static constexpr uint64_t kStoreBudget = (uint64_t)512 << 20;   // 512 MiB
+    // Candidate tracks larger than this parse plain instead of being buffered
+    // whole: buffering a tens-of-GB track (trillion-class files) both risks
+    // RAM exhaustion and freezes live progress for the entire read.
+    static constexpr uint64_t kMaxCandidateBytes = (uint64_t)1 << 30;   // 1 GiB
 
     void reset() {
         records.clear();
@@ -839,8 +843,17 @@ struct TrackDataDedup {
 // MIT) — byte-at-a-time FNV-1a measured slower than the parser itself on
 // large tracks and dominated dedup-mode scan time; XXHash64 processes 32
 // bytes per round with a short dependency chain and removes that ceiling.
-static uint64_t dedup_hash_track(const uint8_t* p, size_t n) {
-    return XXHash64::hash(p, (uint64_t)n, 0);
+static uint64_t dedup_hash_track(const uint8_t* p, size_t n,
+                                 const std::atomic<bool>* cancelled = nullptr) {
+    // 64 MiB chunks with cancel polls between: hashing a tens-of-GB track in
+    // one call made cancel unresponsive for the whole hash (~5s+ at 10GB/s).
+    constexpr size_t kHashChunk = (size_t)64 << 20;
+    XXHash64 hh(0);
+    for (size_t off = 0; off < n; off += kHashChunk) {
+        if (cancelled && cancelled->load(std::memory_order_relaxed)) return 0;
+        hh.add(p + off, std::min(kHashChunk, n - off));
+    }
+    return hh.hash();
 }
 
 // Chunk size for the sequential dedup candidate read: the read is chunked so
@@ -863,14 +876,94 @@ static bool dedup_find_cachable(const TrackDataDedup& store, uint64_t len,
     return false;
 }
 
+// Aborted via a cancel poll (scan loop, sweep, or array growth).
+// Defined early so TickData's growth helpers can throw it.
+struct ScanCancelled {};
+
+// Chunked backing store for the giant per-tick arrays. One contiguous
+// std::vector of billions of ticks means every growth is a single huge
+// allocation + copy + zero: uninterruptible for tens of seconds (cancel
+// dead, live stats frozen, memory spikes 2x). Chunks of 4 MiB are zeroed by
+// the OS in ~1-2ms each, are allocated exactly once (no re-copies), and
+// leave at most one chunk of slack. Cancel polls run between chunk
+// allocations, so abort latency stays in milliseconds even while the arrays
+// span tens of GB.
+template <typename T>
+struct ChunkedArray {
+    static constexpr size_t kTargetChunkBytes = (size_t)4 << 20;   // 4 MiB
+    static constexpr size_t kShift =
+        kTargetChunkBytes / sizeof(T) >= (size_t)1
+            ? [] { size_t s = 0; while ((size_t(1) << (s + 1)) * sizeof(T) <= kTargetChunkBytes) ++s; return s; }()
+            : 0;
+    static constexpr size_t kChunkElems = (size_t)1 << kShift;
+    static constexpr size_t kChunkMask = kChunkElems - 1;
+
+    std::vector<std::unique_ptr<T[]>> chunks;
+    size_t size_ = 0;   // element count this array covers
+    // Single-consumer fast path: access patterns are tick-local (pending
+    // flushes repeat the same tick; the sweep walks sequentially), so caching
+    // the last touched chunk pointer turns the two-load indirection back
+    // into the contiguous-vector cost for ~all accesses. Each TickData (or
+    // worker partial) is touched by exactly one thread.
+    mutable size_t cache_idx = SIZE_MAX;
+    mutable T*    cache_ptr = nullptr;
+
+    size_t size() const { return size_; }
+    bool empty() const { return size_ == 0; }
+
+    T& operator[](size_t i) {
+        const size_t ci = i >> kShift;
+        if (ci != cache_idx) { cache_idx = ci; cache_ptr = chunks[ci].get(); }
+        return cache_ptr[i & kChunkMask];
+    }
+    const T& operator[](size_t i) const {
+        const size_t ci = i >> kShift;
+        if (ci != cache_idx) { cache_idx = ci; cache_ptr = chunks[ci].get(); }
+        return cache_ptr[i & kChunkMask];
+    }
+
+    // Hot path: cheap inline size check; growth is a cold noinline call so
+    // the exception machinery never pollutes the per-event fast path.
+    inline void ensure(size_t need, const ProgressCallbacks* cb = nullptr,
+                       const std::atomic<bool>* cancel = nullptr) {
+        if (need <= size_) [[likely]] return;
+        grow_slow(need, cb, cancel);
+    }
+    __attribute__((noinline))
+    void grow_slow(size_t need, const ProgressCallbacks* cb,
+                   const std::atomic<bool>* cancel) {
+        const size_t nchunks = (need + kChunkMask) >> kShift;
+        while (chunks.size() < nchunks) {
+            if (cancel && cancel->load(std::memory_order_relaxed)) {
+                if (cb) emit(*cb, "  Cancelled.\n");
+                throw ScanCancelled{};
+            }
+            try {
+                chunks.emplace_back(std::make_unique<T[]>(kChunkElems));   // value-init: zeroed
+            } catch (const std::bad_alloc&) {
+                if (cb) emit(*cb, "Error: out of memory for per-tick arrays.\n", true);
+                throw ScanCancelled{};   // fail fast; callers report the abort
+            }
+        }
+        size_ = need;
+    }
+
+    void clear() { chunks.clear(); size_ = 0; cache_idx = SIZE_MAX; cache_ptr = nullptr; }
+    size_t memory_bytes() const { return chunks.size() * kChunkElems * sizeof(T); }
+};
+
 struct TickData {
+    // Per-tick cells and CC counts live in chunked storage (see ChunkedArray):
+    // contiguous vectors of billions of ticks made every growth an
+    // uninterruptible multi-second fill; chunks keep growth steps at ~1-2ms
+    // with cancel polls between.
     // One interleaved cell per tick: a note-on touches ons and delta of the
     // SAME tick, so keeping them in one struct halves the cache/TLB misses
     // versus two separate multi-GB arrays (the sweep then reads each tick's
     // whole cell in one line too).
     struct TickCell { uint32_t ons; int32_t delta; };
     static_assert(sizeof(TickCell) == 8, "TickCell must stay tightly packed");
-    std::vector<TickCell> cells;         // per-tick (>=2^31 ons on ONE tick is impossible in practice: a note-on is >=2 bytes, so it needs ~4 GB of pure 0x9x pairs on a single tick)
+    ChunkedArray<TickCell> cells;        // per-tick (>=2^31 ons on ONE tick is impossible in practice: a note-on is >=2 bytes, so it needs ~4 GB of pure 0x9x pairs on a single tick)
     uint64_t max_tick = 0;
     uint64_t total_ons = 0;
     size_t ntracks = 0;
@@ -878,34 +971,34 @@ struct TickData {
     uint64_t total_events_seen = 0;   // every event walked (ons+offs+CC+meta), matches live counter
     bool dedup_enabled = false;       // dedup fast path active for this scan
     TrackDataDedup dedup;             // optional per-scan track-content cache
-
-    void ensure(uint64_t t) {
-        if (t >= cells.size()) {
-            size_t n = cells.size();
-            if (n == 0) n = 4096;
-            while (n <= t) n *= 2;
-            cells.resize(n, TickCell{0, 0});
-        }
+    // Growth environment: cancel polls and OOM reports during array growth.
+    // Set once per scan (not cleared by reset()); null = never interruptible
+    // growth (only in tests that construct bare TickData).
+    const ProgressCallbacks* cb_env = nullptr;
+    const std::atomic<bool>* cancel_env = nullptr;
+    void set_growth_env(const ProgressCallbacks* cb, const std::atomic<bool>* cancel) {
+        cb_env = cb; cancel_env = cancel;
     }
-    void note_on(uint64_t t) { ensure(t); cells[t].ons++; cells[t].delta++; total_ons++; }
-    void delta_at(uint64_t t, int64_t d) { ensure(t); cells[t].delta += (int32_t)d; }
+
+    void ensure(uint64_t t) { cells.ensure((size_t)t + 1, cb_env, cancel_env); }
+    void note_on(uint64_t t) { ensure(t); cells[(size_t)t].ons++; cells[(size_t)t].delta++; total_ons++; }
+    void delta_at(uint64_t t, int64_t d) { ensure(t); cells[(size_t)t].delta += (int32_t)d; }
     // CC accumulation (always counted; the {cc} stats read it).
-    std::vector<uint32_t> dense_cc;      // per-tick control-change counts
+    ChunkedArray<uint32_t> dense_cc;     // per-tick control-change counts
     uint64_t total_cc = 0;
     void cc_at(uint64_t t) {
         ensure(t);
-        if (dense_cc.size() < cells.size()) dense_cc.resize(cells.size(), 0);
-        dense_cc[t]++;
+        if (dense_cc.size() < cells.size()) dense_cc.ensure(cells.size(), cb_env, cancel_env);
+        dense_cc[(size_t)t]++;
         total_cc++;
     }
     // Current footprint of the dense arrays (bytes).
     size_t memory_bytes() const {
-        return cells.size() * sizeof(TickCell)
-             + dense_cc.size() * sizeof(uint32_t);
+        return cells.memory_bytes() + dense_cc.memory_bytes();
     }
     void reset() {
-        std::vector<TickCell>().swap(cells);
-        std::vector<uint32_t>().swap(dense_cc);
+        cells.clear();
+        dense_cc.clear();
         max_tick = 0; total_ons = 0; ntracks = 0; desync_tracks = 0;
         total_events_seen = 0; total_cc = 0;
         dedup.reset();
@@ -937,7 +1030,8 @@ static void replay_track_summary(const TrackSummary& s, TickData& td,
     }
     for (const auto& c : s.ccs) {
         td.ensure(c.first);
-        if (td.dense_cc.size() < td.cells.size()) td.dense_cc.resize(td.cells.size(), 0);
+        if (td.dense_cc.size() < td.cells.size())
+            td.dense_cc.ensure(td.cells.size(), td.cb_env, td.cancel_env);
         td.dense_cc[c.first] += c.second;
     }
     for (const auto& tc : s.tempos)
@@ -994,8 +1088,6 @@ enum class ScanMode { ACCUMULATE, TEMPO_ONLY };
 // Aborted via the MIDI-spec guard; the caller restarts the walk in TEMPO_ONLY
 // mode (two-pass fallback for spec-breaking tick spans).
 struct SpecAbort {};
-// Aborted via the spec guard's "cancel" choice (message already emitted).
-struct ScanCancelled {};
 
 // ---- per-track parser core (shared by every scan path) -----------------------
 //
@@ -1107,7 +1199,8 @@ static uint64_t parse_track_body(StreamT& bs, bool accumulate, bool vel0_as_note
         if (pend_ons)   td.cells[pend_tick].ons   += pend_ons;
         if (pend_delta) td.cells[pend_tick].delta += pend_delta;
         if (pend_cc) {
-            if (td.dense_cc.size() < td.cells.size()) td.dense_cc.resize(td.cells.size(), 0);
+            if (td.dense_cc.size() < td.cells.size())
+                td.dense_cc.ensure(td.cells.size(), td.cb_env, td.cancel_env);
             td.dense_cc[pend_tick] += pend_cc;
             td.total_cc += pend_cc;
         }
@@ -1454,12 +1547,43 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
                 }
                 continue;
             }
-            // Repeat length: a genuine replay candidate. Read the whole chunk
-            // into a reusable buffer, hashing as we go. The read is chunked
-            // so cancellation stays responsive even on multi-GB tracks (a
-            // single blocking read of a 2 GB track left the cancel button
-            // dead for the whole decode of that chunk). Only `got` bytes are
-            // valid; the reserve capacity never is.
+            // Repeat length: a genuine replay candidate -- unless it is so
+            // large that buffering it could exhaust RAM and that hashing it
+            // stalls live progress for the whole read. Above the cap the
+            // track parses straight from the stream, byte-for-byte the same
+            // as dedup-off (correctness is unaffected: it just never replays).
+            if ((uint64_t)len > TrackDataDedup::kMaxCandidateBytes) {
+                TrackBodyHooks hooks;
+                hooks.ping = [&](uint64_t n) {
+                    ev_pinged += n;
+                    ping();
+                };
+                hooks.spec_fire = [&]() -> bool {
+                    if (spec_warned) return true;
+                    const int choice = cb.on_spec_violation
+                        ? cb.on_spec_violation(0, td.memory_bytes()) : 0;
+                    if (choice == 2) { emit(cb, "  Cancelled.\n"); throw ScanCancelled{}; }
+                    if (choice == 1) throw SpecAbort{};
+                    spec_warned = true;
+                    return true;
+                };
+                ev_count += parse_track_body(bs, accumulate, vel0_as_note_off, td, tempo_raw,
+                                             cb, spec_limit, hooks, data_oor, nullptr);
+                ev_pinged = 0;
+                td.ntracks++;
+                const size_t consumed = bs.consumed();
+                bs.set_limit((size_t)-1);
+                if (consumed < (size_t)len) {
+                    td.desync_tracks++;
+                    bs.skip((size_t)len - consumed);
+                }
+                continue;
+            }
+            // Read the whole chunk into a reusable buffer, hashing as we go.
+            // The read is chunked so cancellation stays responsive even on
+            // multi-GB tracks (a single blocking read of a 2 GB track left
+            // the cancel button dead for the whole decode of that chunk).
+            // Only `got` bytes are valid; the reserve capacity never is.
             if (dedup_buf.size() < (size_t)len) dedup_buf.reserve((size_t)len);
             uint8_t* bufp = dedup_buf.data();
             size_t got = 0;
@@ -1475,6 +1599,11 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
                 if (n == 0) break;             // stream ended early
                 hh.add(bufp + got, n);
                 got += n;
+                // Live progress during the candidate read: without a ping,
+                // stats freeze for the whole read (tens of GB at decode
+                // speed on trillion-class tracks), looking like a hang.
+                ev_pinged += (n >> 9);   // approximate: ~1 ping-unit per 512B
+                ping();
             }
             if (cancelled_read) { emit(cb, "  Cancelled.\n"); throw ScanCancelled{}; }
             const uint64_t hash = hh.hash();
@@ -1616,17 +1745,17 @@ static std::vector<TempoChange> build_tempo_map(const std::vector<TempoChange>& 
 std::vector<FrameStats> sweep_to_frames(TickData& td,
                                                std::vector<TempoChange>& tempo_raw,
                                                uint16_t ppqn, double fps, bool with_cc = false,
-                                               double end_delay = 0.0) {
+                                               double end_delay = 0.0,
+                                               const ProgressCallbacks* cb = nullptr) {
     std::vector<TempoChange> tm = build_tempo_map(tempo_raw, ppqn);
 
     const uint64_t nticks = td.max_tick + 1;
-    std::vector<TickData::TickCell>& cells = td.cells;
     // Track tails can extend past the last written tick; size arrays to cover
-    // the whole tick span (also covers the no-events-at-all case).
-    if (cells.size() < nticks)
-        cells.resize((size_t)nticks, TickData::TickCell{0, 0});
+    // the whole tick span (also covers the no-events-at-all case). Chunked
+    // growth: cancel polls run between chunk allocations.
+    td.cells.ensure((size_t)nticks, td.cb_env, td.cancel_env);
     if (with_cc && td.dense_cc.size() < nticks)
-        td.dense_cc.resize((size_t)nticks, 0);   // dense_cc is sized to last-written tick only
+        td.dense_cc.ensure((size_t)nticks, td.cb_env, td.cancel_env);   // dense_cc is sized to last-written tick only
     const double inv = 1.0 / ((double)ppqn * 1e6);
     const size_t W = (size_t)std::round(fps);
 
@@ -1678,7 +1807,24 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
     };
 
     for (uint64_t t = 0; t < nticks; ++t) {
-        const TickData::TickCell cell = cells[(size_t)t];
+        // The sweep can run long after the parse (spec-breaking tick spans),
+        // and until now it was fully uncancellable: the parse's per-1M-event
+        // polls were done, so cancel did nothing until the whole sweep
+        // finished. Poll every 16M ticks (~every 64MB of cell data, a check
+        // each few ms) and also emit a live ping so the GUI's bar reflects
+        // sweep progress instead of freezing at 100% of the scan.
+        if (cb && (t & 0xFFFFFF) == 0) {
+            if (cb->cancel_flag && cb->cancel_flag->load(std::memory_order_relaxed)) {
+                emit(*cb, "  Cancelled.\n");
+                throw ScanCancelled{};
+            }
+            if (cb->on_scan_progress && (t & 0x0FFFFFF) == 0)
+                cb->on_scan_progress(td.total_events_seen, 0.0, 0.0,
+                                     (double)t / (double)std::max<uint64_t>(nticks, 1));
+            if (cb->on_progress)
+                cb->on_progress("Sweeping", (int)(100.0 * (double)t / (double)std::max<uint64_t>(nticks, 1)));
+        }
+        const TickData::TickCell cell = td.cells[(size_t)t];
         uint64_t o = cell.ons;
         int64_t  d = cell.delta;
         uint64_t c = with_cc ? td.dense_cc[(size_t)t] : 0;
@@ -1757,8 +1903,11 @@ struct FrameBuckets {
 
     void ensure(size_t fi) {
         if (fi >= nframes) {
-            size_t n = nframes ? nframes : 4096;
-            while (n <= fi) n *= 2;
+            // Direct extent (plus geometric headroom), not pure doubling: a
+            // huge frame index made every intermediate doubling re-copy the
+            // live prefix, visibly halting the scan once per step.
+            size_t n = nframes ? nframes * 2 : 4096;
+            if (n < fi + 1) n = fi + 1;
             ons.resize(n, 0); deltas.resize(n, 0);
             if (!cc.empty()) cc.resize(n, 0);
             nframes = n;
@@ -1766,8 +1915,8 @@ struct FrameBuckets {
     }
     void fine_ensure(size_t bin) {
         if (bin >= fons.size()) {
-            size_t n = fons.size() ? fons.size() : 4096;
-            while (n <= bin) n *= 2;
+            size_t n = fons.size() ? fons.size() * 2 : 4096;
+            if (n < bin + 1) n = bin + 1;
             fons.resize(n, 0); ffdeltas.resize(n, 0);
             nbins = n;
         }
@@ -2060,7 +2209,8 @@ static bool scan_any_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& f
 std::vector<FrameStats> buckets_to_frames(FrameBuckets& fb, double fps,
                                           const std::vector<TempoChange>& tm,
                                           double max_time_sec, bool with_cc, uint16_t ppqn,
-                                          double end_delay = 0.0) {
+                                          double end_delay = 0.0,
+                                          const ProgressCallbacks* cb = nullptr) {
     if (end_delay > 0.0) max_time_sec += end_delay;   // frozen-stats tail frames
     const size_t total_frames = (size_t)std::ceil(max_time_sec * fps) + 1;
     const size_t song_frames = (size_t)std::ceil((end_delay > 0.0
@@ -2093,6 +2243,19 @@ std::vector<FrameStats> buckets_to_frames(FrameBuckets& fb, double fps,
     };
 
     for (size_t k = 0; k < total_frames; ++k) {
+        // Same cancel/progress rationale as sweep_to_frames: pass 2 can run
+        // long after the parse and was fully uncancellable until now.
+        if (cb && (k & 0xFFFFF) == 0) {
+            if (cb->cancel_flag && cb->cancel_flag->load(std::memory_order_relaxed)) {
+                emit(*cb, "  Cancelled.\n");
+                throw ScanCancelled{};
+            }
+            if (cb->on_scan_progress)
+                cb->on_scan_progress(fb.total_events_seen, 0.0, 0.0,
+                                     (double)k / (double)std::max<size_t>(total_frames, 1));
+            if (cb->on_progress)
+                cb->on_progress("Sweeping", (int)(100.0 * (double)k / (double)std::max<size_t>(total_frames, 1)));
+        }
         // Frame-end tempo: a tempo change inside frame k must show from k on.
         while (bpmw + 1 < tm.size() && tm[bpmw + 1].time_sec <= (double)(k + 1) / fps) bpmw++;
         cum  += fb.ons[k];
@@ -2298,7 +2461,8 @@ static uint64_t parse_track_range(const uint8_t* img, const std::vector<TrackSpa
         // store churn).
         const bool dedup_this = dedup && !(len_once && (*len_once)[i]);
         if (dedup_this) {
-            const uint64_t hash = dedup_hash_track(img + spans[i].off, (size_t)spans[i].len);
+            const uint64_t hash = dedup_hash_track(img + spans[i].off, (size_t)spans[i].len,
+                                                   &cancelled);
             std::shared_ptr<const TrackSummary> hit;
             if (dedup_find_cachable(*dedup, (uint64_t)spans[i].len, hash, hit)) {
                 replay_track_summary(*hit, td, tempo_raw);
@@ -2408,6 +2572,8 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
     std::atomic<bool> spec_abort{false};   // shared: "two-pass" answer
 
     std::vector<TickData> partial((size_t)nthreads);
+    for (auto& p : partial)
+        p.set_growth_env(/*cb=*/nullptr, &cancelled);   // chunked growth; cancel-pollable; no cross-thread log emits
     std::vector<std::vector<TempoChange>> partial_tempo((size_t)nthreads);
     std::vector<uint64_t> partial_events((size_t)nthreads, 0);
     std::vector<std::thread> workers;
@@ -2527,12 +2693,18 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
             auto on_track = [&](uint64_t off) {
                 worker_at[g].store(off, std::memory_order_relaxed);
             };
-            partial_events[g] = parse_track_range(
-                img, spans, b, e, vel0_as_note_off, /*count_cc=*/true, partial[g],
-                partial_tempo[g], cb, spec_prompted, spec_choice, cancelled,
-                spec_abort, data_oor, spec_limit,
-                track_dedup ? &td.dedup : nullptr, on_track, &worker_at[g],
-                &worker_ev[g], &len_once);
+            try {
+                partial_events[g] = parse_track_range(
+                    img, spans, b, e, vel0_as_note_off, /*count_cc=*/true, partial[g],
+                    partial_tempo[g], cb, spec_prompted, spec_choice, cancelled,
+                    spec_abort, data_oor, spec_limit,
+                    track_dedup ? &td.dedup : nullptr, on_track, &worker_at[g],
+                    &worker_ev[g], &len_once);
+            } catch (const ScanCancelled&) {
+                // Growth-cancel (or an escaped poll) inside this worker:
+                // flag the shared cancel so peers stop, then exit cleanly.
+                cancelled.store(true, std::memory_order_relaxed);
+            }
             worker_at[g].store(spans[e - 1].off + spans[e - 1].len,
                                std::memory_order_relaxed);
         });
@@ -2561,10 +2733,10 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
     // worker group's max tick, not by the arrays' allocated size.
     size_t need = 1;
     for (const auto& p : partial) need = std::max(need, (size_t)p.max_tick + 1);
-    td.cells.assign(need, TickData::TickCell{0, 0});
+    td.cells.ensure(need);
     size_t cc_need = 0;
     for (const auto& p : partial) cc_need = std::max(cc_need, p.dense_cc.size());
-    if (cc_need) td.dense_cc.assign(cc_need, 0);
+    if (cc_need) td.dense_cc.ensure(cc_need);
     for (size_t w = 0; w < partial.size(); ++w) {
         auto& p = partial[w];
         const size_t occ = std::min((size_t)p.max_tick + 1, p.cells.size());
@@ -2640,6 +2812,10 @@ std::vector<FrameStats> process_streaming(
         TickData td;
         std::vector<TempoChange> tempo_raw;
         uint16_t division = 480;
+        // Array growth (per-tick cells/CC) polls the caller's cancel flag
+        // between chunk allocations and reports OOM through cb, so a growing
+        // multi-GB tick space stays cancellable instead of freezing.
+        td.set_growth_env(&cb, cb.cancel_flag);
 
         // Fresh input stream for each walk. Plain files are mmap'd (rewind =
         // re-open, free); compressed archives rebuild the whole libarchive
@@ -2743,8 +2919,15 @@ std::vector<FrameStats> process_streaming(
             if (td.desync_tracks > 0)
                 emit(cb, "Warning: " + std::to_string(td.desync_tracks)
                          + " track(s) consumed a different number of bytes than declared (possible parser desync).\n", true);
-            frames = sweep_to_frames(td, tempo_raw, division, fps, true,
-                                     end_delay);
+            try {
+                // The sweep can run long after the parse (spec-breaking tick
+                // spans); its cancel polls throw ScanCancelled, which must
+                // not escape process_midi (same protocol as the scans).
+                frames = sweep_to_frames(td, tempo_raw, division, fps, true,
+                                         end_delay, &cb);
+            } catch (const ScanCancelled&) {
+                return {};   // message already emitted by the throw site
+            }
             out_total_notes = td.total_ons;
             out_total_ticks = td.max_tick;
             nev = td.total_events_seen;   // all events walked, same as the live counter
@@ -2791,8 +2974,12 @@ std::vector<FrameStats> process_streaming(
                 const double max_time = tm[conv].time_sec
                     + (double)(fb.max_tick - tm[conv].tick)
                       * (double)tm[conv].us_per_quarter / ((double)division * 1e6);
-                frames = buckets_to_frames(fb, fps, tm, max_time, true, division,
-                                           end_delay);
+                try {
+                    frames = buckets_to_frames(fb, fps, tm, max_time, true, division,
+                                               end_delay, &cb);
+                } catch (const ScanCancelled&) {
+                    return {};   // message already emitted by the throw site
+                }
             }
             out_total_notes = fb.total_ons;
             out_total_ticks = fb.max_tick;
