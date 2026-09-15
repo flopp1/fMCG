@@ -876,94 +876,17 @@ static bool dedup_find_cachable(const TrackDataDedup& store, uint64_t len,
     return false;
 }
 
-// Aborted via a cancel poll (scan loop, sweep, or array growth).
-// Defined early so TickData's growth helpers can throw it.
+// Aborted via a cancel poll (scan loop or frame sweep).
 struct ScanCancelled {};
 
-// Chunked backing store for the giant per-tick arrays. One contiguous
-// std::vector of billions of ticks means every growth is a single huge
-// allocation + copy + zero: uninterruptible for tens of seconds (cancel
-// dead, live stats frozen, memory spikes 2x). Chunks of 4 MiB are zeroed by
-// the OS in ~1-2ms each, are allocated exactly once (no re-copies), and
-// leave at most one chunk of slack. Cancel polls run between chunk
-// allocations, so abort latency stays in milliseconds even while the arrays
-// span tens of GB.
-template <typename T>
-struct ChunkedArray {
-    static constexpr size_t kTargetChunkBytes = (size_t)4 << 20;   // 4 MiB
-    static constexpr size_t kShift =
-        kTargetChunkBytes / sizeof(T) >= (size_t)1
-            ? [] { size_t s = 0; while ((size_t(1) << (s + 1)) * sizeof(T) <= kTargetChunkBytes) ++s; return s; }()
-            : 0;
-    static constexpr size_t kChunkElems = (size_t)1 << kShift;
-    static constexpr size_t kChunkMask = kChunkElems - 1;
-
-    std::vector<std::unique_ptr<T[]>> chunks;
-    size_t size_ = 0;   // element count this array covers
-    // Single-consumer fast path: access patterns are tick-local (pending
-    // flushes repeat the same tick; the sweep walks sequentially), so caching
-    // the last touched chunk pointer turns the two-load indirection back
-    // into the contiguous-vector cost for ~all accesses. Each TickData (or
-    // worker partial) is touched by exactly one thread.
-    mutable size_t cache_idx = SIZE_MAX;
-    mutable T*    cache_ptr = nullptr;
-
-    size_t size() const { return size_; }
-    bool empty() const { return size_ == 0; }
-
-    T& operator[](size_t i) {
-        const size_t ci = i >> kShift;
-        if (ci != cache_idx) { cache_idx = ci; cache_ptr = chunks[ci].get(); }
-        return cache_ptr[i & kChunkMask];
-    }
-    const T& operator[](size_t i) const {
-        const size_t ci = i >> kShift;
-        if (ci != cache_idx) { cache_idx = ci; cache_ptr = chunks[ci].get(); }
-        return cache_ptr[i & kChunkMask];
-    }
-
-    // Hot path: cheap inline size check; growth is a cold noinline call so
-    // the exception machinery never pollutes the per-event fast path.
-    inline void ensure(size_t need, const ProgressCallbacks* cb = nullptr,
-                       const std::atomic<bool>* cancel = nullptr) {
-        if (need <= size_) [[likely]] return;
-        grow_slow(need, cb, cancel);
-    }
-    __attribute__((noinline))
-    void grow_slow(size_t need, const ProgressCallbacks* cb,
-                   const std::atomic<bool>* cancel) {
-        const size_t nchunks = (need + kChunkMask) >> kShift;
-        while (chunks.size() < nchunks) {
-            if (cancel && cancel->load(std::memory_order_relaxed)) {
-                if (cb) emit(*cb, "  Cancelled.\n");
-                throw ScanCancelled{};
-            }
-            try {
-                chunks.emplace_back(std::make_unique<T[]>(kChunkElems));   // value-init: zeroed
-            } catch (const std::bad_alloc&) {
-                if (cb) emit(*cb, "Error: out of memory for per-tick arrays.\n", true);
-                throw ScanCancelled{};   // fail fast; callers report the abort
-            }
-        }
-        size_ = need;
-    }
-
-    void clear() { chunks.clear(); size_ = 0; cache_idx = SIZE_MAX; cache_ptr = nullptr; }
-    size_t memory_bytes() const { return chunks.size() * kChunkElems * sizeof(T); }
-};
-
 struct TickData {
-    // Per-tick cells and CC counts live in chunked storage (see ChunkedArray):
-    // contiguous vectors of billions of ticks made every growth an
-    // uninterruptible multi-second fill; chunks keep growth steps at ~1-2ms
-    // with cancel polls between.
     // One interleaved cell per tick: a note-on touches ons and delta of the
     // SAME tick, so keeping them in one struct halves the cache/TLB misses
     // versus two separate multi-GB arrays (the sweep then reads each tick's
     // whole cell in one line too).
     struct TickCell { uint32_t ons; int32_t delta; };
     static_assert(sizeof(TickCell) == 8, "TickCell must stay tightly packed");
-    ChunkedArray<TickCell> cells;        // per-tick (>=2^31 ons on ONE tick is impossible in practice: a note-on is >=2 bytes, so it needs ~4 GB of pure 0x9x pairs on a single tick)
+    std::vector<TickCell> cells;         // per-tick (>=2^31 ons on ONE tick is impossible in practice: a note-on is >=2 bytes, so it needs ~4 GB of pure 0x9x pairs on a single tick)
     uint64_t max_tick = 0;
     uint64_t total_ons = 0;
     size_t ntracks = 0;
@@ -971,39 +894,40 @@ struct TickData {
     uint64_t total_events_seen = 0;   // every event walked (ons+offs+CC+meta), matches live counter
     bool dedup_enabled = false;       // dedup fast path active for this scan
     TrackDataDedup dedup;             // optional per-scan track-content cache
-    // Growth environment: cancel polls and OOM reports during array growth.
-    // Set once per scan (not cleared by reset()); null = never interruptible
-    // growth (only in tests that construct bare TickData).
-    const ProgressCallbacks* cb_env = nullptr;
-    const std::atomic<bool>* cancel_env = nullptr;
-    void set_growth_env(const ProgressCallbacks* cb, const std::atomic<bool>* cancel) {
-        cb_env = cb; cancel_env = cancel;
-    }
 
-    void ensure(uint64_t t) { cells.ensure((size_t)t + 1, cb_env, cancel_env); }
-    void note_on(uint64_t t) { ensure(t); cells[(size_t)t].ons++; cells[(size_t)t].delta++; total_ons++; }
-    void delta_at(uint64_t t, int64_t d) { ensure(t); cells[(size_t)t].delta += (int32_t)d; }
+    void ensure(uint64_t t) {
+        if (t >= cells.size()) {
+            size_t n = cells.size();
+            if (n == 0) n = 4096;
+            while (n <= t) n *= 2;
+            cells.resize(n, TickCell{0, 0});
+        }
+    }
+    void note_on(uint64_t t) { ensure(t); cells[t].ons++; cells[t].delta++; total_ons++; }
+    void delta_at(uint64_t t, int64_t d) { ensure(t); cells[t].delta += (int32_t)d; }
     // CC accumulation (always counted; the {cc} stats read it).
-    ChunkedArray<uint32_t> dense_cc;     // per-tick control-change counts
+    std::vector<uint32_t> dense_cc;      // per-tick control-change counts
     uint64_t total_cc = 0;
     void cc_at(uint64_t t) {
         ensure(t);
-        if (dense_cc.size() < cells.size()) dense_cc.ensure(cells.size(), cb_env, cancel_env);
-        dense_cc[(size_t)t]++;
+        if (dense_cc.size() < cells.size()) dense_cc.resize(cells.size(), 0);
+        dense_cc[t]++;
         total_cc++;
     }
     // Current footprint of the dense arrays (bytes).
     size_t memory_bytes() const {
-        return cells.memory_bytes() + dense_cc.memory_bytes();
+        return cells.size() * sizeof(TickCell)
+             + dense_cc.size() * sizeof(uint32_t);
     }
     void reset() {
-        cells.clear();
-        dense_cc.clear();
+        std::vector<TickCell>().swap(cells);
+        std::vector<uint32_t>().swap(dense_cc);
         max_tick = 0; total_ons = 0; ntracks = 0; desync_tracks = 0;
         total_events_seen = 0; total_cc = 0;
         dedup.reset();
     }
 };
+
 
 // Append-or-accumulate helper for the summaries' per-tick lists (ticks are
 // visited in increasing order within a track, so the tail is the target).
@@ -1030,8 +954,7 @@ static void replay_track_summary(const TrackSummary& s, TickData& td,
     }
     for (const auto& c : s.ccs) {
         td.ensure(c.first);
-        if (td.dense_cc.size() < td.cells.size())
-            td.dense_cc.ensure(td.cells.size(), td.cb_env, td.cancel_env);
+        if (td.dense_cc.size() < td.cells.size()) td.dense_cc.resize(td.cells.size(), 0);
         td.dense_cc[c.first] += c.second;
     }
     for (const auto& tc : s.tempos)
@@ -1199,8 +1122,7 @@ static uint64_t parse_track_body(StreamT& bs, bool accumulate, bool vel0_as_note
         if (pend_ons)   td.cells[pend_tick].ons   += pend_ons;
         if (pend_delta) td.cells[pend_tick].delta += pend_delta;
         if (pend_cc) {
-            if (td.dense_cc.size() < td.cells.size())
-                td.dense_cc.ensure(td.cells.size(), td.cb_env, td.cancel_env);
+            if (td.dense_cc.size() < td.cells.size()) td.dense_cc.resize(td.cells.size(), 0);
             td.dense_cc[pend_tick] += pend_cc;
             td.total_cc += pend_cc;
         }
@@ -1750,12 +1672,13 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
     std::vector<TempoChange> tm = build_tempo_map(tempo_raw, ppqn);
 
     const uint64_t nticks = td.max_tick + 1;
+    std::vector<TickData::TickCell>& cells = td.cells;
     // Track tails can extend past the last written tick; size arrays to cover
-    // the whole tick span (also covers the no-events-at-all case). Chunked
-    // growth: cancel polls run between chunk allocations.
-    td.cells.ensure((size_t)nticks, td.cb_env, td.cancel_env);
+    // the whole tick span (also covers the no-events-at-all case).
+    if (cells.size() < nticks)
+        cells.resize((size_t)nticks, TickData::TickCell{0, 0});
     if (with_cc && td.dense_cc.size() < nticks)
-        td.dense_cc.ensure((size_t)nticks, td.cb_env, td.cancel_env);   // dense_cc is sized to last-written tick only
+        td.dense_cc.resize((size_t)nticks, 0);   // dense_cc is sized to last-written tick only
     const double inv = 1.0 / ((double)ppqn * 1e6);
     const size_t W = (size_t)std::round(fps);
 
@@ -2572,8 +2495,6 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
     std::atomic<bool> spec_abort{false};   // shared: "two-pass" answer
 
     std::vector<TickData> partial((size_t)nthreads);
-    for (auto& p : partial)
-        p.set_growth_env(/*cb=*/nullptr, &cancelled);   // chunked growth; cancel-pollable; no cross-thread log emits
     std::vector<std::vector<TempoChange>> partial_tempo((size_t)nthreads);
     std::vector<uint64_t> partial_events((size_t)nthreads, 0);
     std::vector<std::thread> workers;
@@ -2733,10 +2654,10 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
     // worker group's max tick, not by the arrays' allocated size.
     size_t need = 1;
     for (const auto& p : partial) need = std::max(need, (size_t)p.max_tick + 1);
-    td.cells.ensure(need);
+    td.cells.assign(need, TickData::TickCell{0, 0});
     size_t cc_need = 0;
     for (const auto& p : partial) cc_need = std::max(cc_need, p.dense_cc.size());
-    if (cc_need) td.dense_cc.ensure(cc_need);
+    if (cc_need) td.dense_cc.assign(cc_need, 0);
     for (size_t w = 0; w < partial.size(); ++w) {
         auto& p = partial[w];
         const size_t occ = std::min((size_t)p.max_tick + 1, p.cells.size());
@@ -2812,10 +2733,6 @@ std::vector<FrameStats> process_streaming(
         TickData td;
         std::vector<TempoChange> tempo_raw;
         uint16_t division = 480;
-        // Array growth (per-tick cells/CC) polls the caller's cancel flag
-        // between chunk allocations and reports OOM through cb, so a growing
-        // multi-GB tick space stays cancellable instead of freezing.
-        td.set_growth_env(&cb, cb.cancel_flag);
 
         // Fresh input stream for each walk. Plain files are mmap'd (rewind =
         // re-open, free); compressed archives rebuild the whole libarchive
