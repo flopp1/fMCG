@@ -547,6 +547,10 @@ class alignas(64) ByteStream {
 public:
     explicit ByteStream(DataSrc& s) : src(s) {}
 
+    // Absolute offset of the next unread byte within the source stream
+    // (used by the parallel scan's prefetcher progress reporting).
+    uint64_t stream_off() const { return pulled - (hi - lo); }
+
     uint64_t bytes_pulled() const { return pulled; }   // source bytes drawn so far
 
     void set_limit(size_t n) { limit_remaining = n; limit_total = n; }
@@ -687,7 +691,8 @@ class RawStream {
     size_t limit_remaining_ = (size_t)-1;
     size_t limit_total_ = 0;
 public:
-    explicit RawStream(const uint8_t* d, size_t n) : data_(d), len_(n) {}
+    explicit RawStream(const uint8_t* d, size_t n)
+        : data_(d), len_(n), limit_remaining_(n), limit_total_(n) {}
 
     uint8_t* fast_p = nullptr;
 
@@ -701,6 +706,10 @@ public:
         return a;
     }
     bool at_end() { return avail() == 0; }
+
+    // Absolute offset of the next unread byte within the underlying image
+    // (used by the parallel scan to publish prefetcher progress).
+    size_t stream_off() const { return lo_; }
 
     int get() {
         if (limit_remaining_ == 0 || lo_ >= len_) return -1;
@@ -1010,6 +1019,14 @@ struct ScanCancelled {};
 // rec.bytes/.hash/.events (it owns the chunk length and the returned count).
 // Returns the number of events walked in this track (including early exits).
 struct TrackBodyHooks {
+    // Optional absolute-position reporting for the parallel scan's
+    // prefetcher: at each 1M-event ping the body stores `pos_base +
+    // current stream offset` into *pos_out, so a worker grinding through a
+    // multi-GB track still advances its published position (track-start-only
+    // updates froze the prefetcher cap and reintroduced cold faults).
+    std::atomic<uint64_t>* pos_out = nullptr;
+    uint64_t  pos_base = 0;
+
     // Fires once per ~1M events with the DELTA since the previous ping
     // (always exactly 1,000,000 today; the final partial count reaches the
     // caller via parse_track_body's return value instead).
@@ -1154,6 +1171,9 @@ static uint64_t parse_track_body(StreamT& bs, bool accumulate, bool vel0_as_note
                 }
                 // 0xA0/0xE0 and uncounted CC consume 3 bytes, touch nothing.
                 if (++track_ev >= ping_at) {
+                    if (hooks.pos_out)   // prefetcher position: stream offset now
+                        hooks.pos_out->store(hooks.pos_base + bs.stream_off(),
+                                             std::memory_order_relaxed);
                     hooks.ping(track_ev - ping_last);
                     ping_last = track_ev;
                     ping_at = track_ev + 1000000;
@@ -1235,6 +1255,9 @@ static uint64_t parse_track_body(StreamT& bs, bool accumulate, bool vel0_as_note
         // Continuous progress ping: a counter compare on the hot path, real
         // work (clock + callback) only once per ~1M events.
         if (++track_ev >= ping_at) {
+            if (hooks.pos_out)   // prefetcher position: stream offset now
+                hooks.pos_out->store(hooks.pos_base + bs.stream_off(),
+                                     std::memory_order_relaxed);
             hooks.ping(track_ev - ping_last);
             ping_last = track_ev;
             ping_at = track_ev + 1000000;
@@ -2107,7 +2130,17 @@ static bool locate_mtrk_spans(const uint8_t* img, size_t n,
     if (hlen < 6 || 8 + (size_t)hlen > n) return false;
     pos = 8 + hlen;
     out.reserve(expected_tracks);
+    // The walk only touches 8 bytes per chunk header, but on a cold mapping
+    // each untouched header is its own page fault — thousands of scattered
+    // faults collapse HDD readahead into a seek storm (measured 10-14 MB/s).
+    // Prefetch one modest window at a time so the disk sees a forward
+    // sequential stream while headers are read from warm pages.
+    size_t covered = 0;                   // image bytes already prefetched
     while (pos + 8 <= n) {
+        if (pos >= covered) {
+            mem_prefetch(img + covered, std::min<size_t>(4u << 20, n - covered));
+            covered = std::min<size_t>(covered + (4u << 20), n);
+        }
         const uint32_t tag = ((uint32_t)img[pos] << 24) | ((uint32_t)img[pos+1] << 16)
                            | ((uint32_t)img[pos+2] << 8) | (uint32_t)img[pos+3];
         const uint32_t len = ((uint32_t)img[pos+4] << 24) | ((uint32_t)img[pos+5] << 16)
@@ -2154,7 +2187,8 @@ static uint64_t parse_track_range(const uint8_t* img, const std::vector<TrackSpa
                               std::atomic<bool>& data_oor,
                               const uint64_t spec_limit,
                               TrackDataDedup* dedup,
-                              const std::function<void(uint64_t)>& on_track = {}) {
+                              const std::function<void(uint64_t)>& on_track = {},
+                              std::atomic<uint64_t>* pos_cell = nullptr) {
     uint64_t events = 0;
     // Spec-violation protocol shared by all workers. Returns false when the
     // scan must stop (cancel or two-pass abort). Exactly one worker prompts;
@@ -2196,6 +2230,7 @@ static uint64_t parse_track_range(const uint8_t* img, const std::vector<TrackSpa
     for (size_t i = first; i < last; ++i) {
         if (cancelled.load(std::memory_order_relaxed)) return events;
         if (on_track) on_track(spans[i].off);   // prefetcher progress: track start
+        hooks.pos_base = spans[i].off;          // updated per track; pos_out stays
 
         // Dedup hit: replay the cached summary into this worker's partial.
         // Hashes come straight from the image (no copy); lookups share the
@@ -2309,11 +2344,14 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
     }
 
     // Dedicated sequential prefetcher: keeps one window ahead of the
-    // *slowest* parser, so the disk always sees a single forward sequential
+    // *fastest* parser, so the disk always sees a single forward sequential
     // stream while parsers consume warm pages. Workers publish their current
-    // absolute offset at each track start (worker_at); the prefetcher never
-    // runs more than kPrefetchAhead past the slowest reader, so a hot cache
-    // costs only cheap no-op PrefetchVirtualMemory calls.
+    // absolute offset at each track start (worker_at); the prefetcher cap is
+    // the maximum over live workers plus the window, so a hot cache costs
+    // only cheap no-op PrefetchVirtualMemory calls and a fast worker never
+    // has to fault cold pages. Capping at the fastest (not slowest) reader
+    // bounds wasted prefetch on cancel/spec-abort without ever stalling
+    // readers below the cap.
     const size_t ngroups = ranges.size();
     std::atomic<bool> parsers_done{false};
     const uint64_t kPrefetchAhead = 64ull << 20;     // 64 MiB window
@@ -2325,11 +2363,11 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
         prefetcher = std::thread([&]() {
             uint64_t next = 0;
             while (!parsers_done.load(std::memory_order_relaxed)) {
-                uint64_t slowest = n;               // min over live workers
+                uint64_t fastest = 0;               // max over live workers
                 for (const auto& a : worker_at)
-                    slowest = std::min(slowest, a.load(std::memory_order_relaxed));
+                    fastest = std::max(fastest, a.load(std::memory_order_relaxed));
                 const uint64_t limit =
-                    slowest >= n ? n : std::min<uint64_t>(n, slowest + kPrefetchAhead);
+                    fastest >= n ? n : std::min<uint64_t>(n, fastest + kPrefetchAhead);
                 if (next >= n) break;               // image fully prefetched
                 if (next < limit) {
                     const uint64_t len = std::min<uint64_t>(kPrefetchStep, n - next);
@@ -2353,7 +2391,7 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
                 img, spans, b, e, vel0_as_note_off, /*count_cc=*/true, partial[g],
                 partial_tempo[g], cb, spec_prompted, spec_choice, cancelled,
                 spec_abort, data_oor, spec_limit,
-                track_dedup ? &td.dedup : nullptr, on_track);
+                track_dedup ? &td.dedup : nullptr, on_track, &worker_at[g]);
             worker_at[g].store(spans[e - 1].off + spans[e - 1].len,
                                std::memory_order_relaxed);
         });
