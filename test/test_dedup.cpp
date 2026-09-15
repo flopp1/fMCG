@@ -152,7 +152,11 @@ int main() {
 
         RunResult s0 = run(path, 1, false), s1 = run(path, 1, true);
         check("dedup == plain (sequential)", equal(s0, s1));
-        check("sequential replays engaged (5 hits)", dedup_hits(s1.log) == 5);
+        // First occurrence of a declared length can never replay (the gate),
+        // so it parses plain without a summary; copies 2..6 see a repeated
+        // length, parse as candidates, and copies 3..6 replay: 1+1 parses,
+        // 4 replays.
+        check("sequential replays engaged (4 hits)", dedup_hits(s1.log) == 4);
         check("reported events: sequential", reported_events(s1.log) == reported_events(s0.log));
         RunResult p0 = run(path, 4, false), p1 = run(path, 4, true);
         check("dedup == plain (parallel)", equal(p0, p1));

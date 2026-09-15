@@ -271,6 +271,56 @@ int main() {
               notes == notes3 && ticks == ticks3 && frames_repr(f_proceed) == frames_repr(f_seq));
     }
 
+    // ---- 11. nonstandard PPQN: the parallel path must honor MThd division --
+    // scan_parallel bypasses the sequential header parse; if it leaves the
+    // division at the 480 default, every time-derived stat (timestamps, BPM,
+    // NPS windows) stretches by 480/actual. division=96 -> 5x stretch.
+    {
+        std::string a, b;
+        vlq(a, 0); a += (char)0xFF; a += (char)0x51; a += (char)3;
+        a += (char)0x07; a += (char)0xA1; a += (char)0x20;      // 500000 us = 120 bpm
+        for (int i = 0; i < 400; ++i) {
+            vlq(a, i == 0 ? 0 : 1); ev(a, NON, 0, (uint8_t)(i & 0x7F), 100);
+            vlq(a, 1);              ev(a, NOFF, 0, (uint8_t)(i & 0x7F), 0);
+        }
+        for (int i = 0; i < 300; ++i) {
+            vlq(b, i == 0 ? 0 : 2); ev(b, NON, 1, (uint8_t)(i & 0x7F), 90);
+            vlq(b, 1);              ev(b, NOFF, 1, (uint8_t)(i & 0x7F), 0);
+        }
+        write_midi(path, 96, {a, b});
+        RunResult s1 = run(path, 1), p4 = run(path, 4);
+        check("nonstandard PPQN: sequential reads 96", s1.ppqn == 96);
+        check("nonstandard PPQN: parallel == sequential", compare(s1, p4));
+    }
+
+    // ---- 12. cancel during the two-pass restart ----------------------------
+    // Choosing the low-memory restart while the cancel flag is set must exit
+    // gracefully: pass 1 throws ScanCancelled, which the two-pass block in
+    // process_midi must catch (an escaped exception terminates the caller).
+    {
+        std::string a, b;
+        vlq(a, 0);
+        for (int i = 0; i < 100; ++i) { vlq(a, 64); ev(a, NON, 0, (uint8_t)(i & 0x7F), 100); }
+        vlq(b, 0);
+        for (int i = 0; i < 100; ++i) { vlq(b, 64); ev(b, NON, 1, (uint8_t)(i & 0x7F), 100); }
+        write_midi(path, 480, {a, b});
+        for (int threads : { 4, 1 }) {
+            std::atomic<bool> cancel{false};
+            ProgressCallbacks cb;
+            cb.spec_tick_limit = 1 << 12;
+            cb.cancel_flag = &cancel;
+            cb.on_spec_violation = [&](uint64_t, size_t) -> int {
+                cancel.store(true);       // user hit cancel, then chose two-pass
+                return 1;
+            };
+            uint16_t ppqn; uint64_t notes, ticks;
+            auto f = ScaleMidiProcessor::process_midi(path, 60.0, ppqn, notes, true, ticks, cb, 0.0, threads);
+            char name[80];
+            snprintf(name, sizeof name, "two-pass cancel aborts cleanly (threads=%d)", threads);
+            check(name, f.empty());
+        }
+    }
+
     // ---- 10. cancellation mid-scan -----------------------------------------
     {
         std::string a, b;

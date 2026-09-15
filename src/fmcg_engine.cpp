@@ -8,6 +8,8 @@
 #include <chrono>
 #include <deque>
 #include <memory>
+#include <unordered_set>
+#include <unordered_map>
 
 #include "fmcg_util.h"
 #include "xxhash64.h"   // vendored single-header XXHash64 (Stephan Brumme, MIT)
@@ -1389,6 +1391,19 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
         dedup_replayed_events += s.events;
         td.ntracks++;
     };
+    // One reusable read buffer for all dedup candidate chunks. A per-track
+    // vector zero-initialises its whole length (a full extra pass over the
+    // chunk) and re-walks the OS zero-page machinery on every fresh multi-GB
+    // allocation; reserve-once + manual length avoids both. Measured on a
+    // ~1 GB/s 7z decode: this buffer alone was most of the dedup overhead.
+    std::vector<uint8_t> dedup_buf;
+    // First-occurrence gate: a replay needs byte-identical content, hence an
+    // identical declared chunk length, so the first track of any length can
+    // never hit. Lengths recorded as "seen" (including desynced/uncachable
+    // tracks) skip the candidate copy, hash, and summary entirely -- historic
+    // plain-parse behaviour -- collapsing the dedup overhead on files whose
+    // tracks are mostly unique (e.g. a 4.24B-event file saving 1.7%).
+    std::unordered_set<uint64_t> seen_len;
 
     while (true) {
         if (cb.cancel_flag && cb.cancel_flag->load(std::memory_order_relaxed)) {
@@ -1409,11 +1424,44 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
         // number of stream bytes as a parse would. Without dedup the parse
         // streams directly from `bs` as before (zero copies).
         if (dedup_store) {
-            // Read the whole chunk into a buffer, hashing as we go. The read
-            // is chunked so cancellation stays responsive even on multi-GB
-            // tracks (a single blocking read of a 2 GB track left the cancel
-            // button dead for the whole decode of that chunk).
-            std::vector<uint8_t> buf((size_t)len);
+            // First occurrence of this declared length can never replay
+            // (nothing with this length exists in the store yet): parse
+            // straight from the stream, exactly like dedup-off.
+            if (seen_len.insert((uint64_t)len).second) {
+                TrackBodyHooks hooks;
+                hooks.ping = [&](uint64_t n) {
+                    ev_pinged += n;
+                    ping();
+                };
+                hooks.spec_fire = [&]() -> bool {
+                    if (spec_warned) return true;
+                    const int choice = cb.on_spec_violation
+                        ? cb.on_spec_violation(0, td.memory_bytes()) : 0;
+                    if (choice == 2) { emit(cb, "  Cancelled.\n"); throw ScanCancelled{}; }
+                    if (choice == 1) throw SpecAbort{};
+                    spec_warned = true;
+                    return true;
+                };
+                ev_count += parse_track_body(bs, accumulate, vel0_as_note_off, td, tempo_raw,
+                                             cb, spec_limit, hooks, data_oor, nullptr);
+                ev_pinged = 0;
+                td.ntracks++;
+                const size_t consumed = bs.consumed();
+                bs.set_limit((size_t)-1);
+                if (consumed < (size_t)len) {
+                    td.desync_tracks++;
+                    bs.skip((size_t)len - consumed);   // jump to next chunk boundary
+                }
+                continue;
+            }
+            // Repeat length: a genuine replay candidate. Read the whole chunk
+            // into a reusable buffer, hashing as we go. The read is chunked
+            // so cancellation stays responsive even on multi-GB tracks (a
+            // single blocking read of a 2 GB track left the cancel button
+            // dead for the whole decode of that chunk). Only `got` bytes are
+            // valid; the reserve capacity never is.
+            if (dedup_buf.size() < (size_t)len) dedup_buf.reserve((size_t)len);
+            uint8_t* bufp = dedup_buf.data();
             size_t got = 0;
             XXHash64 hh(0);
             bool cancelled_read = false;
@@ -1423,13 +1471,12 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
                     break;
                 }
                 const size_t want = std::min(kDedupReadChunk, (size_t)len - got);
-                const size_t n = bs.read(buf.data() + got, want);
+                const size_t n = bs.read(bufp + got, want);
                 if (n == 0) break;             // stream ended early
-                hh.add(buf.data() + got, n);
+                hh.add(bufp + got, n);
                 got += n;
             }
             if (cancelled_read) { emit(cb, "  Cancelled.\n"); throw ScanCancelled{}; }
-            buf.resize(got);
             const uint64_t hash = hh.hash();
             std::shared_ptr<const TrackSummary> hit;
             if (got == (size_t)len && dedup_find_cachable(*dedup_store, (uint64_t)len, hash, hit)) {
@@ -1439,7 +1486,7 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
                 rec.bytes = got;
                 rec.hash  = hash;
                 bool data_oor_local = data_oor;
-                RawStream tbs(buf.data(), buf.size());
+                RawStream tbs(bufp, got);
                 TrackBodyHooks hooks;
                 hooks.ping = [&](uint64_t n) {
                     // Live counter from the pinged prefix; the authoritative
@@ -2194,7 +2241,8 @@ static uint64_t parse_track_range(const uint8_t* img, const std::vector<TrackSpa
                               TrackDataDedup* dedup,
                               const std::function<void(uint64_t)>& on_track = {},
                               std::atomic<uint64_t>* pos_cell = nullptr,
-                              std::atomic<uint64_t>* ev_pub = nullptr) {
+                              std::atomic<uint64_t>* ev_pub = nullptr,
+                              const std::vector<char>* len_once = nullptr) {
     uint64_t events = 0;
     // Spec-violation protocol shared by all workers. Returns false when the
     // scan must stop (cancel or two-pass abort). Exactly one worker prompts;
@@ -2243,8 +2291,13 @@ static uint64_t parse_track_range(const uint8_t* img, const std::vector<TrackSpa
 
         // Dedup hit: replay the cached summary into this worker's partial.
         // Hashes come straight from the image (no copy); lookups share the
-        // store lock with record merging.
-        if (dedup) {
+        // store lock with record merging. Spans whose declared length occurs
+        // exactly once in the file are pre-marked by the caller (len_once)
+        // and skip the whole dedup block: they can never replay, so they
+        // keep the plain parse's zero overhead (no hash, no summary, no
+        // store churn).
+        const bool dedup_this = dedup && !(len_once && (*len_once)[i]);
+        if (dedup_this) {
             const uint64_t hash = dedup_hash_track(img + spans[i].off, (size_t)spans[i].len);
             std::shared_ptr<const TrackSummary> hit;
             if (dedup_find_cachable(*dedup, (uint64_t)spans[i].len, hash, hit)) {
@@ -2299,7 +2352,8 @@ static uint64_t parse_track_range(const uint8_t* img, const std::vector<TrackSpa
 //   1 = success (td holds the merged accumulation, tempo_raw the tempo map)
 static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
                          std::vector<TempoChange>& tempo_raw, int nthreads,
-                         const ProgressCallbacks& cb, bool track_dedup) {
+                         const ProgressCallbacks& cb, bool track_dedup,
+                         uint16_t& out_division) {
     // 0 = "all cores" (GUI default). Resolve here so the sequential fallback
     // below only triggers for an explicit 1 (or a genuinely single-core box).
     if (nthreads <= 0) {
@@ -2311,6 +2365,16 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
     const uint8_t* img = src.image(n);
     if (!img || n < 14) return 0;
     if (!(img[0] == 'M' && img[1] == 'T' && img[2] == 'h' && img[3] == 'd')) return 0;
+    // MThd division (big-endian at bytes 12..13): the parallel path bypasses
+    // scan_stream's header parse, so it must set the PPQN itself or the sweep
+    // converts ticks at the 480 default -- stretching song time (and every
+    // time-derived stat) by 480/actual on files with a different PPQN.
+    // Same semantics as the sequential scan: mask the SMPTE flag, default 0.
+    {
+        uint16_t division = (uint16_t)(((img[12] << 8) | img[13]) & 0x7FFF);
+        if (division == 0) division = 480;
+        out_division = division;
+    }
 
     std::vector<TrackSpan> spans;
     if (!locate_mtrk_spans(img, n, 0, spans) || spans.size() < 2) return 0;
@@ -2321,6 +2385,21 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
     td.reset();
     td.dedup_enabled = track_dedup;
     if (track_dedup) emit(cb, "  Track dedup enabled.\n");
+    // Candidate marks (see parse_track_range): for plain files every track's
+    // declared length is known upfront, so a track is a dedup candidate iff
+    // its length occurs at least twice -- first occurrences of repeated
+    // lengths are candidates too (a later duplicate can hit them directly),
+    // and unique lengths never are.
+    std::vector<char> len_once(spans.size(), 1);
+    if (track_dedup) {
+        std::unordered_map<uint64_t, uint32_t> len_count;
+        len_count.reserve(spans.size() * 2);
+        for (const auto& s : spans) ++len_count[(uint64_t)s.len];
+        for (size_t i = 0; i < spans.size(); ++i) {
+            auto it = len_count.find((uint64_t)spans[i].len);
+            if (it != len_count.end() && it->second >= 2) len_once[i] = 0;
+        }
+    }
     const uint64_t spec_limit = cb.spec_tick_limit ? cb.spec_tick_limit : ((uint64_t)1 << 28);
     std::atomic<bool> spec_prompted{false};
     std::atomic<int>  spec_choice{-1};
@@ -2453,7 +2532,7 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
                 partial_tempo[g], cb, spec_prompted, spec_choice, cancelled,
                 spec_abort, data_oor, spec_limit,
                 track_dedup ? &td.dedup : nullptr, on_track, &worker_at[g],
-                &worker_ev[g]);
+                &worker_ev[g], &len_once);
             worker_at[g].store(spans[e - 1].off + spans[e - 1].len,
                                std::memory_order_relaxed);
         });
@@ -2603,7 +2682,7 @@ std::vector<FrameStats> process_streaming(
                 int pr = 0;
                 if (!compressed && !two_pass) {
                     pr = scan_parallel(*src, vel0_as_note_off, td, tempo_raw,
-                                       parse_threads, cb, track_dedup);
+                                       parse_threads, cb, track_dedup, division);
                     if (pr == -1) return {};      // cancel message already emitted
                     if (pr == -2) {               // user chose the low-memory path
                         pr = 0;
@@ -2675,8 +2754,16 @@ std::vector<FrameStats> process_streaming(
             t_scan = clock::now();   // restart the clock: the stats line should reflect the two passes, not the aborted attempt
             src = open_src();
             if (!src->ok()) { emit(cb, "Error: failed to re-open input for pass 1.\n", true); return {}; }
-            if (!scan_any(*src, vel0_as_note_off, td, tempo_raw, division, cb, ScanMode::TEMPO_ONLY))
+            try {
+                // Pass 1 cancels throw ScanCancelled (same protocol as the
+                // first attempt); without a catch here the exception would
+                // escape process_midi and terminate the job thread.
+                if (!scan_any(*src, vel0_as_note_off, td, tempo_raw, division, cb, ScanMode::TEMPO_ONLY))
+                    return {};
+            } catch (const ScanCancelled&) {
+                src.reset();   // message already emitted by the throw site
                 return {};
+            }
             out_division = division;
             const std::vector<TempoChange> tm = build_tempo_map(tempo_raw, division);
 
@@ -2685,8 +2772,13 @@ std::vector<FrameStats> process_streaming(
             if (!src->ok()) { emit(cb, "Error: failed to re-open input for pass 2.\n", true); return {}; }
             FrameBuckets fb;
             fb.cc.resize(4096, 0);
-            if (!scan_any_frames(*src, vel0_as_note_off, fb, tm, division, fps, cb))
+            try {
+                if (!scan_any_frames(*src, vel0_as_note_off, fb, tm, division, fps, cb))
+                    return {};
+            } catch (const ScanCancelled&) {
+                src.reset();
                 return {};
+            }
             dec_bytes = src->bytes_read();
             dec_err = src->errored();
             src.reset();
