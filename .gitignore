@@ -19,8 +19,7 @@ dist/
 libarchive.dll
 glfw3.dll
 imgui.ini
-*_fMCG.ass
-temp_stats.ass
+*.ass
 *_fMCG_ffmpeg.bat
 *_fMCG_progress.txt
 
@@ -30,8 +29,10 @@ test/__pycache__/
 test/*.mid
 test/*.midi
 test/*.7z
-test/*.tar.xz
+test/*.xz
 test/*.ass
+test/*.err
+test/*.log
 
 # --- OS / editor noise --------------------------------------------------------
 Thumbs.db
