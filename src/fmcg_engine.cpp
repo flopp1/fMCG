@@ -1032,6 +1032,11 @@ struct TrackBodyHooks {
     // caller via parse_track_body's return value instead).
     std::function<void(uint64_t)> ping;
     std::function<bool()>         spec_fire;         // spec guard (see above)
+    // Parallel scan only: per-worker live event counter. Pings add their
+    // 1M-event deltas; the per-track remainder is added when the track
+    // completes, so the sum across workers is the exact walked total and a
+    // reporter thread can show live ev/s while the workers run.
+    std::atomic<uint64_t>* ev_pub = nullptr;
     // Parallel scan: shared one-shot warning flag + shared cancel flag, both
     // null on the sequential paths (which use the local bool / cb only).
     std::atomic<bool>* data_oor_atomic = nullptr;
@@ -2188,7 +2193,8 @@ static uint64_t parse_track_range(const uint8_t* img, const std::vector<TrackSpa
                               const uint64_t spec_limit,
                               TrackDataDedup* dedup,
                               const std::function<void(uint64_t)>& on_track = {},
-                              std::atomic<uint64_t>* pos_cell = nullptr) {
+                              std::atomic<uint64_t>* pos_cell = nullptr,
+                              std::atomic<uint64_t>* ev_pub = nullptr) {
     uint64_t events = 0;
     // Spec-violation protocol shared by all workers. Returns false when the
     // scan must stop (cancel or two-pass abort). Exactly one worker prompts;
@@ -2218,10 +2224,13 @@ static uint64_t parse_track_range(const uint8_t* img, const std::vector<TrackSpa
     hooks.data_oor_atomic = &data_oor;
     hooks.cancelled_flag  = &cancelled;
     bool data_oor_local = false;   // unused: the shared atomic handles warnings
-    hooks.ping = [&](uint64_t) {
-        // Cancel propagation only. Walked events are accounted by the body's
-        // return value; accumulating pinged deltas here as well double-counted
-        // every pinged event.
+    uint64_t pub_track = 0;   // events of the current track already published
+    hooks.ping = [&](uint64_t n) {
+        // Cancel propagation + live event publication (the walked total
+        // itself comes from the body's return value per track; ev_pub is
+        // display only).
+        pub_track += n;
+        if (ev_pub) ev_pub->fetch_add(n, std::memory_order_relaxed);
         if (cb.cancel_flag && cb.cancel_flag->load(std::memory_order_relaxed))
             cancelled.store(true, std::memory_order_relaxed);
     };
@@ -2244,6 +2253,9 @@ static uint64_t parse_track_range(const uint8_t* img, const std::vector<TrackSpa
                 dedup->hits.fetch_add(1, std::memory_order_relaxed);
                 dedup->savings_events.fetch_add(hit->events, std::memory_order_relaxed);
                 events += hit->events;
+                if (ev_pub) ev_pub->fetch_add(hit->events - pub_track,
+                                              std::memory_order_relaxed);
+                pub_track = 0;
                 continue;
             }
             TrackSummary rec;
@@ -2259,13 +2271,19 @@ static uint64_t parse_track_range(const uint8_t* img, const std::vector<TrackSpa
             td.ntracks++;
             dedup->misses.fetch_add(1, std::memory_order_relaxed);
             dedup_store_record(rec, *dedup);
+            if (ev_pub) ev_pub->fetch_add(rec.events - pub_track,
+                                          std::memory_order_relaxed);
+            pub_track = 0;
             continue;
         }
 
         RawStream bs(img + spans[i].off, (size_t)spans[i].len);
-        events += parse_track_body(bs, /*accumulate=*/true, vel0_as_note_off,
-                                   td, tempo_raw, cb, spec_limit, hooks,
-                                   data_oor_local, nullptr);
+        const uint64_t walked = parse_track_body(bs, /*accumulate=*/true, vel0_as_note_off,
+                                                 td, tempo_raw, cb, spec_limit, hooks,
+                                                 data_oor_local, nullptr);
+        events += walked;
+        if (ev_pub) ev_pub->fetch_add(walked - pub_track, std::memory_order_relaxed);
+        pub_track = 0;
         td.ntracks++;
         if ((size_t)bs.consumed() < (size_t)spans[i].len) td.desync_tracks++;
     }
@@ -2358,6 +2376,49 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
     const uint64_t kPrefetchStep  = 4ull << 20;      // 4 MiB requests
     std::vector<std::atomic<uint64_t>> worker_at(ngroups);
     for (auto& a : worker_at) a.store(0, std::memory_order_relaxed);
+    std::vector<std::atomic<uint64_t>> worker_ev(ngroups);
+    for (auto& a : worker_ev) a.store(0, std::memory_order_relaxed);
+
+    // Live progress reporter: on_scan_progress is normally driven by the scan
+    // thread's per-1M-event pings, but the parallel workers never run it and
+    // the GUI's bar/live stats froze for the whole parallel scan. A tiny
+    // reporter aggregates worker byte positions (progress fraction + MB/s)
+    // and exact walked-event counts (ev/s) every 100 ms into the same
+    // callback, so the GUI behaves identically in both modes.
+    std::thread reporter;
+    using rclock = std::chrono::steady_clock;
+    const rclock::time_point reporter_t0 = rclock::now();
+    // Per-worker range starts: positions are absolute image offsets, so
+    // consumed bytes per worker = pos - start (summing raw positions would
+    // multiply-count overlapping progress and push frac above 1). Lives at
+    // function scope: the reporter thread joins after this whole block ends,
+    // so capturing these by reference from an inner scope would dangle.
+    std::vector<uint64_t> reporter_starts(ngroups, 0);
+    for (size_t g = 0; g < ngroups && g < ranges.size(); ++g)
+        reporter_starts[g] = spans[ranges[g].first].off;
+    if (cb.on_scan_progress) {
+        reporter = std::thread([&]() {
+            while (!parsers_done.load(std::memory_order_relaxed)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                if (parsers_done.load(std::memory_order_relaxed)) break;
+                uint64_t ev = 0, at = 0;
+                for (size_t g = 0; g < ngroups; ++g) {
+                    ev += worker_ev[g].load(std::memory_order_relaxed);
+                    const uint64_t pos = std::min<uint64_t>(
+                        worker_at[g].load(std::memory_order_relaxed), n);
+                    at += pos > reporter_starts[g] ? pos - reporter_starts[g] : 0;
+                }
+                const double el = std::chrono::duration<double>(rclock::now() - reporter_t0).count();
+                const double evps = el > 0.0 ? (double)ev / el : 0.0;
+                double frac = -1.0;
+                if (n > 0) {
+                    frac = (double)std::min<uint64_t>(at, n) / (double)n;
+                    if (frac > 1.0) frac = 1.0;
+                }
+                cb.on_scan_progress(ev, el, evps, frac);
+            }
+        });
+    }
     std::thread prefetcher;
     {
         prefetcher = std::thread([&]() {
@@ -2391,7 +2452,8 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
                 img, spans, b, e, vel0_as_note_off, /*count_cc=*/true, partial[g],
                 partial_tempo[g], cb, spec_prompted, spec_choice, cancelled,
                 spec_abort, data_oor, spec_limit,
-                track_dedup ? &td.dedup : nullptr, on_track, &worker_at[g]);
+                track_dedup ? &td.dedup : nullptr, on_track, &worker_at[g],
+                &worker_ev[g]);
             worker_at[g].store(spans[e - 1].off + spans[e - 1].len,
                                std::memory_order_relaxed);
         });
@@ -2399,6 +2461,16 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
     for (auto& t : workers) t.join();
     parsers_done.store(true);
     if (prefetcher.joinable()) prefetcher.join();
+    if (reporter.joinable()) reporter.join();   // reporter exits within 50ms of parsers_done
+    // Terminal ping: the sampled reporter's last tick usually lands just
+    // before the workers finish, leaving the bar at ~95%. Emit one exact
+    // final callback so the GUI's bar and live stats complete.
+    if (cb.on_scan_progress) {
+        uint64_t ev = 0;
+        for (const auto& a : worker_ev) ev += a.load(std::memory_order_relaxed);
+        const double el = std::chrono::duration<double>(rclock::now() - reporter_t0).count();
+        cb.on_scan_progress(ev, el, el > 0.0 ? (double)ev / el : 0.0, n > 0 ? 1.0 : -1.0);
+    }
 
     if (cancelled.load()) { emit(cb, "  Cancelled.\n"); return -1; }
     if (spec_abort) return -2;
