@@ -4,6 +4,8 @@
 
 It's fast! Renders a notecounter of a 2.3 billion note MIDI in 3 minutes on a Ryzen 5 5500. Has constant RAM usage, so it will NOT load the entire file in memory!
 
+Thanks to Nitsua for the idea of zero copy mmap + other scanner micro optimisations.
+
 ## Features
 
 - **Single-pass streaming engine** — the file is walked exactly once (mmap for plain files, chunked libarchive streaming for compressed archives). Memory scales with song *duration*, never with event count.
