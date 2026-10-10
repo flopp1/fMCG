@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <string>
 #include <cstring>
-#include "../fMCG_core.h"
+#include "fMCG_core.h"
 
 static int failures = 0;
 
@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
             printf("  duration=%.3fs\n", frames.back().timestamp_sec);
             long long peak_poly = 0; double peak_nps = 0; double cum_at_f30 = -1;
             for (auto& f : frames) {
-                peak_poly = std::max(peak_poly, f.peak_polyphony);
+                peak_poly = std::max(peak_poly, (long long)f.peak_polyphony);
                 peak_nps = std::max(peak_nps, f.notes_per_second);
                 if (f.frame_index == 30) cum_at_f30 = (double)f.cumulative_notes;
             }
@@ -119,11 +119,13 @@ int main(int argc, char** argv) {
             expect("tempo2 poly@270", (long long)at(270).polyphony, 0);  // 72 closed @f270
             long long peak_poly = 0, peak_nps = 0;
             for (auto& f : t2) {
-                peak_poly = std::max(peak_poly, f.peak_polyphony);
+                peak_poly = std::max(peak_poly, (long long)f.peak_polyphony);
                 peak_nps = std::max(peak_nps, (long long)f.peak_nps);
             }
             expect("tempo2 peak_poly", peak_poly, 2);
-            expect("tempo2 peak_nps", peak_nps, 2);
+            // 2 onsets at 0.0 s + 1 at exactly 1.0 s: the 1 s window is closed
+            // (inclusive of its boundary, user decision 2026-10-10) -> 3.
+            expect("tempo2 peak_nps", peak_nps, 3);
             expect("tempo2 bpm@50",  (long long)(at(50).bpm + 0.5), 120);  // before tempo change
             expect("tempo2 bpm@150", (long long)(at(150).bpm + 0.5), 60);  // after it
             expect("tempo2 bpm@250", (long long)(at(250).bpm + 0.5), 60);

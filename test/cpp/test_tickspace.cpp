@@ -1,7 +1,7 @@
 // Proves the single-pass slowdown on extreme-tick files is tick-SPAN cost,
 // not event cost: two files with the SAME tiny event count, differing only
 // in the maximum tick. The wide one forces multi-GB tick-array doublings.
-#include "../../fMCG_core.h"
+#include "fMCG_core.h"
 #include <cstdio>
 #include <chrono>
 

@@ -15,7 +15,7 @@
 //   dense : all events at tick 0 (measures pure parse ceiling)
 //   spread: delta 1 per event, ticks grow with the stream (adds the
 //           per-tick array cache/TLB cost of a real black MIDI)
-#include "../fMCG_core.h"
+#include "fMCG_core.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>

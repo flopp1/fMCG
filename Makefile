@@ -105,7 +105,8 @@ ALL_CFLAGS := $(CXXFLAGS) $(GLFW_CFLAGS) $(ARCH_CFLAGS) $(IMGUI_CFLAGS) -Isrc -I
 ALL_LIBS   := $(GLFW_LIBS) $(ARCH_LIBS) $(GL_LDLIBS) -lpthread
 
 CORE_SOURCES := src/fmcg_path.cpp src/fmcg_util.cpp src/fmcg_midi.cpp \
-                src/fmcg_engine.cpp src/fmcg_format.cpp src/fmcg_fonts.cpp src/fmcg_render.cpp
+                src/fmcg_engine.cpp src/fmcg_layered.cpp src/fmcg_format.cpp src/fmcg_fonts.cpp \
+                src/fmcg_render.cpp
 CORE_OBJECTS := $(CORE_SOURCES:.cpp=.o)
 GUI_SOURCES  := gui/app_state.cpp gui/dialogs.cpp gui/jobs.cpp gui/preview.cpp gui/main.cpp \
                 gui/colour_edit.cpp gui/settings_store.cpp
@@ -149,26 +150,14 @@ gui/%.o: gui/%.cpp $(wildcard gui/*.h) $(wildcard src/*.h) fMCG_core.h $(PROFILE
 run: fMCG_gui
 	./fMCG_gui
 
-test: test/test_newopts test/test_harness test/test_twopass
-	cd test && ./test_newopts && ./test_harness && ./test_twopass test/test.mid
-
-test/test_newopts: test/test_newopts.cpp $(CORE_OBJECTS) $(wildcard src/*.h) fMCG_core.h
-	$(CXX) $(CXXFLAGS) -Isrc -I. -o $@ test/test_newopts.cpp $(CORE_OBJECTS) $(ARCH_CFLAGS) $(LDFLAGS) $(ARCH_LIBS) -lpthread
-
-test/test_harness: test/test_harness.cpp $(CORE_OBJECTS) $(wildcard src/*.h) fMCG_core.h
-	$(CXX) $(CXXFLAGS) -Isrc -I. -o $@ test/test_harness.cpp $(CORE_OBJECTS) $(ARCH_CFLAGS) $(LDFLAGS) $(ARCH_LIBS) -lpthread
-
-test/test_twopass: test/test_twopass.cpp $(CORE_OBJECTS) $(wildcard src/*.h) fMCG_core.h
-	$(CXX) $(CXXFLAGS) -Isrc -I. -o $@ test/test_twopass.cpp $(CORE_OBJECTS) $(ARCH_CFLAGS) $(LDFLAGS) $(ARCH_LIBS) -lpthread
-
-test/test_parallel: test/test_parallel.cpp $(CORE_OBJECTS) $(wildcard src/*.h) fMCG_core.h
-	$(CXX) $(CXXFLAGS) -Isrc -I. -o $@ test/test_parallel.cpp $(CORE_OBJECTS) $(ARCH_CFLAGS) $(LDFLAGS) $(ARCH_LIBS) -lpthread
-
-test/test_dedup: test/test_dedup.cpp $(CORE_OBJECTS) $(wildcard src/*.h) fMCG_core.h
-	$(CXX) $(CXXFLAGS) -Isrc -I. -o $@ test/test_dedup.cpp $(CORE_OBJECTS) $(ARCH_CFLAGS) $(LDFLAGS) $(ARCH_LIBS) -lpthread
+# All suites live under test/ (stdlib-only Python runner; builds the probe and
+# the C++ tests into build/test/). LEVEL=quick|corpus|full.
+LEVEL ?= quick
+test:
+	python3 -I test/run_tests.py --level $(LEVEL)
 
 clean:
-	rm -rf fMCG_gui $(CORE_OBJECTS) $(GUI_OBJECTS) test/test_newopts test/test_harness test/test_twopass test/test_parallel test/test_dedup dist .build_mode
+	rm -rf fMCG_gui $(CORE_OBJECTS) $(GUI_OBJECTS) build/test dist .build_mode
 
 # Assemble a ready-to-share release: binary + licences + README.
 release: all test

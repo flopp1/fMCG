@@ -2,7 +2,7 @@
 // the single-pass tick-space engine. The spec-violation threshold is forced
 // low so the second parse of the same file takes the two-pass path; both
 // FrameStats vectors must match exactly.
-#include "../fMCG_core.h"
+#include "fMCG_core.h"
 #include <cstdio>
 
 static int fails = 0;

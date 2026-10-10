@@ -1,8 +1,8 @@
 // Proves a processed MIDI can be rendered twice in a row: the first render
 // must not consume the original ASS, so the second render succeeds and
 // overwrites the same output file. Also asserts temp_stats.ass is swept.
-#include "../fMCG_core.h"
-#include "../src/fmcg_render.h"
+#include "fMCG_core.h"
+#include "src/fmcg_render.h"
 #include <cstdio>
 #include <sys/stat.h>
 

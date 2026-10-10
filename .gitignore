@@ -33,6 +33,20 @@ test/*.xz
 test/*.ass
 test/*.err
 test/*.log
+test/*.bin
+test/*.txt
+test/*.d
+test/*.pid
+test/*.0
+test/*.1
+test/*.2
+test/*.3
+test/*.4
+test/*.5
+test/*.6
+test/*.7
+test/*.8
+test/*.9
 
 # --- OS / editor noise --------------------------------------------------------
 Thumbs.db
@@ -43,3 +57,23 @@ Desktop.ini
 
 # --- leftover build experiment (safe to delete) -----------------------------
 deps/
+*.5
+*.2
+*.3
+*.4
+*.6
+*.7
+
+# --- agent scratch (local only, never committed) ------------------------------
+# (AGENTS.md / CLAUDE.md / DESIGN.md / DIALECTS.md / OPEN_QUESTIONS.md ARE tracked:
+#  they are the onboarding docs for agents working from a fresh clone)
+.agent/
+build/
+scratch/
+test/_*.py
+test/_*.cpp
+test/_*
+test/dialects/__pycache__/
+test/dialects/_keep/
+__pycache__/
+*.pyc

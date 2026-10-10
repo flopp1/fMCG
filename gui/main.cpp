@@ -69,6 +69,7 @@ static void save_globals_now() {
     g_ui.globals.height = g_ui.s.height;
     g_ui.globals.fps = g_ui.s.fps;
     g_ui.globals.vel0_note_off = g_ui.s.vel0_note_off;
+    g_ui.globals.close_held_notes = g_ui.s.close_held_notes;
     g_ui.globals.start_delay = g_ui.s.start_delay;
     g_ui.globals.end_delay = g_ui.s.end_delay;
     g_ui.globals.ffmpeg_threads = g_ui.s.ffmpeg_threads;
@@ -593,6 +594,12 @@ static void draw_frame(GLFWwindow* window) {
     }
 
     if (ImGui::Checkbox("Vel-0 as Note-Off", &g_ui.s.vel0_note_off)) mark_globals_dirty();
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Close held notes", &g_ui.s.close_held_notes)) mark_globals_dirty();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Release notes that are still held when their track ends.\n"
+                          "Off (default): polyphony is note-ons minus note-offs, as the MIDI spec defines it.\n"
+                          "Affects polyphony only.");
 
     ImGui::Text("Resolution");
     ImGui::SameLine(120);
@@ -630,9 +637,9 @@ static void draw_frame(GLFWwindow* window) {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Worker threads for parsing plain (uncompressed) MIDI files.\n0 = all cores (default). 1 = sequential.\nCompressed inputs and the two-pass fallback always parse sequentially.");
 
-    ImGui::Checkbox("Track dedup", &g_ui.s.track_dedup);
+    ImGui::Checkbox("Dedup", &g_ui.s.track_dedup);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Skip re-parsing byte-identical duplicate tracks (the 'one MIDI\nduplicated N times, then compressed' construction). Off by default." );
+        ImGui::SetTooltip("Skip re-processing repeated content.\nPlain MIDI: byte-identical tracks are parsed once and replayed.\nCompressed/layered files: only unique members are decoded and parsed,\nduplicates are counted by multiplicity, and uniform spam grids fold\nanalytically. Off by default -- enable for dedup-style constructions." );
 
     ImGui::Text("FFmpeg threads");
     ImGui::SameLine(120);
@@ -1176,6 +1183,7 @@ int main() {
     g_ui.s.height = g_ui.globals.height;
     g_ui.s.fps = g_ui.globals.fps;
     g_ui.s.vel0_note_off = g_ui.globals.vel0_note_off;
+    g_ui.s.close_held_notes = g_ui.globals.close_held_notes;
     g_ui.s.start_delay = g_ui.globals.start_delay;
     g_ui.s.end_delay = g_ui.globals.end_delay;
     g_ui.s.ffmpeg_threads = g_ui.globals.ffmpeg_threads;

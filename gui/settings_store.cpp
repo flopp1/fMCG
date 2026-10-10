@@ -196,6 +196,7 @@ bool load_global_settings(GlobalSettings& out) {
     out.height       = get_int(kv, "height", 1080);
     out.fps          = get_dbl(kv, "fps", 60.0);
     out.vel0_note_off= get_bool(kv, "vel0_note_off", true);
+    out.close_held_notes = get_bool(kv, "close_held_notes", false);
     out.start_delay  = get_dbl(kv, "start_delay", 3.0);
     out.end_delay    = get_dbl(kv, "end_delay", 0.0);
     out.ffmpeg_threads = get_int(kv, "ffmpeg_threads", 0);
@@ -222,6 +223,7 @@ bool save_global_settings(const GlobalSettings& s) {
     ss << "height = " << s.height << "\n";
     ss << "fps = " << s.fps << "\n";
     ss << "vel0_note_off = " << (s.vel0_note_off ? 1 : 0) << "\n";
+    ss << "close_held_notes = " << (s.close_held_notes ? 1 : 0) << "\n";
     ss << "start_delay = " << s.start_delay << "\n";
     ss << "end_delay = " << s.end_delay << "\n";
     ss << "ffmpeg_threads = " << s.ffmpeg_threads << "\n";

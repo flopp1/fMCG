@@ -15,7 +15,7 @@
 //
 // The reference binary path is taken from argv[1]; argv[2] = seed count
 // (default 40). Requires a writable temp dir (files go next to the exe).
-#include "../fMCG_core.h"
+#include "fMCG_core.h"
 #include <cstdio>
 #include <cstdlib>
 #include <random>
@@ -308,7 +308,7 @@ int main(int argc, char** argv) {
     // (cmd.exe) does not reliably resolve relative program paths.
     std::string ref_exe;
     {
-        char absp[1024];
+        char absp[4096];   // realpath needs PATH_MAX (glibc fortify aborts on less)
 #ifdef _WIN32
         if (_fullpath(absp, argv[1], sizeof absp)) ref_exe = absp;
         else { std::printf("FAIL: cannot absolutize %s\n", argv[1]); return 2; }
@@ -321,7 +321,7 @@ int main(int argc, char** argv) {
 
     const std::string dir = exe_dir(argv[0]);
     std::string file = dir + "/_burst_fuzz.mid";
-    char filep[1024];
+    char filep[4096];
 #ifdef _WIN32
     if (_fullpath(filep, file.c_str(), sizeof filep)) file = filep;
 #else

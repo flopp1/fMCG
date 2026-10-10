@@ -52,6 +52,15 @@ make profile                  # -O3 plus debug symbols + frame pointers, for per
 
 Dear ImGui is a git submodule compiled from `vendor/imgui` (no standard distro package). To use a system copy instead: `make IMGUI_CFLAGS=-I/usr/include/imgui IMGUI_SOURCES=`.
 
+## Tests
+
+```bash
+python -I test/run_tests.py                 # quick: property suite vs oracle, C++ tests, corpus differential
+python -I test/run_tests.py --level full    # + layered corpus (needs the test corpus, see AGENTS.md)
+```
+
+The runner needs only Python 3 (standard library) and the same g++/libarchive toolchain as the build; it compiles the headless probe and the C++ tests into `build/test/` itself. `make test LEVEL=quick|corpus|full` does the same on Linux/macOS.
+
 ## Rendering requirement
 
 Rendering uses **FFmpeg** (the `subtitles` filter, i.e. a build with libass) and must be on PATH: `ffmpeg -version`. Any recent [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) full build works on Windows.

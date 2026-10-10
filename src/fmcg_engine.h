@@ -17,6 +17,15 @@
 
 namespace fmcg_stream {
 
+// Held-note policy. By the MIDI spec the canonical polyphony is
+// (note-ons - note-offs); a note never released is a spec violation, not a
+// note the counter should invent an off for. Default: OFF = do not close.
+// When ON, every note still held at a track's final tick is released at that
+// tick (affects peak polyphony only). Set before starting a scan; the scan
+// reads the value once per track / per walk. Process-wide, thread-safe.
+void set_close_held_notes(bool close);
+bool close_held_notes();
+
 // Entry point: parse any supported input (plain MIDI or compressed archive)
 // and produce per-frame statistics.
 //

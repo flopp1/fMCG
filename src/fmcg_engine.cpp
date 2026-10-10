@@ -1,4 +1,5 @@
 #include "fmcg_engine.h"
+#include "fmcg_engine_internal.h"
 
 #include <sstream>
 #include <iomanip>
@@ -16,6 +17,13 @@
 
 #include "archive.h"
 #include "archive_entry.h"
+
+// Shared 64KB I/O scratch. Several walk_layer / read_member / feeder frames
+// used to hold 64-256KB stack arrays; GCC inlines these into the walk lambda
+// so every recursion level carried hundreds of KB of frame and ___chkstk_ms
+// crashed at depth 3. Hoisted: all are transient fill/scan buffers never held
+// across a recursive walk.
+static thread_local std::vector<uint8_t> tls_io_scratch;
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -38,7 +46,12 @@
 
 namespace fmcg_stream {
 
-void emit(const ProgressCallbacks& cb, const std::string& msg, bool is_error = false) {
+static std::atomic<bool> g_close_held_notes{false};
+void set_close_held_notes(bool close) { g_close_held_notes.store(close, std::memory_order_relaxed); }
+bool close_held_notes() { return g_close_held_notes.load(std::memory_order_relaxed); }
+
+
+void emit(const ProgressCallbacks& cb, const std::string& msg, bool is_error) {
     if (cb.on_log) cb.on_log(msg.c_str(), is_error);
     else if (is_error) std::cerr << msg << std::flush;
     else std::cout << msg << std::flush;
@@ -131,6 +144,7 @@ public:
             while (out < n) {
                 if (s_lo == staging.size()) {
                     const void* buf; size_t bsz; la_int64_t off;
+                    if (saw_error && raw_mode) break;  // raw decoder poisoned: fail-stop
                     int r = a ? archive_read_data_block(a, &buf, &bsz, &off) : ARCHIVE_FATAL;
                     if (r == ARCHIVE_EOF) break;
                     if (r != ARCHIVE_OK) {
@@ -223,16 +237,28 @@ public:
         std::vector<uint8_t> staging;
         size_t s_lo = 0;
         bool saw_error = false;
+        bool saw_eof = false;        // decoder reached a real stream terminator
         size_t prefix_n = 0;         // peeked header bytes prepended to buf
         std::vector<uint8_t> buf;    // full history of the decoded-input stream
         size_t lpos = 0;             // logical position within buf
         bool inner_eof = false;
         std::vector<uint8_t> rb;     // read-callback scratch buffer
+        std::vector<uint8_t> tmp64;  // private fill scratch (no shared-scratch aliasing)
+        bool done = false;           // one decode pass only: the feeder serves
+                                     // exactly ONE member's payload; a second
+                                     // stream in the input (concatenated
+                                     // members) belongs to the NEXT member,
+                                     // which the layered walker hashes raw.
 
         size_t fill_more() {
-            if (inner_eof) return 0;
-            uint8_t tmp[1 << 18];
-            size_t n = inner->pull(tmp, sizeof(tmp));
+            if (inner_eof || done) return 0;
+            // PRIVATE scratch: the outer member scan reads source bytes into
+            // the shared tls_io_scratch, and a nested feeder's pull() may run
+            // while that buffer is live (it was aliased before -- corrupted
+            // decoded bytes fed to libarchive mid-member).
+            tmp64.resize(1 << 16);
+            uint8_t* tmp = tmp64.data();
+            size_t n = inner->pull(tmp, tmp64.size());
             buf.insert(buf.end(), tmp, tmp + n);
             return n;
         }
@@ -265,8 +291,14 @@ public:
             return (la_int64_t)f->lpos;
         }
 
-        explicit DecompFeeder(std::unique_ptr<Feeder> in, const uint8_t* hdr = nullptr, size_t hdr_n = 0)
+        // Single-layer decode selector: NONE = legacy auto-bid (multi-layer),
+        // XZ / SEVENZ = exactly one decode pass for the layered dedup walker.
+        enum class Mode { NONE, XZ, SEVENZ };
+
+        explicit DecompFeeder(std::unique_ptr<Feeder> in, const uint8_t* hdr = nullptr, size_t hdr_n = 0,
+                              Mode m = Mode::NONE)
             : inner(std::move(in)), rb(1 << 18) {
+            mode = m;
             if (hdr && hdr_n) { buf.assign(hdr, hdr + hdr_n); prefix_n = hdr_n; }
             open_archive();
         }
@@ -280,6 +312,8 @@ public:
             lpos = 0;
             inner_eof = false;
             saw_error = false;
+            saw_eof = false;
+            done = false;
             inner->reset();
             open_archive();
         }
@@ -290,8 +324,9 @@ public:
             while (out < n) {
                 if (s_lo == staging.size()) {
                     const void* buf; size_t bsz; la_int64_t off;
+                    if (saw_error || !a) break;   // decoder poisoned: never re-read (UB in xz)
                     int r = archive_read_data_block(a, &buf, &bsz, &off);
-                    if (r == ARCHIVE_EOF) break;
+                    if (r == ARCHIVE_EOF) { saw_eof = true; break; }
                     if (r != ARCHIVE_OK) { saw_error = true; break; }
                     if (bsz == 0) continue;
                     const uint8_t* p = (const uint8_t*)buf;
@@ -306,15 +341,33 @@ public:
             return out;
         }
         bool errored() const override { return saw_error || inner->errored(); }
+        const char* errstr() const { return (a && saw_error) ? archive_error_string(a) : nullptr; }
+        bool stream_ended() const { return saw_eof; }
 
     private:
         struct archive_entry* entry = nullptr;
 
+        Mode mode = Mode::NONE;
+
         void open_archive() {
             a = archive_read_new();
-            archive_read_support_filter_all(a);
-            archive_read_support_format_all(a);
-            archive_read_support_format_raw(a);
+            switch (mode) {
+                case Mode::XZ:
+                    // Forced xz filter: no filter bidding at all, so libarchive
+                    // cannot stack a second xz on the decoded output. The raw
+                    // format reader passes the payload through untouched.
+                    archive_read_support_format_raw(a);
+                    archive_read_append_filter(a, ARCHIVE_FILTER_XZ);
+                    break;
+                case Mode::SEVENZ:
+                    archive_read_support_format_7zip(a);
+                    break;
+                case Mode::NONE:
+                    archive_read_support_filter_all(a);
+                    archive_read_support_format_all(a);
+                    archive_read_support_format_raw(a);
+                    break;
+            }
             // Callbacks (and their client data) must be registered BEFORE
             // open: archive_read_open1 runs format bidding immediately, and
             // the 7z/rar bidders ask for seekability at bid time.
@@ -443,8 +496,9 @@ class PipelinedSrc : public DataSrc {
         try {
             while (true) {
                 lk.unlock();
-                uint8_t blk[1 << 16];
-                size_t n = arc.read(blk, sizeof(blk));          // decode outside the lock
+                if (tls_io_scratch.empty()) tls_io_scratch.resize(1 << 16);
+                uint8_t* blk = tls_io_scratch.data();
+                size_t n = arc.read(blk, tls_io_scratch.size());   // decode outside the lock
                 lk.lock();
                 if (n == 0) { done = true; cv_data.notify_all(); return; }
                 q.emplace_back(blk, blk + n);
@@ -530,24 +584,32 @@ public:
 class alignas(64) ByteStream {
     DataSrc& src;
     static constexpr size_t CAP = 1 << 19;   // 512 KB: fewer fill() round-trips (was 64 KB)
-    uint8_t data[CAP];
+    // HEAP, not inline: walk_layer nests read_member frames one level per
+    // container depth, and an inline 512KB window per frame overflowed the
+    // thread stack at depth 3 (___chkstk_ms SIGSEGV, MIDI File). One
+    // indirection per access is noise next to the decompression cost.
+    std::unique_ptr<uint8_t[]> data{new uint8_t[CAP]};
     size_t lo = 0, hi = 0;
     size_t limit_remaining = (size_t)-1;
     size_t limit_total = 0;
     bool eof = false;
     uint64_t pulled = 0;   // bytes drawn from the source (progress fraction)
+    const std::atomic<bool>* cancel_flag = nullptr;   // cooperative skip abort
 
     void fill() {
         if (eof) return;
         if (lo == hi) { lo = hi = 0; }
         if (hi == CAP) return;
-        size_t got = src.read(data + hi, CAP - hi);
+        size_t got = src.read(data.get() + hi, CAP - hi);
         if (got == 0) eof = true;
         pulled += got;
         hi += got;
     }
 public:
     explicit ByteStream(DataSrc& s) : src(s) {}
+    // Cancel propagation for long skip() drains: a cancelled track's
+    // remainder jump must not itself become a multi-GB un-cancellable crawl.
+    void set_cancel_flag(const std::atomic<bool>* f) { cancel_flag = f; }
 
     // Absolute offset of the next unread byte within the source stream
     // (used by the parallel scan's prefetcher progress reporting).
@@ -570,14 +632,14 @@ public:
         if (limit_remaining == 0) return -1;
         if (lo == hi) { fill(); if (lo == hi) return -1; }
         limit_remaining--;
-        return data[lo++];
+        return data.get()[lo++];
     }
     // Non-consuming byte read: for running-status lookahead. Same bounds
     // checks as get() but never advances -- no skip_back_one() round-trip.
     int peek() {
         if (limit_remaining == 0) return -1;
         if (lo == hi) { fill(); if (lo == hi) return -1; }
-        return data[lo];
+        return data.get()[lo];
     }
 
     // ---- pointer-batched fast path ---------------------------------------
@@ -595,7 +657,7 @@ public:
         size_t run = hi - lo;
         if (run < CAP / 2 && !eof) {
             if (lo > 0) {                     // reclaim the drained head
-                std::memmove(data, data + lo, run);
+                std::memmove(data.get(), data.get() + lo, run);
                 lo = 0; hi = run;
             }
             fill();                           // top up (no-op at EOF)
@@ -603,7 +665,7 @@ public:
         }
         size_t n = run;
         if (limit_remaining < n) n = limit_remaining;
-        fast_p = data + lo;
+        fast_p = data.get() + lo;
         return n;
     }
     void commit_window(size_t used) {         // used <= acquire_window()'s return
@@ -618,7 +680,13 @@ public:
         size_t a = std::min(hi - lo, remaining);
         lo += a; remaining -= a;
         while (remaining > 0 && !eof) {
-            size_t got = src.read(data, std::min(CAP, remaining));
+            if (cancel_flag && cancel_flag->load(std::memory_order_relaxed)) {
+                // Drop the rest of the skip; leave limit as-is so the outer
+                // loop's next cancel check ends the scan cleanly.
+                limit_remaining -= (n - remaining);
+                return;
+            }
+            size_t got = src.read(data.get(), std::min(CAP, remaining));
             if (got == 0) { eof = true; break; }
             pulled += got;
             remaining -= got;
@@ -631,7 +699,7 @@ public:
         size_t out = 0;
         uint8_t* d = (uint8_t*)dst;
         size_t a = std::min(hi - lo, n);
-        std::memcpy(d, data + lo, a);
+        std::memcpy(d, data.get() + lo, a);
         lo += a; out += a;
         while (out < n && !eof) {
             size_t got = src.read(d + out, n - out);
@@ -651,19 +719,19 @@ public:
             if (lo == hi) { fill(); if (lo == hi) return 0; }
             size_t buffered = hi - lo;
             if (buffered >= 4 && limit_remaining >= 4) {
-                const uint8_t* p = data + lo;
+                const uint8_t* p = data.get() + lo;
                 uint32_t b0 = *p++;
                 if (__builtin_expect(b0 < 0x80, 1)) { lo++; limit_remaining--; return b0; }
                 uint64_t v = b0 & 0x7F;
                 uint32_t b1 = *p++;
                 v = (v << 7) | (b1 & 0x7F);
-                if (b1 < 0x80) { lo = (size_t)(p - data); limit_remaining -= 2; return v; }
+                if (b1 < 0x80) { lo = (size_t)(p - data.get()); limit_remaining -= 2; return v; }
                 uint32_t b2 = *p++;
                 v = (v << 7) | (b2 & 0x7F);
-                if (b2 < 0x80) { lo = (size_t)(p - data); limit_remaining -= 3; return v; }
+                if (b2 < 0x80) { lo = (size_t)(p - data.get()); limit_remaining -= 3; return v; }
                 uint32_t b3 = *p++;
                 v = (v << 7) | (b3 & 0x7F);
-                lo = (size_t)(p - data);
+                lo = (size_t)(p - data.get());
                 limit_remaining -= 4;
                 return v;
             }
@@ -677,6 +745,29 @@ public:
         }
         return val;
     }
+};
+
+// ---- stream adapter over an ArchiveSrc::Feeder stack ------------------------
+//
+// Adapts a Feeder (one decode layer) to the DataSrc interface so the layered
+// dedup scanner can read a member's *decoded* bytes without an ArchiveSrc,
+// which would transparently unwrap every layer and hide the structure the
+// scanner is there to exploit.
+
+class FeederSrc : public DataSrc {
+    ArchiveSrc::Feeder& f;
+    uint64_t served_ = 0;
+public:
+    explicit FeederSrc(ArchiveSrc::Feeder& feeder) : f(feeder) {}
+    size_t read(void* dst, size_t n) override {
+        size_t got = f.pull(dst, n);
+        served_ += got;
+        return got;
+    }
+    bool ok() const override { return true; }
+    const char* kind() const override { return "layer feeder"; }
+    uint64_t bytes_read() const override { return served_; }
+    bool errored() const override { return f.errored(); }
 };
 
 // ---- zero-copy stream over an in-memory image (raw mmap walk) ----------------
@@ -695,6 +786,7 @@ class RawStream {
 public:
     explicit RawStream(const uint8_t* d, size_t n)
         : data_(d), len_(n), limit_remaining_(n), limit_total_(n) {}
+    void set_cancel_flag(const std::atomic<bool>*) {}   // no decode in skip: no-op
 
     uint8_t* fast_p = nullptr;
 
@@ -797,46 +889,7 @@ public:
 // directly from the mmap image (zero copy) and parses from the image as
 // usual. The plain-file sequential path also uses the read-through buffer:
 // one chunk buffer at a time, freed after each track (dedup-only cost).
-struct TrackSummary {
-    uint64_t bytes = 0;          // raw track byte count (with hash)
-    uint64_t hash = 0;           // 64-bit FNV-1a over the track's bytes
-    uint64_t ons = 0, cc = 0;
-    uint64_t max_tick = 0;       // tick of the track's final event
-    uint32_t end_refcount = 0;   // notes still held at the track's final tick
-    uint64_t events = 0;         // events walked for this track
-    bool desync = false;         // source parse stopped before the chunk end
-    // Per-tick (ons, net delta) exactly as the pending-register flush would
-    // commit them -- ons drive nps/cumulative counts, delta drives polyphony.
-    std::vector<std::pair<uint64_t, std::pair<uint32_t, int32_t>>> cells;
-    std::vector<std::pair<uint64_t, uint32_t>> ccs;     // (tick, cc count)
-    std::vector<std::pair<uint64_t, uint32_t>> tempos;  // (tick, us_per_quarter)
-};
 
-struct TrackDataDedup {
-    // Shared store (parallel workers merge into it under g_dedup_mutex).
-    // shared_ptr keeps replays stable while the store grows.
-    std::vector<std::shared_ptr<const TrackSummary>> records;
-    std::atomic<uint64_t> savings_events{0};   // events in replayed (not parsed) tracks
-    std::atomic<uint64_t> hits{0};
-    std::atomic<uint64_t> misses{0};
-    // Approximate bytes held by stored summaries. Guards against pathological
-    // growth on unique-content files: past the budget, new records are simply
-    // not cached (existing ones keep replaying; misses just parse normally).
-    std::atomic<uint64_t> stored_bytes{0};
-    static constexpr uint64_t kStoreBudget = (uint64_t)512 << 20;   // 512 MiB
-    // Candidate tracks larger than this parse plain instead of being buffered
-    // whole: buffering a tens-of-GB track (trillion-class files) both risks
-    // RAM exhaustion and freezes live progress for the entire read.
-    static constexpr uint64_t kMaxCandidateBytes = (uint64_t)1 << 30;   // 1 GiB
-
-    void reset() {
-        records.clear();
-        savings_events.store(0, std::memory_order_relaxed);
-        hits.store(0, std::memory_order_relaxed);
-        misses.store(0, std::memory_order_relaxed);
-        stored_bytes.store(0, std::memory_order_relaxed);
-    }
-};
 
 // 64-bit FNV-1a over a byte range (the track's raw bytes).
 // Track-content hash for dedup lookups. XXHash64 (vendored single header,
@@ -876,57 +929,7 @@ static bool dedup_find_cachable(const TrackDataDedup& store, uint64_t len,
     return false;
 }
 
-// Aborted via a cancel poll (scan loop or frame sweep).
-struct ScanCancelled {};
 
-struct TickData {
-    // One interleaved cell per tick: a note-on touches ons and delta of the
-    // SAME tick, so keeping them in one struct halves the cache/TLB misses
-    // versus two separate multi-GB arrays (the sweep then reads each tick's
-    // whole cell in one line too).
-    struct TickCell { uint32_t ons; int32_t delta; };
-    static_assert(sizeof(TickCell) == 8, "TickCell must stay tightly packed");
-    std::vector<TickCell> cells;         // per-tick (>=2^31 ons on ONE tick is impossible in practice: a note-on is >=2 bytes, so it needs ~4 GB of pure 0x9x pairs on a single tick)
-    uint64_t max_tick = 0;
-    uint64_t total_ons = 0;
-    size_t ntracks = 0;
-    size_t desync_tracks = 0;
-    uint64_t total_events_seen = 0;   // every event walked (ons+offs+CC+meta), matches live counter
-    bool dedup_enabled = false;       // dedup fast path active for this scan
-    TrackDataDedup dedup;             // optional per-scan track-content cache
-
-    void ensure(uint64_t t) {
-        if (t >= cells.size()) {
-            size_t n = cells.size();
-            if (n == 0) n = 4096;
-            while (n <= t) n *= 2;
-            cells.resize(n, TickCell{0, 0});
-        }
-    }
-    void note_on(uint64_t t) { ensure(t); cells[t].ons++; cells[t].delta++; total_ons++; }
-    void delta_at(uint64_t t, int64_t d) { ensure(t); cells[t].delta += (int32_t)d; }
-    // CC accumulation (always counted; the {cc} stats read it).
-    std::vector<uint32_t> dense_cc;      // per-tick control-change counts
-    uint64_t total_cc = 0;
-    void cc_at(uint64_t t) {
-        ensure(t);
-        if (dense_cc.size() < cells.size()) dense_cc.resize(cells.size(), 0);
-        dense_cc[t]++;
-        total_cc++;
-    }
-    // Current footprint of the dense arrays (bytes).
-    size_t memory_bytes() const {
-        return cells.size() * sizeof(TickCell)
-             + dense_cc.size() * sizeof(uint32_t);
-    }
-    void reset() {
-        std::vector<TickCell>().swap(cells);
-        std::vector<uint32_t>().swap(dense_cc);
-        max_tick = 0; total_ons = 0; ntracks = 0; desync_tracks = 0;
-        total_events_seen = 0; total_cc = 0;
-        dedup.reset();
-    }
-};
 
 
 // Append-or-accumulate helper for the summaries' per-tick lists (ticks are
@@ -1004,37 +1007,20 @@ static void dedup_store_record(TrackSummary& s, TrackDataDedup& store) {
     store.stored_bytes.fetch_add(sz, std::memory_order_relaxed);
 }
 
-// ---- single sequential walk over the image -----------------------------------
-
-// Result of a single walk over the image.
-enum class ScanMode { ACCUMULATE, TEMPO_ONLY };
 // Aborted via the MIDI-spec guard; the caller restarts the walk in TEMPO_ONLY
 // mode (two-pass fallback for spec-breaking tick spans).
 struct SpecAbort {};
 
-// ---- per-track parser core (shared by every scan path) -----------------------
-//
-// Parses ONE MTrk chunk from `bs` (whose limit is already set to the chunk
-// length). This is the extracted heart of the scanner -- the pending-register
-// hot path, the pointer-batched burst loop, the byte-wise slow path and the
-// end-of-track held-note closure -- shared verbatim by:
-//   - scan_stream's chunk loop  (ByteStream over archives, RawStream over
-//     plain mmap'd files, and RawStream over a dedup candidate's byte buffer)
-//   - parse_track_range         (the parallel per-track scan)
-//
-// `hooks.spec_fire` implements the caller's spec-violation protocol: return
-// true to continue, false to stop the track silently (the caller reports the
-// cancel / performs the two-pass restart).
-//
-// When `sum` is non-null (dedup enabled, ACCUMULATE mode) the track's
-// contribution is recorded into it: per-tick net deltas, CC counts, tempo
-// events, totals and the final tick. The caller fills `sum.bytes/.hash` --
-// for the sequential walk the hash stays 0 (records never matched, see the
-// dedup block comment); only the parallel and archive paths match hashes.
-// A truncated/desynced track yields bytes < the chunk length, so its record
-// can never produce a false hit on a full-length candidate. The CALLER fills
-// rec.bytes/.hash/.events (it owns the chunk length and the returned count).
-// Returns the number of events walked in this track (including early exits).
+enum class ScanMode { ACCUMULATE, TEMPO_ONLY };
+
+// Stream-generic scanner (defined below); the layered dedup parses MIDI
+// regions through it.
+template <typename StreamT>
+static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickData& td,
+                        std::vector<TempoChange>& tempo_raw, uint16_t& out_division,
+                        const ProgressCallbacks& cb, ScanMode mode);
+
+namespace {
 struct TrackBodyHooks {
     // Optional absolute-position reporting for the parallel scan's
     // prefetcher: at each 1M-event ping the body stores `pos_base +
@@ -1214,6 +1200,15 @@ static uint64_t parse_track_body(StreamT& bs, bool accumulate, bool vel0_as_note
             }
             bs.commit_window(p - bs.fast_p);
         }
+        // Window-boundary cancel check: fires once per buffer window
+        // regardless of event density, so sparse tracks (huge delta-times,
+        // <1M events total) still observe a cancel press promptly. The
+        // per-1M-event check alone left the fallback standard parse of a
+        // 20GB declared track grinding for minutes after Cancel.
+        if (stop_cancelled()) {
+            bs.set_limit(0);   // force a clean EOF for the caller's accounting
+            return track_ev;   // cancelled; caller reports
+        }
         if (!burst_at_event) continue;   // stream sits at a delta: back to loop top
         // Fall through: the event at the stream head goes through the slow path.
 #endif   // FMCG_NO_BURST
@@ -1237,8 +1232,15 @@ static uint64_t parse_track_body(StreamT& bs, bool accumulate, bool vel0_as_note
                 int type = bs.get();
                 if (type < 0) break;
                 uint64_t mlen = bs.vlq();
-                if (type == 0x51 && mlen == 3 && bs.avail() >= 3) {
-                    uint32_t us = ((uint32_t)bs.get() << 16) | ((uint32_t)bs.get() << 8) | (uint32_t)bs.get();
+                if (type == 0x51 && mlen == 3) {
+                    // Three sequenced reads: avail() only reports the bytes
+                    // buffered in the current window, so gating on it dropped
+                    // tempo metas that straddled a 512 KB window boundary;
+                    // and operands of | are unsequenced (byte order was
+                    // compiler-dependent). A truncated tempo is not applied.
+                    const int b0 = bs.get(), b1 = bs.get(), b2 = bs.get();
+                    const uint32_t us = (b2 < 0) ? 0u
+                        : ((uint32_t)b0 << 16) | ((uint32_t)b1 << 8) | (uint32_t)b2;
                     if (us > 0) {
                         tempo_raw.push_back({tick, 0.0, us, 60000000.0 / us});
                         if (sum) rec.tempos.push_back({tick, us});
@@ -1291,7 +1293,12 @@ static uint64_t parse_track_body(StreamT& bs, bool accumulate, bool vel0_as_note
 
     // Close held notes at the track's final tick (parallel-engine end-of-track flush).
     flush_pending();   // commit the final tick's pending events first
+    // Held-note closure is OPTIONAL (default off, see set_close_held_notes):
+    // canonical polyphony is ons - offs. With it off nothing is released, the
+    // summary records no end-of-track debt, and such tracks stay replayable.
+    const bool close_held = close_held_notes();
     uint32_t rc_sum = 0;
+    if (close_held)
     for (int ch = 0; ch < 16; ++ch)
         for (int n = 0; n < 128; ++n)
             if (refcount[ch][n] > 0) {
@@ -1315,8 +1322,33 @@ static uint64_t parse_track_body(StreamT& bs, bool accumulate, bool vel0_as_note
     }
     return track_ev;
 }
+} // namespace
 
-// Forward declarations: the scan bodies are stream-generic (templated over
+// Result of a single walk over the image.
+
+// ---- per-track parser core (shared by every scan path) -----------------------
+//
+// Parses ONE MTrk chunk from `bs` (whose limit is already set to the chunk
+// length). This is the extracted heart of the scanner -- the pending-register
+// hot path, the pointer-batched burst loop, the byte-wise slow path and the
+// end-of-track held-note closure -- shared verbatim by:
+//   - scan_stream's chunk loop  (ByteStream over archives, RawStream over
+//     plain mmap'd files, and RawStream over a dedup candidate's byte buffer)
+//   - parse_track_range         (the parallel per-track scan)
+//
+// `hooks.spec_fire` implements the caller's spec-violation protocol: return
+// true to continue, false to stop the track silently (the caller reports the
+// cancel / performs the two-pass restart).
+//
+// When `sum` is non-null (dedup enabled, ACCUMULATE mode) the track's
+// contribution is recorded into it: per-tick net deltas, CC counts, tempo
+// events, totals and the final tick. The caller fills `sum.bytes/.hash` --
+// for the sequential walk the hash stays 0 (records never matched, see the
+// dedup block comment); only the parallel and archive paths match hashes.
+// A truncated/desynced track yields bytes < the chunk length, so its record
+// can never produce a false hit on a full-length candidate. The CALLER fills
+// rec.bytes/.hash/.events (it owns the chunk length and the returned count).
+// Returns the number of events walked in this track (including early exits).// Forward declarations: the scan bodies are stream-generic (templated over
 // ByteStream or RawStream) and defined further below, after FrameBuckets.
 template <typename StreamT>
 static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickData& td,
@@ -1340,6 +1372,7 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
     // the point) and CC counting is meaningless.
     const bool count_cc = accumulate;
     if (!accumulate) td.reset();
+    bs.set_cancel_flag(cb.cancel_flag);   // cancellable skip() drains
 
     // Continuous progress bookkeeping (checked once per ~1M events).
     using clock = std::chrono::steady_clock;
@@ -1380,12 +1413,30 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
     if (hlen < 0) { emit(cb, "Error: truncated MIDI header.\n", true); return false; }
     int f2 = bs.get(), f1 = bs.get();   // format
     int n2 = bs.get(), n1 = bs.get();   // number of tracks
+    bool mt_split = false;
     int d2 = bs.get(), d1 = bs.get();   // division
     if (f2 < 0 || f1 < 0 || n2 < 0 || n1 < 0 || d2 < 0 || d1 < 0) {
         emit(cb, "Error: truncated MIDI header.\n", true); return false;
     }
     if (hlen > 6) bs.skip((size_t)hlen - 6);
-    uint16_t division = (((uint16_t)d2 << 8) | (uint16_t)d1) & 0x7FFF;
+    // Division: 0xE728 is the SMBTE high byte; anything at or above it is
+    // not a legal SMPTE value -- spam constructors use ffff (= 65535 ppqn,
+    // "pure noteons" black MIDIs), and masking to 0x7FFF halved every
+    // derived time. SMPTE high bytes (0xE2..0xE8, 25/24/29/15 fps) are
+    // below this threshold, so they keep the classic interpretation.
+    uint16_t division = (uint16_t)(((uint16_t)d2 << 8) | (uint16_t)d1);
+    if (division == 0x4D54) {
+        // Impossible division 'M','T': the header chunk was the 12-byte
+        // constructor variant with no division field, and the header reader
+        // consumed the next chunk tag's first half as the division (the RAW
+        // walk keeps the following chunk aligned by counting those bytes
+        // into the header chunk). Those files are standard type-1 MIDI at
+        // 480 ppqn; reconstruct it instead of producing nonsensical times.
+        division = 480;
+        mt_split = true;   // the first chunk tag's 'M','T' are already consumed
+    } else if (d2 < 0xE7) {
+        division &= 0x7FFF;
+    }
     if (division == 0) division = 480;
     out_division = division;
 
@@ -1424,7 +1475,12 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
         if (cb.cancel_flag && cb.cancel_flag->load(std::memory_order_relaxed)) {
             emit(cb, "  Cancelled.\n"); throw ScanCancelled{};
         }
-        int64_t tag = rd32();
+        int64_t tag;
+        if (mt_split) {          // 12-byte MThd: finish the tag whose 'M','T' became the division
+            mt_split = false;
+            const int a = bs.get(), c = bs.get();
+            tag = (a < 0 || c < 0) ? -1 : (int64_t)(0x4D540000u | ((unsigned)a << 8) | (unsigned)c);
+        } else tag = rd32();
         if (tag < 0) break;
         int64_t len = rd32();
         if (len < 0) { emit(cb, "Error: truncated chunk header.\n", true); return false; }
@@ -1444,6 +1500,7 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
             // straight from the stream, exactly like dedup-off.
             if (seen_len.insert((uint64_t)len).second) {
                 TrackBodyHooks hooks;
+                hooks.cancelled_flag = cb.cancel_flag;   // per-1M-event stop
                 hooks.ping = [&](uint64_t n) {
                     ev_pinged += n;
                     ping();
@@ -1476,6 +1533,7 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
             // as dedup-off (correctness is unaffected: it just never replays).
             if ((uint64_t)len > TrackDataDedup::kMaxCandidateBytes) {
                 TrackBodyHooks hooks;
+                hooks.cancelled_flag = cb.cancel_flag;   // per-1M-event stop
                 hooks.ping = [&](uint64_t n) {
                     ev_pinged += n;
                     ping();
@@ -1539,6 +1597,7 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
                 bool data_oor_local = data_oor;
                 RawStream tbs(bufp, got);
                 TrackBodyHooks hooks;
+                hooks.cancelled_flag = cb.cancel_flag;   // per-1M-event stop
                 hooks.ping = [&](uint64_t n) {
                     // Live counter from the pinged prefix; the authoritative
                     // walked total comes from the body's return value per
@@ -1579,6 +1638,7 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
         // every array write out).
         {
             TrackBodyHooks hooks;
+            hooks.cancelled_flag = cb.cancel_flag;   // per-1M-event stop
             hooks.ping = [&](uint64_t n) {
                 ev_pinged += n;
                 ping();
@@ -1633,8 +1693,8 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
 //     maintained with a sliding-window deque over (tick_time, ons) -- entries
 //     are distinct note-carrying ticks, so its size scales with ticks-per-
 //     second, not events-per-second (a million-note tick is one entry).
-// Window convention: half-open (t-1, t] -- an onset exactly 1.000s older than
-// the newest one is excluded (window span is exactly 1.0s).
+// Window convention: closed [t-1, t] -- an onset exactly 1.000 s older than
+// the newest one still counts; times are exact integers (see the sweep).
 
 // Peak NPS in the TWO-PASS fallback instead uses bins of width
 // 1/(FMCG_FINE_BINS*fps) seconds (see FrameBuckets below): that architecture
@@ -1673,12 +1733,17 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
 
     const uint64_t nticks = td.max_tick + 1;
     std::vector<TickData::TickCell>& cells = td.cells;
-    // Track tails can extend past the last written tick; size arrays to cover
-    // the whole tick span (also covers the no-events-at-all case).
-    if (cells.size() < nticks)
-        cells.resize((size_t)nticks, TickData::TickCell{0, 0});
-    if (with_cc && td.dense_cc.size() < nticks)
-        td.dense_cc.resize((size_t)nticks, 0);   // dense_cc is sized to last-written tick only
+    // Event-driven mode: the layered walk delivers sparse cells and/or
+    // arithmetic runs whose tick span can be billions of ticks; only touched
+    // ticks are visited. The dense-only path (standard scans) keeps the
+    // original per-tick loop and its array padding.
+    const bool event_mode = !td.runs.empty() || !td.sparse.empty();
+    if (!event_mode) {
+        if (cells.size() < nticks)
+            cells.resize((size_t)nticks, TickData::TickCell{0, 0});
+        if (with_cc && td.dense_cc.size() < nticks)
+            td.dense_cc.resize((size_t)nticks, 0);   // dense_cc is sized to last-written tick only
+    }
     const double inv = 1.0 / ((double)ppqn * 1e6);
     const size_t W = (size_t)std::round(fps);
 
@@ -1692,6 +1757,16 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
     size_t bpmw = 0;   // tempo walk for frame BPM (walked by time)
     size_t song_frames = SIZE_MAX;   // set before the tail loop; frames >= it rest at zero
 
+    // Exact integer time for the NPS window: T(t) in units of 1/ppqn
+    // microseconds = sum over tempo segments of (ticks x us_per_quarter).
+    // One second is exactly 1e6 * ppqn of these units, so the window test
+    // has no floating-point boundary fuzz.
+    typedef unsigned __int128 u128;
+    std::vector<u128> tanchor(tm.size(), 0);
+    for (size_t i = 1; i < tm.size(); ++i)
+        tanchor[i] = tanchor[i - 1] + (u128)(tm[i].tick - tm[i - 1].tick) * tm[i - 1].us_per_quarter;
+    const u128 one_sec = (u128)1000000u * ppqn;
+
     // Tick-space inversion shared by the frame push: anchor walked by time.
     size_t iconv = 0;                       // anchor for sec->tick conversion
     auto tick_at = [&](double sec) -> uint64_t {
@@ -1701,12 +1776,10 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
     };
 
     // ---- exact peak-NPS sliding window -----------------------------------
-    // Monotonic deque of (time_sec, ons) for the distinct note-carrying ticks
-    // currently inside the last literal 1.000000 seconds. The window sum is
-    // sampled exactly where a new maximum can occur: right after each onset
-    // tick. Half-open (t-1, t] convention: an onset exactly 1.000s older is
-    // excluded, so the window span is exactly 1.0s at any fps.
-    std::deque<std::pair<double, uint64_t>> nps_window;
+    // Deque of (T, ons) for the distinct note-carrying ticks inside the last
+    // second. Window is CLOSED: an onset exactly 1.000 s older than the newest
+    // one still counts (user decision 2026-10-10).
+    std::deque<std::pair<u128, uint64_t>> nps_window;
     uint64_t wsum = 0;               // note-ons inside the 1s window
     uint64_t peak_nps_exact = 0;     // exact maximum (monotonic)
 
@@ -1729,33 +1802,14 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
                        std::max<int64_t>(0, cur_poly), peak_poly, tm[bpmw].bpm, (int64_t)tick_at((double)k / fps)});
     };
 
-    for (uint64_t t = 0; t < nticks; ++t) {
-        // The sweep can run long after the parse (spec-breaking tick spans),
-        // and until now it was fully uncancellable: the parse's per-1M-event
-        // polls were done, so cancel did nothing until the whole sweep
-        // finished. Poll every 16M ticks (~every 64MB of cell data, a check
-        // each few ms) and also emit a live ping so the GUI's bar reflects
-        // sweep progress instead of freezing at 100% of the scan.
-        if (cb && (t & 0xFFFFFF) == 0) {
-            if (cb->cancel_flag && cb->cancel_flag->load(std::memory_order_relaxed)) {
-                emit(*cb, "  Cancelled.\n");
-                throw ScanCancelled{};
-            }
-            if (cb->on_scan_progress && (t & 0x0FFFFFF) == 0)
-                cb->on_scan_progress(td.total_events_seen, 0.0, 0.0,
-                                     (double)t / (double)std::max<uint64_t>(nticks, 1));
-            if (cb->on_progress)
-                cb->on_progress("Sweeping", (int)(100.0 * (double)t / (double)std::max<uint64_t>(nticks, 1)));
-        }
-        const TickData::TickCell cell = td.cells[(size_t)t];
-        uint64_t o = cell.ons;
-        int64_t  d = cell.delta;
-        uint64_t c = with_cc ? td.dense_cc[(size_t)t] : 0;
+    // One touched tick, visited in strictly increasing tick order. A tick
+    // with (ons|delta)==0 contributes nothing but CC; poly/peak update per
+    // tick in tick order.
+    auto process_tick = [&](uint64_t t, uint64_t o, int64_t d, uint64_t c) {
         if (o == 0 && d == 0) {
             if (c) cum_cc += c;   // CC-only tick: accumulate, no frame needed
-            continue;
+            return;
         }
-
         while (conv + 1 < tm.size() && tm[conv + 1].tick <= t) conv++;
         double sec = tm[conv].time_sec + (double)(t - tm[conv].tick) * (double)tm[conv].us_per_quarter * inv;
         size_t fi = (size_t)(sec * fps);
@@ -1764,11 +1818,11 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
         // their end-of-frame state is the current running state.
         while (cur_frame < fi) push_frame(cur_frame++);
 
-        // Exact peak NPS: fold this tick's note-ons into the 1s window.
         if (o > 0) {
-            nps_window.emplace_back(sec, o);
+            const u128 T = tanchor[conv] + (u128)(t - tm[conv].tick) * tm[conv].us_per_quarter;
+            nps_window.emplace_back(T, o);
             wsum += o;
-            while (!nps_window.empty() && nps_window.front().first <= sec - 1.0) {
+            while (!nps_window.empty() && nps_window.front().first + one_sec < T) {
                 wsum -= nps_window.front().second;
                 nps_window.pop_front();
             }
@@ -1779,6 +1833,72 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
         poly += d;
         if (poly > peak_poly) peak_poly = poly;   // exact per-tick peak
         if (c) cum_cc += c;
+    };
+
+    // Cancel poll + live progress, every 16M visited ticks.
+    uint64_t visited = 0;
+    auto poll = [&](uint64_t t) {
+        if (!cb || (visited++ & 0xFFFFFF) != 0) return;
+        if (cb->cancel_flag && cb->cancel_flag->load(std::memory_order_relaxed)) {
+            emit(*cb, "  Cancelled.\n");
+            throw ScanCancelled{};
+        }
+        if (cb->on_scan_progress)
+            cb->on_scan_progress(td.total_events_seen, 0.0, 0.0,
+                                 (double)t / (double)std::max<uint64_t>(nticks, 1));
+        if (cb->on_progress)
+            cb->on_progress("Sweeping", (int)(100.0 * (double)t / (double)std::max<uint64_t>(nticks, 1)));
+    };
+
+    if (!event_mode) {
+        for (uint64_t t = 0; t < nticks; ++t) {
+            poll(t);
+            const TickData::TickCell cell = cells[(size_t)t];
+            const uint64_t c = (with_cc && t < td.dense_cc.size()) ? td.dense_cc[(size_t)t] : 0;
+            process_tick(t, cell.ons, cell.delta, c);
+        }
+    } else {
+        // k-way merge of dense cells, sparse cells and every run (min-heap on
+        // each run's next tick). Runs may overlap anything.
+        struct RunCur { uint64_t next; size_t idx; uint64_t left; };
+        auto cmp = [](const RunCur& a, const RunCur& b) { return a.next > b.next; };
+        std::vector<RunCur> heap;
+        for (size_t i = 0; i < td.runs.size(); ++i)
+            if (td.runs[i].count) heap.push_back({td.runs[i].start, i, td.runs[i].count});
+        std::make_heap(heap.begin(), heap.end(), cmp);
+        size_t si = 0;          // sparse cursor
+        uint64_t di = 0;        // dense cursor
+        const uint64_t dn = cells.size();
+        const uint64_t kNone = UINT64_MAX;
+        for (;;) {
+            uint64_t t = kNone;
+            if (di < dn) t = di;
+            if (si < td.sparse.size() && td.sparse[si].tick < t) t = td.sparse[si].tick;
+            if (!heap.empty() && heap.front().next < t) t = heap.front().next;
+            if (t == kNone) break;
+            poll(t);
+            uint64_t o = 0, c = 0;
+            int64_t d = 0;
+            if (di < dn && t == di) {
+                o += cells[(size_t)t].ons; d += cells[(size_t)t].delta;
+                if (t < td.dense_cc.size()) c += td.dense_cc[(size_t)t];
+                ++di;
+            }
+            while (si < td.sparse.size() && td.sparse[si].tick == t) {
+                o += td.sparse[si].ons; d += td.sparse[si].delta; c += td.sparse[si].cc;
+                ++si;
+            }
+            while (!heap.empty() && heap.front().next == t) {
+                std::pop_heap(heap.begin(), heap.end(), cmp);
+                RunCur& rc = heap.back();
+                const TickData::TickRun& rn = td.runs[rc.idx];
+                o += rn.ons; d += rn.delta; c += rn.cc;
+                if (--rc.left) { rc.next += rn.step; std::push_heap(heap.begin(), heap.end(), cmp); }
+                else heap.pop_back();
+            }
+            if (!with_cc) c = 0;
+            process_tick(t, o, d, c);
+        }
     }
 
     // Determine total frames from sec(max_tick) (catch up conversion anchors first).
@@ -1894,6 +2014,8 @@ static bool scan_frames_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off,
     int f2 = bs.get(), f1 = bs.get();
     int n2 = bs.get(), n1 = bs.get();
     int d2 = bs.get(), d1 = bs.get();
+    const bool mt_split = (d2 == 'M' && d1 == 'T');   // 12-byte MThd: 'MT' of the next tag
+    bool mt_pending = mt_split;
     if (f2 < 0 || f1 < 0 || n2 < 0 || n1 < 0 || d2 < 0 || d1 < 0) {
         emit(cb, "Error: truncated MIDI header.\n", true); return false;
     }
@@ -1940,7 +2062,12 @@ static bool scan_frames_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off,
         if (cb.cancel_flag && cb.cancel_flag->load(std::memory_order_relaxed)) {
             emit(cb, "  Cancelled.\n"); throw ScanCancelled{};
         }
-        int64_t tag = rd32();
+        int64_t tag;
+        if (mt_pending) {
+            mt_pending = false;
+            const int a = bs.get(), c = bs.get();
+            tag = (a < 0 || c < 0) ? -1 : (int64_t)(0x4D540000u | ((unsigned)a << 8) | (unsigned)c);
+        } else tag = rd32();
         if (tag < 0) break;
         int64_t len = rd32();
         if (len < 0) { emit(cb, "Error: truncated chunk header.\n", true); return false; }
@@ -2085,6 +2212,7 @@ static bool scan_frames_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off,
         }
 
         // Held notes close at the track's final tick.
+        if (close_held_notes())
         for (int ch = 0; ch < 16; ++ch)
             for (int n = 0; n < 128; ++n)
                 if (refcount[ch][n] > 0)                             fb.note_off(fine_of(tick));
@@ -2458,7 +2586,9 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
     // time-derived stat) by 480/actual on files with a different PPQN.
     // Same semantics as the sequential scan: mask the SMPTE flag, default 0.
     {
-        uint16_t division = (uint16_t)(((img[12] << 8) | img[13]) & 0x7FFF);
+        // Same division rule as scan_stream: only d2 >= 0xE7 is not ppqn.
+        uint16_t division = (uint16_t)(((img[12] << 8) | img[13]) & 0xFFFF);
+        if ((img[12] & 0xFF) < 0xE7) division &= 0x7FFF;
         if (division == 0) division = 480;
         out_division = division;
     }
@@ -2764,7 +2894,35 @@ std::vector<FrameStats> process_streaming(
                 return {};
             }
             const double cpu0 = thread_cpu_seconds();
-            try {
+            bool layered_done = false;
+            if (track_dedup && compressed) {
+                // The layered walk reads the RAW file and does all decoding
+                // itself (it must see every compressed member boundary), so
+                // the pipelined decoder is not used for it.
+                src.reset();
+                int lr = 0;
+                try {
+                    lr = scan_layered(filename, vel0_as_note_off, td, tempo_raw, division, cb);
+                } catch (const ScanCancelled&) {
+                    emit(cb, "  Cancelled.\n");
+                    return {};
+                }
+                bound_cpu_s = thread_cpu_seconds() - cpu0;
+                if (lr < 0) return {};
+                if (lr == 1) {
+                    layered_done = true;
+                } else {
+                    td.reset();
+                    tempo_raw.clear();
+                    division = 480;
+                    src = open_src();
+                    if (!src->ok()) {
+                        emit(cb, "Error: failed to open archive with libarchive.\n", true);
+                        return {};
+                    }
+                }
+            }
+            if (!layered_done) try {
                 // Parallel per-track parse of plain files (never compressed,
                 // which cannot split). The spec-violation prompt is shared
                 // with the sequential scan: the first worker past the limit
@@ -2817,12 +2975,14 @@ std::vector<FrameStats> process_streaming(
                     pipeliner_waits_known = true;
                 }
             }
-            dec_bytes = src->bytes_read();
-            // The raw mmap walk never advances the reader's position, so for
-            // plain files report the image size instead of bytes served.
-            if (dec_bytes == 0) dec_bytes = src->total_bytes();
-            dec_err = src->errored();
-            src.reset();   // release before any re-open
+            if (!layered_done) {
+                dec_bytes = src->bytes_read();
+                // The raw mmap walk never advances the reader's position, so for
+                // plain files report the image size instead of bytes served.
+                if (dec_bytes == 0) dec_bytes = src->total_bytes();
+                dec_err = src->errored();
+                src.reset();   // release before any re-open
+            }
         }
 
         std::vector<FrameStats> frames;
@@ -2949,6 +3109,13 @@ std::vector<FrameStats> process_streaming(
         st << ", " << std::setprecision(2) << t_sweep_s << "s sweep\n";
         emit(cb, st.str());
         return frames;
+    } catch (const ScanCancelled&) {
+        // Cancel fired inside the layered walk / scan / sweep. Without this
+        // handler the empty-struct exception escaped process_streaming
+        // entirely (it is not a std::exception), bypassing the clean
+        // empty-result contract the GUI's cancel path relies on.
+        emit(cb, "Cancelled.\n", true);
+        return {};
     } catch (const std::bad_alloc&) {
         emit(cb, "Error: not enough memory for tick-space arrays (song duration x ppqn too large).\n", true);
         return {};

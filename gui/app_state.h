@@ -39,9 +39,10 @@ struct GuiSettings {
     int         pos_x = 30;
     int         pos_y = 30;
     bool        vel0_note_off = true;
+    bool        close_held_notes = false;   // release notes still held at a track's end (off = MIDI-spec ons - offs)
     int         ffmpeg_threads = 0;   // 0 = ffmpeg auto-selects (no -threads flag)
     int         parse_threads = 0;    // 0 = all cores (bounded to hw_concurrency); 1 = sequential parse
-    bool        track_dedup = false;  // replay duplicate track content instead of re-parsing
+    bool        track_dedup = false;  // skip repeated content (track replay / layered dedup)
     std::string text_color_aabbggrr = "&H00FFFFFF";
     std::string bg_color_aabbggrr = "&H00000000";
 };

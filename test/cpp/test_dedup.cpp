@@ -13,7 +13,7 @@
 // The duplicate fixture tracks are byte-identical AND fully closed (every
 // note released), which is what the store admits; the held-note track is
 // deliberately open-ended (end_refcount > 0) and must never be stored.
-#include "../fMCG_core.h"
+#include "fMCG_core.h"
 #include <cstdio>
 #include <cstdint>
 #include <string>
@@ -173,9 +173,17 @@ int main() {
         }
         vlq(held, 1); held += (char)0xFF; held += (char)0x2F; held += (char)0;
         write_midi(path, 480, {held, held, held});
+        // Held-note closure is optional (default off). With it ON a track
+        // ending with held notes owes an end-of-track release, so it must
+        // never be replayed from the cache; with it OFF such tracks are
+        // ordinary and may replay -- results must match either way.
+        fmcg_stream::set_close_held_notes(true);
         RunResult s0 = run(path, 1, false), s1 = run(path, 1, true);
-        check("held-note dups: dedup == plain", equal(s0, s1));
-        check("held-note dups: zero replays", dedup_hits(s1.log) == 0);
+        fmcg_stream::set_close_held_notes(false);
+        check("held-note dups (closure on): dedup == plain", equal(s0, s1));
+        check("held-note dups (closure on): zero replays", dedup_hits(s1.log) == 0);
+        RunResult o0 = run(path, 1, false), o1 = run(path, 1, true);
+        check("held-note dups (closure off): dedup == plain", equal(o0, o1));
         RunResult p0 = run(path, 4, false), p1 = run(path, 4, true);
         check("held-note dups: parallel equal", equal(p0, p1));
     }

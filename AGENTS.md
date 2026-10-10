@@ -1,0 +1,144 @@
+# AGENTS.md -- read this first (any AI agent / new contributor)
+
+Companion docs in the repo root: `DESIGN.md` (layered-dedup design), `DIALECTS.md`
+(test constructions), `OPEN_QUESTIONS.md` (decisions + unresolved files), `README.md`
+(user-facing build/usage). `CLAUDE.md` just imports this file.
+
+## 1. What this project is
+**fMCG = Fast MIDI Counter Generator.** A C++17 Dear ImGui desktop app (Windows primary,
+Linux/macOS supported) that takes a MIDI file plus user settings and produces a video of
+a live statistics overlay (notes played, NPS, polyphony, BPM, time, CC, ticks...) for
+"Black MIDIs" -- MIDI files with millions to *trillions* of notes.
+
+Pipeline today:
+1. **Scan** (`src/fmcg_engine.cpp`, `fmcg_stream::process_streaming`): one streaming pass over
+   the file (mmap, or libarchive streaming for compressed inputs; decompressed bytes are never
+   materialised). Note events go into per-tick cells (`TickData`), tempo events into a list.
+2. **Sweep** (`sweep_to_frames`): tick space -> per-frame `FrameStats` (cumulative notes,
+   NPS over a 1 s window, polyphony, peaks, BPM, CC).
+3. **Format** (`src/fmcg_format.cpp`): layout template (`{nc}`, `{nps}`, ... see README) ->
+   per-frame text -> an ASS subtitle file.
+4. **Render** (`src/fmcg_render.cpp`, `gui/jobs.cpp`): spawns FFmpeg (lavfi colour bg +
+   `subtitles` filter + libx264). Live preview (`gui/preview.cpp`) draws the text with ImGui.
+
+## 2. Repository map
+| path | role |
+|---|---|
+| `src/fmcg_engine.{h,cpp}` | engine (~3.2k lines): data sources, byte streams, MIDI event parser (`parse_track_body`), standard scan, parallel scan, two-pass fallback, tick->frame sweep, `process_streaming` entry |
+| `src/fmcg_layered.cpp` | **layered dedup** (~1.4k lines): xz grammar discovery + memoized byte-level transducer (see DESIGN.md) |
+| `src/fmcg_engine_internal.h` | engine-private shared types (`TickData`, `TrackSummary`, `scan_layered`) |
+| `src/fmcg_midi.{h,cpp}` | `FrameStats`, `ProgressCallbacks`, format detection, mmap reader |
+| `src/fmcg_format.{h,cpp}` | template tokens, comma/pad/BPM options, ASS generation |
+| `src/fmcg_render.{h,cpp}` | FFmpeg argv construction |
+| `src/fmcg_fonts.{h,cpp}` | system font discovery (sfnt name/OS2 parsing) |
+| `src/fmcg_path.*`, `src/fmcg_util.*` | path + misc helpers; `src/xxhash64.h` vendored hash |
+| `fMCG_core.h` | umbrella header over `src/` |
+| `gui/main.cpp` | ImGui window, all settings widgets |
+| `gui/jobs.cpp` | worker threads: process (scan + ASS) and render (FFmpeg) |
+| `gui/preview.cpp` | in-app live preview |
+| `gui/settings_store.*`, `gui/app_state.*` | persisted settings, shared cross-thread state |
+| `test/run_tests.py` | **single test entry point** (stdlib unittest; builds everything with g++) |
+| `test/suites/` | `test_dialects.py` (oracle property tests), `test_cpp.py` (C++ tests), `test_corpus.py` (plain differential, shrunk + full layered corpus) |
+| `test/fmcgtest/` | shared helpers: build, probe runner, paths, levels |
+| `test/fmcg_probe.cpp` | headless CLI over the engine (used by all automated tests) |
+| `test/dialects/` | generators (`gen.py`), brute-force oracle (`oracle.py`), table CLI (`run.py`) |
+| `test/cpp/` | C++ engine tests (newopts, twopass, parallel, dedup, burst_window, burst_fuzz, harness) + benchmarks (bench_throughput, test_tickspace) + ffmpeg/GUI tests not in the runner (test_ffspawn needs imgui, test_double_render needs ffmpeg) |
+| `test/tools/` | `shrink_layered.py` (rebuild a layered file with <= K repeats per run), `layered_inspect.py` / `layered_stream_cut.py` (sparse structure dumps of layered files, never full expansion), legacy CSV reference tools |
+| `test/data/`, `test/expected/` | small fixture MIDIs; verified full-corpus expected values |
+| `build.bat` / `bootstrap.bat` / `release.bat` | Windows build (w64devkit g++) |
+| `Makefile` | Linux/macOS build (pkg-config glfw3 + libarchive) |
+| `vendor/` | imgui submodule, GLFW, libarchive (populated by `bootstrap.bat`; gitignored) |
+
+## 3. Building
+**Windows (this machine):** w64devkit g++ 16 at `C:\Users\ethen\Downloads\w64devkit\bin`.
+`build.bat` -> `fMCG_gui.exe`. Headless probe:
+```
+g++ -std=c++17 -O2 -I. -Isrc -Ivendor/libarchive src/fmcg_{midi,format,util,path,engine,layered}.cpp \
+    test/fmcg_probe.cpp -o build/probe.exe vendor/libarchive/lib/libarchive.dll.a -lpthread \
+    -Wl,--stack,0x10000000
+cp vendor/libarchive/bin/libarchive.dll build/
+```
+(256 MB stack: the layered walker recurses deeply.)
+
+**Linux (WSL Ubuntu on this machine, g++ 15, libarchive-dev 3.8.5):** `make` for the GUI;
+probe: same sources, link `-larchive -lpthread`, run under `ulimit -s 65536`
+(ld ignores `-z stacksize`).
+
+Python: Windows `python` 3.11, WSL `python3` 3.14 (stdlib only; no pytest).
+The old walker needed `ulimit -s 65536`; the new one recurses only grammar-depth deep.
+
+## 4. Testing
+`python -I test/run_tests.py [--level quick|corpus|full] [-k substr] [--seeds N]` (or `make test LEVEL=...`)
+- quick (~4.5 min): 14 dialects x {layered, layered+close-held, standard} vs the oracle, C++ tests,
+  plain corpus MIDIs compressed on the fly (layered == standard).
+- corpus (+~2 min): each layered corpus file shrunk to <= 3 repeats per run -> layered == standard.
+- full (+~3 min): full-size layered files vs `test/expected/corpus_layered.json`.
+Probe: `probe <file> [fps=60] [dedup 0|1] [threads] [close_held 0|1]` ->
+`OK notes= ticks= ppqn= peak_poly= peak_nps= frames= lossy=` (lossy=1: a `NOT counted` warning was emitted).
+Debug a layered file without expanding it: `python -I test/tools/layered_inspect.py <file>` (member
+tree, runs, leaf prefixes), `layered_stream_cut.py` for payloads too big to buffer.
+
+Test MIDI corpus: `C:\Users\ethen\Downloads\FMCG_TEST_FILES\`
+- root: plain `.mid` files (142727, 6.3c-1, FINAL, Spiderweb Test, Yukari Necrofantasia, two Japanese titles)
+- `NORMAL_COMPRESSED/`: single-layer archives (`Shinkis Demise ... .7z`, `nut3.7z` 8 GB mid,
+  `Deadly apple rev2.rar.xz` 2.6 GB compressed). nut3 / Deadly apple are out of scope for now.
+- `LAYERED_COMPRESSED/`: the layered-dedup targets (Ievans Polka, Just 1 note, MIDI File,
+  NoiseMidi, When Systematic & Inferno has BSOD, gymnopedie, happy theme of DEATH, paprikas).
+
+**HARD RULE: some of these expand to terabytes. NEVER fully decompress a layered file for
+investigation** (no `xz -d` / `7z x` of the whole thing, no full flat stream). Sparse dumps
+(per member / per track / per tile summaries, first N bytes, hashes) are fine; per-event dumps
+of large data are not.
+
+## 5. Layered dedup -- the hard part (current top priority)
+**Construction:** a MIDI file is compressed (xz), the compressed stream is concatenated N
+times, the result is compressed again, concatenated again, ... several layers deep. The
+*tiles* concatenated at each layer can be ANY consecutive byte range of a MIDI that still
+tiles validly: whole files, header+track pieces, single tracks, or raw slices of a track body
+cut mid-event (running-status dumps). Expanded size can be TB; compressed is KB-MB.
+
+**Definition of correct:** layered result == standard scan of the fully materialised flat
+byte stream (`test/dialects/oracle.py` defines it executably). Not "plausible".
+Flat-stream semantics: running status carries across member boundaries; declared MTrk
+lengths beyond the data are clamped; note-offs are refcounted per (channel,key); a vel-0
+note-on is an off (option); division 0xFFFF = 65535 ppqn; a 12-byte MThd (no division) =>
+480 ppqn; multiple MThd overlay into the same tick space; tempo is global.
+
+**Code:** `src/fmcg_layered.cpp` (`scan_layered`). Discovery builds the member grammar (each
+unique member decoded once); a byte-level transducer that mirrors the standard scanner runs over
+the grammar with per-(node, parser shape) memoized effects and analytic folding of repeats.
+No content heuristics. See DESIGN.md.
+
+### Rules that save days
+1. **Never debug layered dedup on multi-GB corpus files first.** Reproduce at KB scale in
+   `test/dialects/` (add a generator). Every real bug so far reproduced there in ms.
+2. **Silent undercount is the worst failure.** Anything the walk cannot interpret must be
+   counted in `LayeredStats::skipped_occ` and surface a `WARNING: ... NOT counted` line
+   (probe prints `lossy=1`). Never `continue` quietly.
+3. No `exit()`/crash switches/semantics-changing env vars in release builds.
+4. Per-scan state belongs in `Walk` (fmcg_layered.cpp), not function statics.
+5. The oracle, the engine's standard scanner and `Parser` in fmcg_layered.cpp encode the SAME
+   parsing rules. Change all three together, then run the suite.
+6. Numeric ranges (user decision 2026-10-10): every non-tick stat <= 93,823,560,428,205
+   (fits int64/uint64, NOT 32-bit). Ticks: 99% <= 2^28, seen up to 1.4e9, must be handled
+   unbounded (uint64). Per-tick dense cells must be 64-bit.
+7. Peak-NPS 1-second window is **inclusive of the boundary** (an event exactly 1.0 s earlier
+   still counts) -- user decision 2026-10-10.
+
+## 6. Goals (from the user, 2026-10-10, in priority order)
+1. Keep these root .md files complete enough for any agent to start from scratch. (done; maintain)
+2. **(EXTREMELY HIGH PRIORITY)** Fix layered dedup against `FMCG_TEST_FILES/LAYERED_COMPRESSED`.
+   Standard (non-dedup) path for plain/compressed files is correct and is the reference.
+   Also: builds must work on Windows AND Linux; clean up `test/` into a real test framework
+   (instead of loose .cpp files and Python rigs).
+3. Then: replace ASS+FFmpeg render with an in-built renderer (text + background drawn in-app),
+   using only a lightweight encoder + muxer.
+4. Typography options under Advanced: kerning, OpenType stylistic sets, old-style numerals, etc.
+5. Resolution limits so text never overflows the frame in preview or render (re-check after 3).
+
+## 7. Status log
+- Session 3 (2026-10-10, Claude Code): layered dedup rewritten (fmcg_layered.cpp); all 7 non-BSOD
+  layered files verified (OPEN_QUESTIONS.md table); test/ restructured into run_tests.py; inclusive
+  integer NPS window; tempo-meta window-straddle bug fixed in the standard parser; Windows + Linux
+  builds and suites green. Next: BSOD, then goal 3.
+See OPEN_QUESTIONS.md "Corpus status" for the per-file table; update it every session.

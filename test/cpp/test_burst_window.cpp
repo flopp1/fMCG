@@ -8,7 +8,7 @@
 // Expected results are exact: every note-on counted, zero max tick inflation
 // (end tick == the final delta), and the byte-wise (FMCG_NO_BURST) build must
 // produce identical output.
-#include "../fMCG_core.h"
+#include "fMCG_core.h"
 #include <cstdio>
 #include <cstring>
 

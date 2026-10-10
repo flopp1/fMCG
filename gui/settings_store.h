@@ -56,11 +56,12 @@ struct GlobalSettings {
     int         height = 1080;
     double      fps = 60.0;
     bool        vel0_note_off = true;
+    bool        close_held_notes = false;   // release notes still held at a track's end
     double      start_delay = 3.0;
     double      end_delay = 0.0;
     int         ffmpeg_threads = 0;   // 0 = ffmpeg auto-selects encoder threads
     int         parse_threads = 0;    // 0 = all cores (parallel per-track parse); 1 = sequential
-    bool        track_dedup = false;  // replay duplicate track content instead of re-parsing
+    bool        track_dedup = false;  // skip repeated content (track replay / layered dedup)
     std::string output_dir;           // last output video folder
 };
 

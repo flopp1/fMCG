@@ -20,7 +20,7 @@
 // Each case runs process_midi twice over the same file -- once forced
 // sequential (threads=1) and once parallel (threads=4) -- and compares every
 // FrameStats field of every frame, plus total_notes/total_ticks.
-#include "../fMCG_core.h"
+#include "fMCG_core.h"
 #include <cstdio>
 #include <cstdint>
 #include <atomic>

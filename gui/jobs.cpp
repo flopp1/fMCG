@@ -111,6 +111,7 @@ void run_process(GuiSettings s) {
 
     app.gui_log(("Processing MIDI: " + s.midi_file + "...").c_str(), false);
 
+    fmcg_stream::set_close_held_notes(s.close_held_notes);
     auto frames = ScaleMidiProcessor::process_midi(s.midi_file, s.fps, ppqn, total_notes,
                                                     s.vel0_note_off, total_ticks, cb, s.end_delay,
                                                     s.parse_threads, s.track_dedup);

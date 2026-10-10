@@ -2,8 +2,8 @@
 // renders a 1-second video through spawn_ffmpeg_cancellable + ffmpeg_args,
 // checks that progress lines arrive, that the output exists, and that no
 // .bat/_progress.txt artifacts are left behind. Requires ffmpeg on PATH.
-#include "../gui/jobs.h"
-#include "../src/fmcg_render.h"
+#include "gui/jobs.h"
+#include "src/fmcg_render.h"
 #include <cstdio>
 #include <fstream>
 #include <sys/stat.h>

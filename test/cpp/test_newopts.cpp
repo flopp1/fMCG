@@ -1,6 +1,6 @@
 // Functional checks for the formatting layer: auto-padding, per-stat commas,
 // CC tokens, negative countdown times.
-#include "../fMCG_core.h"
+#include "fMCG_core.h"
 #include <cstdio>
 #include <fstream>
 #include <vector>
