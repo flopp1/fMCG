@@ -84,12 +84,22 @@ def probe():
 
 
 KEYS = ["notes", "ticks", "ppqn", "peak_poly", "peak_nps"]
+# The two-pass fallback (used whenever a standard scan crosses the MIDI-spec
+# tick limit, 2^28) bins peaks; only these stats are exact there.
+TWOPASS_KEYS = ["notes", "ticks", "ppqn", "frames"]
+
+
+def keys_for(*results):
+    """Stats that are comparable between the given probe results."""
+    return TWOPASS_KEYS if any(r and r.get("twopass") for r in results) else KEYS
 
 
 def run_probe(path, dedup, close_held=0, timeout=3600, fps=60):
     """Returns (dict of ints incl. 'lossy', raw line) or (None, line) on FAIL/timeout."""
     try:
-        r = subprocess.run([probe(), path, str(fps), str(dedup), "0", str(close_held)],
+        # spec=1: a standard scan that breaks the tick spec restarts in two-pass
+        # mode instead of allocating multi-GB dense tick arrays.
+        r = subprocess.run([probe(), path, str(fps), str(dedup), "0", str(close_held), "1"],
                            capture_output=True, text=True, timeout=timeout)
         line = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "FAIL"
     except subprocess.TimeoutExpired:

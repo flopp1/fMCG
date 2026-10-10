@@ -16,10 +16,18 @@ import unittest
 
 import fmcgtest as T
 
-# NoiseMidi's single tile spans 1.43e9 ticks: the dense standard scan would need
-# ~29 GB of tick arrays, so it is checked by the full-size expectation only.
-SHRINK_SKIP = {"NoiseMidi.mid.xz.xz.xz": "tile spans 1.43e9 ticks (standard scan needs ~29 GB)",
-               "When Systematic & Inferno has BSOD.mid.xz.xz.xz": "deferred (damaged members, next session)"}
+SHRINK_SKIP = {"When Systematic & Inferno has BSOD.mid.xz.xz.xz": "deferred (damaged members)"}
+# Files whose tiles break the MIDI tick spec (> 2^28 ticks): the standard
+# reference MUST come from the two-pass path (the single-pass dense arrays
+# would need ~29 GB for NoiseMidi), so only the two-pass-exact stats compare.
+SPEC_BREAKING = {"NoiseMidi.mid.xz.xz.xz"}
+
+
+def same(tc, lay, std, l1, l0):
+    tc.assertIsNotNone(std, l0)
+    tc.assertIsNotNone(lay, l1)
+    keys = T.keys_for(lay, std)
+    tc.assertEqual({k: lay[k] for k in keys}, {k: std[k] for k in keys}, f"layered {l1} vs standard {l0}")
 
 
 def cached(name):
@@ -41,8 +49,7 @@ class PlainDifferential(unittest.TestCase):
             std, l0 = T.run_probe(dst, 0)
             lay, l1 = T.run_probe(dst, 1)
             with self.subTest(file=f):
-                self.assertIsNotNone(std, l0)
-                self.assertEqual(lay, std, f"layered {l1} vs standard {l0}")
+                same(self, lay, std, l1, l0)
 
 
 @unittest.skipUnless(T.have_corpus() and T.level() >= 1, "corpus level")
@@ -56,14 +63,16 @@ class ShrunkLayered(unittest.TestCase):
                 if f in SHRINK_SKIP:
                     self.skipTest(SHRINK_SKIP[f])
                 src = os.path.join(T.LAYERED_DIR, f)
-                dst = cached(f"shrunk{self.K}_" + f.replace(" ", "_"))
+                k = 1 if f in SPEC_BREAKING else self.K
+                dst = cached(f"shrunk{k}_" + f.replace(" ", "_"))
                 if not os.path.exists(dst) or os.path.getmtime(dst) < os.path.getmtime(src):
                     subprocess.run([sys.executable, "-I", os.path.join(T.TEST_DIR, "tools", "shrink_layered.py"),
-                                    src, dst, str(self.K), "60"], check=True, capture_output=True)
+                                    src, dst, str(k), "60"], check=True, capture_output=True)
                 std, l0 = T.run_probe(dst, 0)
                 lay, l1 = T.run_probe(dst, 1)
-                self.assertIsNotNone(std, l0)
-                self.assertEqual(lay, std, f"layered {l1} vs standard {l0}")
+                if f in SPEC_BREAKING:
+                    self.assertEqual(std and std.get("twopass"), 1, f"standard reference must be two-pass: {l0}")
+                same(self, lay, std, l1, l0)
 
 
 @unittest.skipUnless(T.have_corpus() and T.level() >= 2, "full level")

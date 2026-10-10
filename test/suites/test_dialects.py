@@ -42,7 +42,8 @@ def check_kind(tc, kind, dedup, close_held=0):
                 tc.assertIsNone(got, f"standard scan fails on this stream; probe said {line} ({desc})")
             else:
                 tc.assertIsNotNone(got, f"probe failed: {line} ({desc}); kept at {p}")
-                bad = {k: (want[k], got.get(k)) for k in T.KEYS if got.get(k) != want[k]}
+                keys = [k for k in T.keys_for(got) if k in want]
+                bad = {k: (want[k], got.get(k)) for k in keys if got.get(k) != want[k]}
                 tc.assertEqual(bad, {}, f"(want, got) per key; {desc}; kept at {p}")
                 os.remove(p)
     oracle.CLOSE_HELD = False

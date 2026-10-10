@@ -2845,6 +2845,24 @@ static double thread_cpu_seconds() {
 
 // ---- entry point --------------------------------------------------------------
 
+// True when the file's outer compression filter(s) decode to a 7z archive:
+// libarchive's 7z reader needs to seek to the end-of-archive header, which a
+// filtered (forward-only) stream cannot provide.
+static bool filtered_7z(const std::string& filename) {
+    struct archive* a = archive_read_new();
+    archive_read_support_filter_all(a);
+    archive_read_support_format_raw(a);
+    bool hit = false;
+    struct archive_entry* e = nullptr;
+    if (archive_read_open_filename(a, filename.c_str(), 1 << 16) == ARCHIVE_OK &&
+        archive_read_next_header(a, &e) == ARCHIVE_OK && archive_filter_count(a) > 1) {
+        uint8_t m[6] = {};
+        if (archive_read_data(a, m, sizeof m) == (la_ssize_t)sizeof m) hit = is_7z_magic(m);
+    }
+    archive_read_free(a);
+    return hit;
+}
+
 std::vector<FrameStats> process_streaming(
     const std::string& filename, double fps, uint16_t& out_division,
     uint64_t& out_total_notes, bool vel0_as_note_off, uint64_t& out_total_ticks,
@@ -2889,8 +2907,13 @@ std::vector<FrameStats> process_streaming(
         {
             src = open_src();
             if (!src->ok()) {
-                emit(cb, compressed ? "Error: failed to open archive with libarchive.\n"
-                                    : "Error: cannot open file.\n", true);
+                if (compressed && filtered_7z(filename))
+                    emit(cb, "Error: this is a 7z archive inside a compression filter (e.g. .7z.xz). "
+                             "7z keeps its header at the end and needs random access, so it cannot be "
+                             "streamed; decompress the outer layer to a .7z first.\n", true);
+                else
+                    emit(cb, compressed ? "Error: failed to open archive with libarchive.\n"
+                                        : "Error: cannot open file.\n", true);
                 return {};
             }
             const double cpu0 = thread_cpu_seconds();

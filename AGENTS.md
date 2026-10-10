@@ -73,8 +73,12 @@ The old walker needed `ulimit -s 65536`; the new one recurses only grammar-depth
   plain corpus MIDIs compressed on the fly (layered == standard).
 - corpus (+~2 min): each layered corpus file shrunk to <= 3 repeats per run -> layered == standard.
 - full (+~3 min): full-size layered files vs `test/expected/corpus_layered.json`.
-Probe: `probe <file> [fps=60] [dedup 0|1] [threads] [close_held 0|1]` ->
-`OK notes= ticks= ppqn= peak_poly= peak_nps= frames= lossy=` (lossy=1: a `NOT counted` warning was emitted).
+Probe: `probe <file> [fps=60] [dedup 0|1] [threads] [close_held 0|1] [spec 0|1]` ->
+`OK notes= ticks= ppqn= peak_poly= peak_nps= frames= lossy= twopass=` (lossy=1: a `NOT counted` warning was emitted).
+**Spec-breaking files (> 2^28 ticks) must never run on the single-pass standard path in tests** (dense tick
+arrays reach tens of GB). The probe's default spec=1 restarts them in two-pass mode (twopass=1); two-pass
+peaks are bin-quantized, so tests compare only notes/ticks/ppqn/frames then (`fmcgtest.keys_for`).
+The layered walk is exempt (sparse cells + tick runs, no dense arrays).
 Debug a layered file without expanding it: `python -I test/tools/layered_inspect.py <file>` (member
 tree, runs, leaf prefixes), `layered_stream_cut.py` for payloads too big to buffer.
 

@@ -24,14 +24,16 @@
   feeds raw continuation bytes straight to the transducer (both now built in) -- re-investigate from there.
 - GUI: no checkbox yet for `set_close_held_notes` (engine + probe support it).
 - Standard (non-dedup) path on mixed-depth constructions differs by design (DESIGN.md).
+- .7z inside a compression filter (.7z.xz): NOT supported -- 7z needs random access to its end header, so it
+  cannot be streamed (user decision: only support it if streamable). The engine now says so explicitly.
 
 ## Corpus status (layered walk, session 3, 2026-10-10; identical on Windows + Linux)
 | file | notes | ticks | ppqn | peak poly | peak NPS | time | how verified |
 |---|---|---|---|---|---|---|---|
 | Ievans Polka | 53,745,997,855,018 | 9,216,000 | 7680 | 53,745,997,824,005 | 322,487,650,862 | 5-8 s | shrunk K=2/3/5 == standard |
 | Just 1 note | 93,823,560,428,205 | 0 | 480 | = notes | = notes | 19 s | name; shrunk == standard |
-| MIDI File | 7,385,042,433,600 | 178,560 | 480 | 722,710,800 | 210,354,934,050 | 4 s | tile x61455 exact; shrunk == standard (session 2 was WRONG: 7,354,400,010,510) |
-| NoiseMidi | 93,823,560,428,205 | 1,431,655,762 | 65535 | = notes | 8,589,737,985 | 41-47 s | matches session 2; grid dialect |
+| MIDI File | 7,385,042,433,600 | 178,560 | 480 | 722,710,800 | 210,354,934,050 | 4 s | base.mid (in the author's folder) x61455 exact; shrunk == standard. The '7.8 trillion' title = 65,535 copies, but the 255x-repeated layer-2 block holds 15 (not 16) sub-blocks: 134,937,420 = 15 x 8,995,828 in the xz index. Session 2 was WRONG (7,354,400,010,510) |
+| NoiseMidi | 93,823,560,428,205 | 1,431,655,762 | 65535 | = notes | 8,589,737,985 | 41-47 s | shrunk K=1 layered == standard TWO-PASS (notes/ticks/ppqn/frames); grid dialect |
 | gymnopedie | 46,836,487,526,682 | 54,144 | 384 | 865,035,607 | 333,038,706,010 | 24-27 s | shrunk == standard |
 | happy | 35,180,980,081,758 | 4,608 | 96 | 308,594,756,484 | 20,671,137,314,100 | 16-19 s | shrunk == standard (never completed before) |
 | paprikas | 2,661,824,754,708 | 867,869 | 30720 | 43,842,246 | 1,546,303,630,494 | 2-3 s | shrunk == standard |
