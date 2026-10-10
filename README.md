@@ -99,15 +99,29 @@ So a shareable release is just: `fMCG_gui.exe` + `libarchive.dll` + a licence no
 
 `THIRD_PARTY_LICENSES.txt` in the repo root is the ready-made notices file covering everything shipped in the binary and the DLL.
 
-**Making a release zip** — one command:
+**Making a release** — one command builds and packages both platforms:
 
 ```bat
-release.bat            :: -> dist\fMCG-windows\ and dist\fMCG-windows.zip
-release.bat v1.2       :: -> dist\fMCG-v1.2-windows\ ... (name suffix)
+release.bat            :: -> distMCG-windows\ + .zip, distMCG-linux\ + .tar.gz
+release.bat v1.2       :: -> distMCG-v1.2-windows\, distMCG-v1.2-linux\ ... (name suffix)
 debug build            :: build.bat debug (Windows) or make debug (Linux/macOS)
 ```
 
-The script builds first (so the exe is current), assembles the folder with `fMCG_gui.exe`, `libarchive.dll`, `THIRD_PARTY_LICENSES.txt` and `README.md`, verifies nothing is missing, and zips it via PowerShell. On Linux/macOS the equivalent is `make release` → `dist/fMCG-linux.tar.gz`.
+The script builds the Windows exe first, assembles `fMCG_gui.exe`, `libarchive.dll`, `LICENSE`, `THIRD_PARTY_LICENSES.txt` and `README.md`, verifies nothing is missing and zips it via PowerShell. It then builds the Linux binary through **WSL** (`release_linux.sh`, in a temporary Linux-side copy of the sources) and packages it with the same licence files and README as a `.tar.gz`.
+
+**Requirement for the Linux package: WSL** with a Linux distribution and its build packages:
+
+```bat
+wsl --install
+```
+
+then, inside the distribution (Debian/Ubuntu):
+
+```bash
+sudo apt install build-essential pkg-config libglfw3-dev libarchive-dev libgl1-mesa-dev
+```
+
+Without WSL (or with packages missing) the Windows release is still produced and `release.bat` reports the Linux step as an error with what to install. On a Linux/macOS machine, `./release_linux.sh "$PWD" fMCG` (or `make release`) builds the Linux package directly.
 
 ## Usage
 1. Pick a MIDI file (plain `.mid`, or `.7z`/`.xz`/`.rar`/`.rar.xz` containing one).

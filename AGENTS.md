@@ -45,7 +45,7 @@ Pipeline today:
 | `test/cpp/` | C++ engine tests (newopts, twopass, parallel, dedup, burst_window, burst_fuzz, harness) + benchmarks (bench_throughput, test_tickspace) + ffmpeg/GUI tests not in the runner (test_ffspawn needs imgui, test_double_render needs ffmpeg) |
 | `test/tools/` | `shrink_layered.py` (rebuild a layered file with <= K repeats per run), `layered_inspect.py` / `layered_stream_cut.py` (sparse structure dumps of layered files, never full expansion), legacy CSV reference tools |
 | `test/data/`, `test/expected/` | small fixture MIDIs; verified full-corpus expected values |
-| `build.bat` / `bootstrap.bat` / `release.bat` | Windows build (w64devkit g++) |
+| `build.bat` / `bootstrap.bat` / `release.bat` | Windows build (w64devkit g++); `release.bat` also builds the Linux package through WSL via `release_linux.sh` |
 | `Makefile` | Linux/macOS build (pkg-config glfw3 + libarchive) |
 | `vendor/` | imgui submodule, GLFW, libarchive (populated by `bootstrap.bat`; gitignored) |
 

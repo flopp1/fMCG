@@ -55,11 +55,37 @@ if exist "%ZIP%" del "%ZIP%"
 powershell -NoProfile -Command "Compress-Archive -Force -Path '%DIST:\=\\%\*' -DestinationPath '%ZIP%'"
 if exist "%ZIP%" (
     echo.
-    echo Release ready:
+    echo Windows release ready:
     echo   folder: %DIST%
     echo   zip:    %ZIP%
 ) else (
     echo.
-    echo Release folder ready: %DIST% ^(zip failed; compress it manually^).
+    echo Windows release folder ready: %DIST% ^(zip failed; compress it manually^).
 )
+
+REM --- 5. Linux build through WSL ----------------------------------------------
+echo.
+echo Building the Linux release through WSL...
+where wsl >nul 2>&1
+if %ERRORLEVEL% NEQ 0 goto :no_wsl
+wsl -e true >nul 2>&1
+if %ERRORLEVEL% NEQ 0 goto :no_wsl
+set "WSLSRC="
+for /f "usebackq delims=" %%p in (`wsl -e wslpath -a "%CD%"`) do set "WSLSRC=%%p"
+if not defined WSLSRC goto :no_wsl
+wsl -e bash "%WSLSRC%/release_linux.sh" "%WSLSRC%" "%NAME%"
+if %ERRORLEVEL% NEQ 0 (
+    echo ERROR: the Linux release failed ^(see above^). The Windows release is complete.
+    exit /b 1
+)
+echo.
+echo Linux release ready:
+echo   folder: dist\%NAME%-linux
+echo   tar:    dist\%NAME%-linux.tar.gz
 exit /b 0
+
+:no_wsl
+echo ERROR: WSL with an installed Linux distribution was not found, so the Linux
+echo        binary was not built. Install it with "wsl --install" ^(then the packages
+echo        listed in README.md^) and re-run. The Windows release is complete.
+exit /b 1
