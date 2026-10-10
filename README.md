@@ -102,8 +102,8 @@ So a shareable release is just: `fMCG_gui.exe` + `libarchive.dll` + a licence no
 **Making a release** — one command builds and packages both platforms:
 
 ```bat
-release.bat            :: -> distMCG-windows\ + .zip, distMCG-linux\ + .tar.gz
-release.bat v1.2       :: -> distMCG-v1.2-windows\, distMCG-v1.2-linux\ ... (name suffix)
+release.bat            :: -> dist\fMCG-windows\ + .zip, dist\fMCG-linux\ + .tar.gz
+release.bat v1.2       :: -> dist\fMCG-v1.2-windows\, dist\fMCG-v1.2-linux\ ... (name suffix)
 debug build            :: build.bat debug (Windows) or make debug (Linux/macOS)
 ```
 
