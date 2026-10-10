@@ -1,7 +1,8 @@
 """C++ engine tests (test/cpp/*.cpp), built against the core sources and run.
 
-Each binary returns 0 on success. They are run from the repo root (some write
-scratch files under test/_*, which is gitignored).
+Each binary returns 0 on success. They run from the repo root and write
+scratch files (repo root, test/, test/data/, next to the exe); every file a
+test creates in those folders is deleted afterwards, pass or fail.
 """
 import os
 import subprocess
@@ -10,9 +11,28 @@ import unittest
 import fmcgtest as T
 
 
+SCRATCH_DIRS = [T.ROOT, T.TEST_DIR, os.path.join(T.TEST_DIR, "data"), T.BUILD]
+
+
+def _files():
+    out = set()
+    for d in SCRATCH_DIRS:
+        if os.path.isdir(d):
+            out |= {os.path.join(d, f) for f in os.listdir(d) if os.path.isfile(os.path.join(d, f))}
+    return out
+
+
 def run(tc, name, args=(), cwd=None, sources=None, flags=(), timeout=900):
     exe = T.build(name, (sources or T.CORE_FULL) + [f"test/cpp/{name}.cpp"], flags)
-    r = subprocess.run([exe] + list(args), cwd=cwd or T.ROOT, capture_output=True, text=True, timeout=timeout)
+    before = _files()
+    try:
+        r = subprocess.run([exe] + list(args), cwd=cwd or T.ROOT, capture_output=True, text=True, timeout=timeout)
+    finally:
+        for f in _files() - before:      # scratch files the test created, pass or fail
+            try:
+                os.remove(f)
+            except OSError:
+                pass
     tc.assertEqual(r.returncode, 0, f"{name} failed:\n{(r.stdout + r.stderr)[-3000:]}")
     return r
 

@@ -16,6 +16,7 @@ import sys
 import time
 import unittest
 
+sys.dont_write_bytecode = True   # leave no __pycache__ folders in the tree
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "suites"))

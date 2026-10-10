@@ -47,6 +47,10 @@ def check_kind(tc, kind, dedup, close_held=0):
                 tc.assertEqual(bad, {}, f"(want, got) per key; {desc}; kept at {p}")
                 os.remove(p)
     oracle.CLOSE_HELD = False
+    try:
+        os.rmdir(tmp)       # empty when every case passed; failing cases stay for inspection
+    except OSError:
+        pass
 
 
 class Dialects(unittest.TestCase):

@@ -251,5 +251,7 @@ int main() {
         }
     }
     printf("\n%s (%d failures)\n", fails ? "FAILURES" : "ALL OK", fails);
+    std::remove("_t.ass");      // scratch outputs: removed on every path
+    std::remove("_tmax.ass");
     return fails ? 1 : 0;
 }
