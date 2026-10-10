@@ -13,7 +13,7 @@
 #include <unordered_map>
 
 #include "fmcg_util.h"
-#include "xxhash64.h"   // vendored single-header XXHash64 (Stephan Brumme, MIT)
+#include "xxhash64.h"   // vendored single-header XXHash64 (Stephan Brumme, zlib-style licence)
 
 #include "archive.h"
 #include "archive_entry.h"

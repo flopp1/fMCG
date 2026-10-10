@@ -69,10 +69,16 @@ The old walker needed `ulimit -s 65536`; the new one recurses only grammar-depth
 
 ## 4. Testing
 `python -I test/run_tests.py [--level quick|corpus|full] [-k substr] [--seeds N]` (or `make test LEVEL=...`)
-- quick (~4.5 min): 14 dialects x {layered, layered+close-held, standard} vs the oracle, C++ tests,
-  plain corpus MIDIs compressed on the fly (layered == standard).
-- corpus (+~2 min): each layered corpus file shrunk to <= 3 repeats per run -> layered == standard.
-- full (+~3 min): full-size layered files vs `test/expected/corpus_layered.json` (BSOD excluded: ~16 min; its verified values are in the JSON for manual runs).
+- quick (35 s warm, ~50 s after an engine edit, ~75 s cold): 14 dialects x {layered, layered+close-held,
+  standard} vs the oracle (~25 s), C++ tests (~35 s: test_parallel ~11 s, test_burst_fuzz ~10 s),
+  plain corpus MIDIs compressed on the fly (layered == standard, <1 s).
+- corpus (+~225 s): each layered corpus file shrunk -> layered == standard. Per file (standard + layered):
+  NoiseMidi 76 s (two-pass ref; layered side is the 1.43e9-tick sweep), MIDI File 40 s, BSOD 35 s,
+  Just 1 note 22 s, gymnopedie 21 s, happy 17 s, Ievans 14 s, paprikas <1 s.
+- full (+~100 s): full-size layered files vs `test/expected/corpus_layered.json` (BSOD excluded: ~16 min;
+  its verified values are in the JSON for manual runs).
+Each run prints the slowest tests (`--times N`). Objects are cached per source in build/test/obj and
+compiled in parallel; only sources whose dependencies changed recompile.
 Probe: `probe <file> [fps=60] [dedup 0|1] [threads] [close_held 0|1] [spec 0|1]` ->
 `OK notes= ticks= ppqn= peak_poly= peak_nps= frames= lossy= twopass=` (lossy=1: a `NOT counted` warning was emitted).
 **Spec-breaking files (> 2^28 ticks) must never run on the single-pass standard path in tests** (dense tick
@@ -129,16 +135,22 @@ No content heuristics. See DESIGN.md.
 7. Peak-NPS 1-second window is **inclusive of the boundary** (an event exactly 1.0 s earlier
    still counts) -- user decision 2026-10-10.
 
-## 6. Goals (from the user, 2026-10-10, in priority order)
-1. Keep these root .md files complete enough for any agent to start from scratch. (done; maintain)
-2. **(EXTREMELY HIGH PRIORITY)** Fix layered dedup against `FMCG_TEST_FILES/LAYERED_COMPRESSED`.
-   Standard (non-dedup) path for plain/compressed files is correct and is the reference.
-   Also: builds must work on Windows AND Linux; clean up `test/` into a real test framework
-   (instead of loose .cpp files and Python rigs).
-3. Then: replace ASS+FFmpeg render with an in-built renderer (text + background drawn in-app),
+## 6. Goals (from the user; numbered in the order given)
+1. DONE (session 3): keep these root .md files complete enough for any agent to start from scratch.
+   Ongoing duty: update them every session.
+2. DONE (session 3): layered dedup fixed and verified on all 8 files in
+   `FMCG_TEST_FILES/LAYERED_COMPRESSED` (OPEN_QUESTIONS.md table); Windows + Linux builds;
+   `test/` consolidated into `test/run_tests.py`. The standard (non-dedup) path stays the reference.
+3. NEXT: replace ASS+FFmpeg render with an in-built renderer (text + background drawn in-app),
    using only a lightweight encoder + muxer.
 4. Typography options under Advanced: kerning, OpenType stylistic sets, old-style numerals, etc.
 5. Resolution limits so text never overflows the frame in preview or render (re-check after 3).
+6. GUI restructure (added 2026-10-11): the window is too tall. Today `gui/main.cpp` draw_frame stacks
+   MIDI File (~L179) -> Pattern section (~L235-571: font, size, layout, colours, commas, BPM decimals,
+   counter position) -> Global section (~L572-700: delays, vel-0 / close-held, resolution, FPS,
+   threads, output path) -> action buttons -> progress -> log. New layout: MIDI File input area stays
+   on top; BELOW it, Global on the LEFT and Pattern on the RIGHT, side by side (e.g. two columns /
+   child regions). Do NOT change any individual option inside either group -- only move the groups.
 
 ## 7. Status log
 - Session 3 (2026-10-10, Claude Code): layered dedup rewritten (fmcg_layered.cpp); all 8

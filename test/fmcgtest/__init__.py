@@ -9,11 +9,14 @@ Environment:
   FMCG_TEST_LEVEL  quick | corpus | full   (set by run_tests.py)
   FMCG_SEEDS       seeds per dialect (default 30)
 """
+import concurrent.futures
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 TEST_DIR = os.path.join(ROOT, "test")
@@ -40,42 +43,72 @@ CORE = ["src/fmcg_midi.cpp", "src/fmcg_format.cpp", "src/fmcg_util.cpp", "src/fm
 CORE_FULL = CORE + ["src/fmcg_fonts.cpp", "src/fmcg_render.cpp"]
 
 
-def _newest(paths):
-    t = 0.0
-    for p in paths:
-        t = max(t, os.path.getmtime(p))
-    return t
+BUILD_TIMES = {}   # name -> seconds spent compiling/linking (this run)
+_OBJ_LOCK = threading.Lock()
+_OBJ_DONE = {}     # object path -> True once checked/built this run
 
 
-def _deps():
-    out = []
-    for d in ("src", "test", "test/cpp"):
-        full = os.path.join(ROOT, d)
-        out += [os.path.join(full, f) for f in os.listdir(full) if f.endswith((".h", ".cpp"))]
-    out.append(os.path.join(ROOT, "fMCG_core.h"))
-    return out
+def _obj_stale(obj, dep):
+    """gcc -MMD depfile: stale if the object/depfile is missing or any dependency is newer."""
+    if not (os.path.exists(obj) and os.path.exists(dep)):
+        return True
+    t = os.path.getmtime(obj)
+    text = open(dep).read().replace("\\\n", " ")
+    deps = text.split("obj:", 1)[1].split() if "obj:" in text else [dep + ".missing"]
+    for d in deps:
+        p = d if os.path.isabs(d) else os.path.join(ROOT, d)
+        if not os.path.exists(p) or os.path.getmtime(p) > t:
+            return True
+    return False
+
+
+def _compile(src, flags):
+    """Compile one source to a cached object (per flag set); returns the object path."""
+    tag = "_".join(f.strip("-").replace("=", "") for f in flags) or "default"
+    obj_dir = os.path.join(BUILD, "obj", tag)
+    stem = src.replace("/", "_").replace("\\", "_")[:-4]
+    obj = os.path.join(obj_dir, stem + ".o")
+    dep = os.path.join(obj_dir, stem + ".d")
+    with _OBJ_LOCK:
+        if _OBJ_DONE.get(obj):
+            return obj
+    if _obj_stale(obj, dep):
+        os.makedirs(obj_dir, exist_ok=True)
+        cmd = ["g++", "-std=c++17", "-O2", "-I.", "-Isrc"] + list(flags)
+        if IS_WIN:
+            cmd += ["-Ivendor/libarchive"]
+        cmd += ["-c", src, "-o", obj, "-MMD", "-MF", dep, "-MT", "obj"]   # fixed target: no drive-letter colon
+        r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"compile of {src} failed:\n{r.stderr[-4000:]}")
+    with _OBJ_LOCK:
+        _OBJ_DONE[obj] = True
+    return obj
 
 
 def build(name, sources, extra_flags=()):
-    """Compile sources (repo-relative) into build/test/<name>; rebuilds when stale."""
+    """Build build/test/<name> from repo-relative sources. Objects are cached per
+    source and flag set (shared by every binary) and compiled in parallel; only
+    sources whose dependencies changed recompile; the binary relinks when any
+    object is newer."""
     os.makedirs(BUILD, exist_ok=True)
     out = os.path.join(BUILD, name + EXE)
-    if os.path.exists(out) and os.path.getmtime(out) >= _newest(_deps()):
-        return out
-    cmd = ["g++", "-std=c++17", "-O2", "-I.", "-Isrc"] + list(extra_flags)
-    if IS_WIN:
-        cmd += ["-Ivendor/libarchive"]
-    cmd += sources + ["-o", out]
-    if IS_WIN:
-        cmd += ["vendor/libarchive/lib/libarchive.dll.a", "-lpthread", "-Wl,--stack,0x10000000"]
-        dll = os.path.join(BUILD, "libarchive.dll")
-        if not os.path.exists(dll):
-            shutil.copy(os.path.join(ROOT, "vendor", "libarchive", "bin", "libarchive.dll"), dll)
-    else:
-        cmd += ["-larchive", "-lpthread"]
-    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
-    if r.returncode != 0:
-        raise RuntimeError(f"build of {name} failed:\n{r.stderr[-4000:]}")
+    t0 = time.perf_counter()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
+        objs = list(ex.map(lambda s: _compile(s, tuple(extra_flags)), sources))
+    if not os.path.exists(out) or os.path.getmtime(out) < max(os.path.getmtime(o) for o in objs):
+        cmd = ["g++", "-o", out] + objs
+        if IS_WIN:
+            cmd += ["vendor/libarchive/lib/libarchive.dll.a", "-lpthread", "-Wl,--stack,0x10000000"]
+            dll = os.path.join(BUILD, "libarchive.dll")
+            if not os.path.exists(dll):
+                shutil.copy(os.path.join(ROOT, "vendor", "libarchive", "bin", "libarchive.dll"), dll)
+        else:
+            cmd += ["-larchive", "-lpthread"]
+        r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"link of {name} failed:\n{r.stderr[-4000:]}")
+    BUILD_TIMES[name] = BUILD_TIMES.get(name, 0.0) + time.perf_counter() - t0
     return out
 
 

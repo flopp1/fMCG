@@ -13,6 +13,7 @@ Corpus location: $FMCG_TEST_FILES (default ../FMCG_TEST_FILES next to the repo).
 import argparse
 import os
 import sys
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -28,12 +29,37 @@ def iter_tests(suite):
             yield t
 
 
+class TimedResult(unittest.TextTestResult):
+    """Records wall time per test so the slowest ones can be reported."""
+    times = []
+
+    def startTest(self, test):
+        self._t0 = time.perf_counter()
+        super().startTest(test)
+
+    def stopTest(self, test):
+        TimedResult.times.append((time.perf_counter() - self._t0, test.id()))
+        super().stopTest(test)
+
+
+def report_times(fmcgtest, top):
+    rows = sorted(TimedResult.times, reverse=True)
+    total = sum(t for t, _ in rows)
+    builds = sum(fmcgtest.BUILD_TIMES.values())
+    print(f"\nTiming: {total:.0f}s in tests (of which {builds:.0f}s compiling C++ binaries)")
+    for t, name in rows[:top]:
+        print(f"  {t:7.1f}s  {name.split('.', 1)[-1]}")
+    if fmcgtest.BUILD_TIMES:
+        print("  compile: " + ", ".join(f"{k} {v:.0f}s" for k, v in sorted(fmcgtest.BUILD_TIMES.items(), key=lambda kv: -kv[1])))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--level", choices=["quick", "corpus", "full"], default="quick")
     ap.add_argument("--seeds", type=int, default=None)
     ap.add_argument("-k", dest="pattern", default="")
     ap.add_argument("-v", dest="verbose", action="store_true")
+    ap.add_argument("--times", type=int, default=10, help="show the N slowest tests (0 = off)")
     a = ap.parse_args()
     os.environ["FMCG_TEST_LEVEL"] = a.level
     if a.seeds:
@@ -47,7 +73,9 @@ def main():
     suite = loader.discover(os.path.join(HERE, "suites"), pattern="test_*.py", top_level_dir=os.path.join(HERE, "suites"))
     if a.pattern:
         suite = unittest.TestSuite(t for t in iter_tests(suite) if a.pattern.lower() in t.id().lower())
-    r = unittest.TextTestRunner(verbosity=2 if a.verbose else 1).run(suite)
+    r = unittest.TextTestRunner(verbosity=2 if a.verbose else 1, resultclass=TimedResult).run(suite)
+    if a.times:
+        report_times(fmcgtest, a.times)
     sys.exit(0 if r.wasSuccessful() else 1)
 
 
