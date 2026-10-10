@@ -62,7 +62,7 @@ decoder only unwraps a stream that starts compressed, so it reads the inner xz b
 No corpus file is built this way; the `tiled_members` / `tempo_diff` dialects are layered-only.
 
 ## Not handled yet
-- BSOD: damaged members (see OPEN_QUESTIONS.md). The walk counts the decodable prefix and warns.
+- Members that fail to decode count their decodable prefix and warn (none in the corpus; BSOD was not damaged).
 - Containers other than xz inside layers (7z/rar/gz members): the walk returns "not applicable"
   only when the FILE is not xz; a non-xz payload inside is treated as a leaf. The flat stream must
   then start with MThd or the scan falls back to the standard path.

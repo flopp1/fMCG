@@ -2,36 +2,69 @@
   "about": "Full-size layered corpus (FMCG_TEST_FILES/LAYERED_COMPRESSED), probe <file> 60 1, close_held=0. Values produced by the session-3 walk (identical on Windows and Linux) and cross-checked as noted per file. Peak NPS uses the closed (inclusive) 1 s window.",
   "files": {
     "Ievans_Polka_Infinite_Star_Wars.mid.xz.xz.xz": {
-      "notes": 53745997855018, "ticks": 9216000, "ppqn": 7680, "peak_poly": 53745997824005, "peak_nps": 322487650862,
+      "notes": 53745997855018,
+      "ticks": 9216000,
+      "ppqn": 7680,
+      "peak_poly": 53745997824005,
+      "peak_nps": 322487650862,
       "verified": "shrunk K=2 and K=5 layered == standard; notes match the session-2 engine"
     },
     "Just 1 note X 93,823,560,428,205.mid.xz.xz.xz": {
-      "notes": 93823560428205, "ticks": 0, "ppqn": 480, "peak_poly": 93823560428205, "peak_nps": 93823560428205,
+      "notes": 93823560428205,
+      "ticks": 0,
+      "ppqn": 480,
+      "peak_poly": 93823560428205,
+      "peak_nps": 93823560428205,
       "verified": "count equals the file name; shrunk K=2/K=5 layered == standard"
     },
     "MIDI File.mid.xz.xz.xz.xz": {
-      "notes": 7385042433600, "ticks": 178560, "ppqn": 480, "peak_poly": 722710800, "peak_nps": 210354934050,
+      "notes": 7385042433600,
+      "ticks": 178560,
+      "ppqn": 480,
+      "peak_poly": 722710800,
+      "peak_nps": 210354934050,
       "verified": "61455 copies of one whole-file tile; the tile alone (standard scan) = 120169920 notes / 178560 ticks / poly 11760 / nps 3422910, x61455 on every stat; shrunk K=2 layered == standard. The session-2 engine reported 7354400010510 (wrong)."
     },
     "NoiseMidi.mid.xz.xz.xz": {
-      "notes": 93823560428205, "ticks": 1431655762, "ppqn": 65535, "peak_poly": 93823560428205, "peak_nps": 8589737985,
+      "notes": 93823560428205,
+      "ticks": 1431655762,
+      "ppqn": 65535,
+      "peak_poly": 93823560428205,
+      "peak_nps": 8589737985,
       "verified": "matches the session-2 engine and the 'grid' dialect; not shrink-checkable (1.43e9-tick tile)"
     },
     "gymnopedie.mid.xz.xz.xz": {
-      "notes": 46836487526682, "ticks": 54144, "ppqn": 384, "peak_poly": 865035607, "peak_nps": 333038706010,
+      "notes": 46836487526682,
+      "ticks": 54144,
+      "ppqn": 384,
+      "peak_poly": 865035607,
+      "peak_nps": 333038706010,
       "verified": "shrunk K=2/K=5 layered == standard; notes match the session-2 engine (its peak NPS used the half-open window)"
     },
     "happy theme of DEATH V10 FINAL.mid.xz.xz.xz.xz": {
-      "notes": 35180980081758, "ticks": 4608, "ppqn": 96, "peak_poly": 308594756484, "peak_nps": 20671137314100,
+      "notes": 35180980081758,
+      "ticks": 4608,
+      "ppqn": 96,
+      "peak_poly": 308594756484,
+      "peak_nps": 20671137314100,
       "verified": "shrunk K=2/K=5 layered == standard (the session-2 engine never completed this file)"
     },
     "paprikastrillionmidi.mid.xz.xz": {
-      "notes": 2661824754708, "ticks": 867869, "ppqn": 30720, "peak_poly": 43842246, "peak_nps": 1546303630494,
+      "notes": 2661824754708,
+      "ticks": 867869,
+      "ppqn": 30720,
+      "peak_poly": 43842246,
+      "peak_nps": 1546303630494,
       "verified": "shrunk K=2/K=5 layered == standard; notes match .agent/corpus_observed.json"
     },
     "When Systematic & Inferno has BSOD.mid.xz.xz.xz": {
-      "notes": 0, "ticks": 0, "ppqn": 0, "peak_poly": 0, "peak_nps": 0,
-      "skip": "deferred to the next session (damaged xz members)"
+      "notes": 93715050000000,
+      "ticks": 2232234,
+      "ppqn": 2048,
+      "peak_poly": 93715050000000,
+      "peak_nps": 77995697368890,
+      "verified": "65,535 periods x 16 members (1,048,561 children); exactly 1,430,000,000 notes per track; shrunk (2.4 periods) layered == standard. SLOW: ~16 min, the 2.3 TB single-block layer-2 payload must be decoded once.",
+      "skip": "excluded from the regular suite: ~16 min (decodes a 2.3 TB layer). Values above are verified; check manually with probe <file> 60 1."
     }
   }
 }

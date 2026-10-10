@@ -18,11 +18,14 @@
    workspace transition (goal 1 + builds + tests first). happy can be tested now (local box: 32 GB RAM, 12 cores).
 
 ## Still open / known gaps
-- BSOD (next session): the session-2 notes said depth-1 xz members 1..4 are DAMAGED (xz -t: corrupt after
-  ~2.7 MB of a declared 268 MB). Backward index parsing in session 3 shows layer 2 as ONE valid-looking stream
-  declaring a 2.3 TB payload. The new walk keeps the decodable prefix of any member whose decoder dies and
-  feeds raw continuation bytes straight to the transducer (both now built in) -- re-investigate from there.
-- GUI: no checkbox yet for `set_close_held_notes` (engine + probe support it).
+- BSOD structure (session 3, verified): root xz (35 MB) -> 1 member (376 MB, ONE xz block, dict 4 GiB, made
+  by 7-Zip) whose payload is 2.3 TB of layer-3 members: a 72-byte MThd member, then a 16-member period
+  (16 x 256 MB raw slices of a ~4.29 GB MTrk, cut mid-event, running status) repeated ~66,000 times
+  (~283 TB expanded). Every member decodes cleanly -- session 2's "damaged members" was the old walker
+  misreading the structure. Shrunk BSOD (header + 2.4 periods): layered == standard exactly.
+  Cost: the 2.3 TB layer-2 payload must be decoded once to learn the member sequence (single block, so no
+  block-level dedup; LZMA2 range-coder state carries across chunks, so no sound skip). libarchive decodes it
+  at ~2-3.4 GB/s => measured 16 min total on this box. That is inherent to the file, not the walk.
 - Standard (non-dedup) path on mixed-depth constructions differs by design (DESIGN.md).
 - .7z inside a compression filter (.7z.xz): NOT supported -- 7z needs random access to its end header, so it
   cannot be streamed (user decision: only support it if streamable). The engine now says so explicitly.
@@ -37,5 +40,5 @@
 | gymnopedie | 46,836,487,526,682 | 54,144 | 384 | 865,035,607 | 333,038,706,010 | 24-27 s | shrunk == standard |
 | happy | 35,180,980,081,758 | 4,608 | 96 | 308,594,756,484 | 20,671,137,314,100 | 16-19 s | shrunk == standard (never completed before) |
 | paprikas | 2,661,824,754,708 | 867,869 | 30720 | 43,842,246 | 1,546,303,630,494 | 2-3 s | shrunk == standard |
-| BSOD | (deferred) | | | | | | |
+| BSOD | 93,715,050,000,000 | 2,232,234 | 2048 | = notes | 77,995,697,368,890 | 16 min | 65,535 tracks x exactly 1.43e9 notes; shrunk == standard; time = decoding the 2.3 TB layer-2 payload |
 Expected values live in `test/expected/corpus_layered.json` (checked by `run_tests.py --level full`).

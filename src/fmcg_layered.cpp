@@ -199,6 +199,18 @@ public:
         if (r == 0) eof_ = true;
         return (size_t)r;
     }
+    // Zero-copy: next decoded block (valid until the next call); 0 = end.
+    size_t pull_block(const uint8_t*& p) {
+        if (!ok_ || err_ || eof_) return 0;
+        const void* b = nullptr;
+        size_t sz = 0;
+        la_int64_t off = 0;
+        const int r = archive_read_data_block(a_, &b, &sz, &off);
+        if (r == ARCHIVE_EOF) { eof_ = true; return 0; }
+        if (r < ARCHIVE_WARN) { err_ = true; return 0; }
+        p = static_cast<const uint8_t*>(b);
+        return sz;
+    }
     bool error() const { return err_; }
 };
 
@@ -1213,14 +1225,19 @@ public:
     }
 
     // Forward cut of a decoded payload into xz members (validated footers).
-    template <class Pull>
-    void cut_payload(uint32_t parent, Pull pull, std::vector<uint8_t> prefix) {
+    // `pull_block(const uint8_t*& p) -> size_t` yields decoded blocks (zero-copy).
+    template <class PullBlock>
+    void cut_payload(uint32_t parent, PullBlock pull_block, std::vector<uint8_t> prefix) {
         std::vector<uint8_t> buf = std::move(prefix);
         size_t head = 0, scan = 0;
         bool eof = false;
         const uint64_t unc_total = W_.nodes[parent].unc;
         uint64_t node_decoded = buf.size();
-        std::vector<uint64_t> recent;   // recent distinct member lengths (fast boundary guess)
+        // Recently seen members (length, node): the next member is usually one
+        // of them (tiles repeat; BSOD cycles through 16), so its boundary is
+        // checked directly and identity is an exact memcmp against the stored
+        // copy -- no footer scan, no hashing of every byte.
+        std::vector<std::pair<uint64_t, uint32_t>> recent;
         constexpr size_t kChunk = 4u << 20;
         auto avail = [&] { return buf.size() - head; };
         auto fill = [&]() -> bool {
@@ -1230,16 +1247,25 @@ public:
                 scan = scan > head ? scan - head : 0;
                 head = 0;
             }
-            const size_t old = buf.size();
-            buf.resize(old + kChunk);
-            const size_t got = pull(buf.data() + old, kChunk);
-            buf.resize(old + got);
+            size_t got = 0;
+            while (got < kChunk) {
+                const uint8_t* bp = nullptr;
+                const size_t sz = pull_block(bp);
+                if (!sz) { eof = true; break; }
+                buf.insert(buf.end(), bp, bp + sz);   // appends without zero-filling
+                got += sz;
+            }
             decoded += got;
             node_decoded += got;
             W_.ping("Layer discovery", unc_total ? (double)node_decoded / (double)unc_total : -1.0);
-            if (!got) eof = true;
             W_.check_cancel();
             return got > 0;
+        };
+        auto remember = [&](uint64_t L, uint32_t id) {
+            for (size_t i = 0; i < recent.size(); ++i)
+                if (recent[i].first == L && recent[i].second == id) { recent.erase(recent.begin() + (ptrdiff_t)i); break; }
+            recent.insert(recent.begin(), {L, id});
+            if (recent.size() > 32) recent.pop_back();
         };
         for (;;) {
             if (avail() < 32 && !eof) { fill(); continue; }
@@ -1263,9 +1289,11 @@ public:
                 ++raw_tails;
                 break;
             }
-            // Fast path: a recently seen member length ends a valid stream here.
+            // Fast path: a recently seen member repeats here.
             bool found = false;
-            for (uint64_t L : recent) {
+            for (size_t ri = 0; ri < recent.size(); ++ri) {
+                const uint64_t L = recent[ri].first;
+                const uint32_t rid = recent[ri].second;
                 if (L > n) {
                     if (!eof && L <= ((uint64_t)1 << 31)) {
                         while (avail() < L && fill()) {}
@@ -1273,9 +1301,19 @@ public:
                     }
                     break;
                 }
+                const Node& cand = W_.nodes[rid];
+                if (cand.cptr && std::memcmp(p, cand.cptr, (size_t)L) == 0) {
+                    ++occurrences;                 // byte-identical to a validated member
+                    push_kid(W_.nodes[parent], rid);
+                    if (ri) remember(L, rid);
+                    head += (size_t)L; scan = 0; found = true;
+                    break;
+                }
                 uint64_t unc = 0;
                 if (xz_stream_exact(p, (size_t)L, &unc)) {
-                    push_kid(W_.nodes[parent], intern(p, L, unc, false, true));
+                    const uint32_t id = intern(p, L, unc, false, true);
+                    push_kid(W_.nodes[parent], id);
+                    remember(L, id);
                     head += (size_t)L; scan = 0; found = true;
                     break;
                 }
@@ -1290,10 +1328,9 @@ public:
                 uint64_t unc = 0;
                 if (p[yi + 1] == 'Z' && xz_stream_exact(p, yi + 2, &unc)) {
                     const uint64_t L = yi + 2;
-                    push_kid(W_.nodes[parent], intern(p, L, unc, false, true));
-                    recent.erase(std::remove(recent.begin(), recent.end(), L), recent.end());
-                    recent.insert(recent.begin(), L);
-                    if (recent.size() > 8) recent.pop_back();
+                    const uint32_t id = intern(p, L, unc, false, true);
+                    push_kid(W_.nodes[parent], id);
+                    remember(L, id);
                     head += (size_t)L; scan = 0; found = true;
                     break;
                 }
@@ -1320,18 +1357,19 @@ public:
             bool internal = false, derr = false;
             {
                 XzDec dec(nd0.cptr, (size_t)nd0.clen);
-                std::vector<uint8_t> prefix(64);
-                size_t have = 0;
-                while (have < 6) {
-                    const size_t got = dec.pull(prefix.data() + have, prefix.size() - have);
+                // Whole blocks only: mixing archive_read_data with
+                // archive_read_data_block could drop a partly read block.
+                std::vector<uint8_t> prefix;
+                while (prefix.size() < 6) {
+                    const uint8_t* bp = nullptr;
+                    const size_t got = dec.pull_block(bp);
                     if (!got) break;
-                    have += got;
+                    prefix.insert(prefix.end(), bp, bp + got);
                 }
-                prefix.resize(have);
-                internal = have >= 6 && std::memcmp(prefix.data(), kXzMagic, 6) == 0;
+                internal = prefix.size() >= 6 && std::memcmp(prefix.data(), kXzMagic, 6) == 0;
                 if (internal) {
                     W_.nodes[id].kind = Node::INTERNAL;
-                    cut_payload(id, [&](uint8_t* out, size_t cap) { return dec.pull(out, cap); }, std::move(prefix));
+                    cut_payload(id, [&](const uint8_t*& bp) { return dec.pull_block(bp); }, std::move(prefix));
                 }
                 derr = dec.error();
             }

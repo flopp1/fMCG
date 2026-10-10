@@ -16,7 +16,7 @@ import unittest
 
 import fmcgtest as T
 
-SHRINK_SKIP = {"When Systematic & Inferno has BSOD.mid.xz.xz.xz": "deferred (damaged members)"}
+SHRINK_SKIP = {}
 # Files whose tiles break the MIDI tick spec (> 2^28 ticks): the standard
 # reference MUST come from the two-pass path (the single-pass dense arrays
 # would need ~29 GB for NoiseMidi), so only the two-pass-exact stats compare.

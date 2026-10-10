@@ -72,7 +72,7 @@ The old walker needed `ulimit -s 65536`; the new one recurses only grammar-depth
 - quick (~4.5 min): 14 dialects x {layered, layered+close-held, standard} vs the oracle, C++ tests,
   plain corpus MIDIs compressed on the fly (layered == standard).
 - corpus (+~2 min): each layered corpus file shrunk to <= 3 repeats per run -> layered == standard.
-- full (+~3 min): full-size layered files vs `test/expected/corpus_layered.json`.
+- full (+~3 min): full-size layered files vs `test/expected/corpus_layered.json` (BSOD excluded: ~16 min; its verified values are in the JSON for manual runs).
 Probe: `probe <file> [fps=60] [dedup 0|1] [threads] [close_held 0|1] [spec 0|1]` ->
 `OK notes= ticks= ppqn= peak_poly= peak_nps= frames= lossy= twopass=` (lossy=1: a `NOT counted` warning was emitted).
 **Spec-breaking files (> 2^28 ticks) must never run on the single-pass standard path in tests** (dense tick
@@ -141,8 +141,8 @@ No content heuristics. See DESIGN.md.
 5. Resolution limits so text never overflows the frame in preview or render (re-check after 3).
 
 ## 7. Status log
-- Session 3 (2026-10-10, Claude Code): layered dedup rewritten (fmcg_layered.cpp); all 7 non-BSOD
+- Session 3 (2026-10-10, Claude Code): layered dedup rewritten (fmcg_layered.cpp); all 8
   layered files verified (OPEN_QUESTIONS.md table); test/ restructured into run_tests.py; inclusive
   integer NPS window; tempo-meta window-straddle bug fixed in the standard parser; Windows + Linux
-  builds and suites green. Next: BSOD, then goal 3.
+  builds and suites green. BSOD solved (93,715,050,000,000; 16 min, decode-bound). Next: goal 3.
 See OPEN_QUESTIONS.md "Corpus status" for the per-file table; update it every session.
