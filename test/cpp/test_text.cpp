@@ -5,6 +5,7 @@
 #include "src/fmcg_text.h"
 
 #include <cstdio>
+#include <cmath>
 #include <cstdlib>
 #include <algorithm>
 #include <random>
@@ -170,6 +171,89 @@ int main() {
         bool opaque_text = false;
         for (size_t i = 3; i < c.px.size(); i += 4) if (c.px[i] == 255) { opaque_text = true; break; }
         check("transparent bg: glyph interiors opaque", opaque_text);
+    }
+
+    // 7. Typography options -> HarfBuzz feature strings (defaults change nothing)
+    {
+        fmcg_text::Typography t;
+        check("typography: defaults produce no features", t.features().empty());
+        t.kerning = false; t.ligatures = false; t.slashed_zero = true;
+        t.numerals = 2; t.numeral_width = 2;
+        t.stylistic_sets = (1u << 0) | (1u << 19);   // ss01, ss20
+        t.extra = "cv01, salt  -calt !!bad";
+        const std::vector<std::string> want = {"-kern", "-liga", "zero", "onum", "tnum", "ss01", "ss20",
+                                               "cv01", "salt", "-calt"};
+        check("typography: options map to features (invalid extra token dropped)", t.features() == want);
+        check("typography: valid_feature accepts 'ss01=0' / rejects '!!bad'",
+              fmcg_text::valid_feature("ss01=0") && !fmcg_text::valid_feature("!!bad"));
+        TextStyle s2 = st;
+        t.letter_spacing = 3; t.line_spacing = 1.5;
+        t.apply(s2);
+        check("typography: apply() sets features + spacing",
+              s2.features == want && s2.letter_spacing == 3 && s2.line_spacing == 1.5);
+    }
+
+    // 8. font feature discovery
+    {
+        const auto ff = fmcg_text::font_features(st.font_file);
+        std::string tags;
+        bool kern = false;
+        for (const auto& f : ff) { tags += f.tag + " "; kern |= f.tag == "kern"; }
+        std::printf("  features of the test font: %s\n", tags.c_str());
+        check("font_features: lists the test font's kerning", kern);
+        check("font_features: missing file -> empty", fmcg_text::font_features("/no/such/font.ttf").empty());
+    }
+
+    // 9. letter spacing: + spacing between clusters (not after the last); line spacing: pitch only
+    {
+        TextRenderer a, b;
+        TextStyle s2 = st;
+        s2.features = {"-kern"};
+        a.load(s2);
+        s2.letter_spacing = 5;
+        s2.line_spacing = 1.5;
+        b.load(s2);
+        const Layout la = a.layout({"Hello", "x"}), lb = b.layout({"Hello", "x"});
+        std::printf("  'Hello' width %.2f -> %.2f with 5 px spacing\n", la.lines[0].advance, lb.lines[0].advance);
+        check("letter spacing: width grows by 4 x 5 px for 5 characters",
+              std::fabs(lb.lines[0].advance - la.lines[0].advance - 20.0) < 1e-6);
+        check("line spacing: block height = size + (lines-1) x size x 1.5",
+              std::fabs(lb.height() - (st.size + st.size * 1.5)) < 1e-6 && std::fabs(la.height() - 2 * st.size) < 1e-6);
+    }
+
+    // 10. old-style numerals change the digit glyphs, in a font that has them (skipped otherwise)
+    {
+        const char* cands[] = {"C:/Windows/Fonts/calibri.ttf", "C:/Windows/Fonts/georgia.ttf", "C:/Windows/Fonts/constan.ttf",
+                               "/usr/share/fonts/truetype/crosextra/Carlito-Regular.ttf",
+                               "/usr/share/fonts/opentype/linux-libertine/LinLibertine_R.otf"};
+        std::string onum_font;
+        for (const char* c : cands) {
+            for (const auto& f : fmcg_text::font_features(c))
+                if (f.tag == "onum") onum_font = c;
+            if (!onum_font.empty()) break;
+        }
+        if (onum_font.empty()) {
+            std::printf("  (no font with 'onum' found; old-style numeral check skipped)\n");
+        } else {
+            TextRenderer a, b;
+            TextStyle s2 = st;
+            s2.font_file = onum_font;
+            a.load(s2);
+            s2.features = {"onum"};
+            b.load(s2);
+            s2.features = {"lnum"};
+            TextRenderer c;
+            c.load(s2);
+            const Layout la = a.layout({"0123456789"}), lb = b.layout({"0123456789"}), lc = c.layout({"0123456789"});
+            bool differs = false, lnum_differs = false;
+            for (size_t i = 0; i < la.lines[0].glyphs.size() && i < lb.lines[0].glyphs.size(); ++i) {
+                differs |= la.lines[0].glyphs[i].id != lb.lines[0].glyphs[i].id;
+                lnum_differs |= lb.lines[0].glyphs[i].id != lc.lines[0].glyphs[i].id;
+            }
+            std::printf("  onum font: %s\n", onum_font.c_str());
+            check("onum: old-style numerals use different digit glyphs than lnum", lnum_differs);
+            std::printf("  font default digits %s old-style\n", differs ? "are not" : "are already");
+        }
     }
 
     std::printf("\n%s (%d failures)\n", fails ? "FAILURES" : "ALL OK", fails);

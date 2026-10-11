@@ -48,6 +48,7 @@ struct GuiSettings {
     bool        outline_enabled = false;     // pattern: text outline (in-built renderer)
     double      outline_width = 1.0;
     std::string outline_color_aabbggrr = "&H00000000";
+    fmcg_text::Typography typo;              // pattern: advanced typography
     int         output_format = 0;           // global: 0 = MP4 (H.264), 1 = MOV (qtrle)
     bool        transparent_bg = false;      // global: MOV only
     int         x264_crf = 18;               // global encoder settings (MP4): CRF 0..51
@@ -169,6 +170,7 @@ struct AppState {
     bool                      outline_enabled{false};
     double                    outline_width{1.0};
     std::string               outline_colour_ass{"&H00000000"};
+    fmcg_text::Typography     typo;            // advanced typography (pattern)
 
     // ---- async file dialog state ---------------------------------------------
     std::atomic<bool>         dialog_busy{false};

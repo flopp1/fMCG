@@ -149,7 +149,12 @@ No content heuristics. See DESIGN.md.
    `test/` consolidated into `test/run_tests.py`. The standard (non-dedup) path stays the reference.
 3. DONE (session 3, RENDER_PLAN.md): in-built renderer replaces ASS+FFmpeg -- HarfBuzz + stb_truetype
    text, x264 MP4 (default) / qtrle MOV (optional alpha), shared by preview and render; outline setting.
-4. Typography options under Advanced: kerning, OpenType stylistic sets, old-style numerals, etc.
+4. DONE (session 3): typography options. Pattern column > "Advanced typography" (`draw_typography_options`
+   in gui/main.cpp): kerning, ligatures, slashed zero, lining/old-style + proportional/tabular numerals,
+   the font's stylistic sets (with font-provided names), free-form extra features, letter + line spacing.
+   `fmcg_text::Typography` (features() / apply()) -> `TextStyle::features`, `letter_spacing`,
+   `line_spacing`; `fmcg_text::font_features()` lists a font's GSUB/GPOS tags. Pattern keys typo_* ,
+   letter_spacing, line_spacing. Layout::height() no longer counts line spacing after the last line.
 5. Resolution limits so text never overflows the frame in preview or render (re-check after 3).
 6. DONE (session 3): GUI restructure. `gui/main.cpp` draw_frame: MIDI File row on top, then a 2-column
    resizable ImGui table -- `draw_global_section()` LEFT, `draw_pattern_section()` RIGHT -- then action
@@ -190,6 +195,6 @@ No content heuristics. See DESIGN.md.
   layered files verified (OPEN_QUESTIONS.md table); test/ restructured into run_tests.py; inclusive
   integer NPS window; tempo-meta window-straddle bug fixed in the standard parser; Windows + Linux
   builds and suites green. BSOD solved (93,715,050,000,000; 16 min, decode-bound). Goal 3 done
-  (in-built renderer; FFmpeg removed). Goal 6 done + encoder settings in the GUI.
-  Next: goals 4/5/7/8/9 as the user prioritises.
+  (in-built renderer; FFmpeg removed). Goal 6 done + encoder settings in the GUI. Goal 4 done.
+  Next: goals 5/7/8/9 as the user prioritises.
 See OPEN_QUESTIONS.md "Corpus status" for the per-file table; update it every session.

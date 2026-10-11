@@ -7,10 +7,12 @@
 //
 // Global settings hold everything EXCEPT what a pattern defines. Patterns
 // bundle the overlay appearance: layout text, alignment/position, font
-// family+style+size, text colour, background colour, comma options, padding.
+// family+style+size, text colour, background colour, outline, typography,
+// comma options, padding, BPM decimals.
 // Every file is a flat "key = value" INI, written atomically on each change.
 #pragma once
 #include "../src/fmcg_format.h"   // CommaOpts, PadOpts
+#include "../src/fmcg_text.h"     // Typography
 
 #include <string>
 #include <vector>
@@ -30,6 +32,7 @@ struct PatternData {
     bool        outline_enabled = false;     // text outline (in-built renderer), off by default
     double      outline_width = 1.0;         // px at video resolution
     std::string outline_color_aabbggrr = "&H00000000";
+    fmcg_text::Typography typo;              // "Advanced typography" (OpenType features, spacing)
     CommaOpts   commas;
     PadOpts     pad;
     BpmOpts     bpm;
@@ -42,14 +45,14 @@ struct PatternData {
                text_color_aabbggrr == o.text_color_aabbggrr &&
                bg_color_aabbggrr == o.bg_color_aabbggrr &&
                outline_enabled == o.outline_enabled && outline_width == o.outline_width &&
-               outline_color_aabbggrr == o.outline_color_aabbggrr &&
+               outline_color_aabbggrr == o.outline_color_aabbggrr && typo == o.typo &&
                memcmp_commas(o) && pad.enabled == o.pad.enabled &&
                bpm.decimals == o.bpm.decimals;
     }
 private:
     bool memcmp_commas(const PatternData& o) const {
         return commas.notes == o.commas.notes && commas.polyphony == o.commas.polyphony &&
-               commas.nps == o.commas.nps && commas.cc == o.commas.cc;
+               commas.nps == o.commas.nps && commas.cc == o.commas.cc && commas.ticks == o.commas.ticks;
     }
 public:
 };

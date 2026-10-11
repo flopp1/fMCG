@@ -107,6 +107,7 @@ fmcg_text::TextStyle app_text_style() {
     st.outline = g_app.outline_enabled && g_app.outline_width > 0.0;
     st.outline_width = g_app.outline_width;
     st.outline_colour = fmcg_text::from_ass_colour(g_app.outline_colour_ass);
+    g_app.typo.apply(st);
     return st;
 }
 

@@ -2,6 +2,7 @@
 #include "fmcg_text.h"
 
 #include <hb.h>
+#include <hb-ot.h>
 
 #include <algorithm>
 #include <cmath>
@@ -155,20 +156,19 @@ TextRenderer::~TextRenderer() = default;
 bool TextRenderer::loaded() const { return d->font != nullptr; }
 const TextStyle& TextRenderer::style() const { return d->style; }
 
-bool TextRenderer::load(const TextStyle& style, std::string* err) {
-    d->release();
-    d->style = style;
-    std::ifstream f(style.font_file, std::ios::binary);
+static void read_font_file(const std::string& path, std::vector<uint8_t>& data) {
+    data.clear();
+    std::ifstream f(path, std::ios::binary);
 #if defined(_WIN32)
     if (!f) {   // UTF-8 path on Windows
         FILE* fp = nullptr;
         std::wstring w;
-        for (size_t i = 0; i < style.font_file.size();) {   // minimal UTF-8 -> UTF-16
-            unsigned c = (unsigned char)style.font_file[i++];
+        for (size_t i = 0; i < path.size();) {   // minimal UTF-8 -> UTF-16
+            unsigned c = (unsigned char)path[i++];
             unsigned cp = c;
             int extra = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
             if (extra) cp = c & (0x3F >> extra);
-            while (extra-- > 0 && i < style.font_file.size()) cp = (cp << 6) | ((unsigned char)style.font_file[i++] & 0x3F);
+            while (extra-- > 0 && i < path.size()) cp = (cp << 6) | ((unsigned char)path[i++] & 0x3F);
             if (cp >= 0x10000) { cp -= 0x10000; w += (wchar_t)(0xD800 + (cp >> 10)); w += (wchar_t)(0xDC00 + (cp & 0x3FF)); }
             else w += (wchar_t)cp;
         }
@@ -177,15 +177,20 @@ bool TextRenderer::load(const TextStyle& style, std::string* err) {
             std::fseek(fp, 0, SEEK_END);
             const long n = std::ftell(fp);
             std::fseek(fp, 0, SEEK_SET);
-            d->data.resize(n > 0 ? (size_t)n : 0);
-            if (n > 0 && std::fread(d->data.data(), 1, (size_t)n, fp) != (size_t)n) d->data.clear();
+            data.resize(n > 0 ? (size_t)n : 0);
+            if (n > 0 && std::fread(data.data(), 1, (size_t)n, fp) != (size_t)n) data.clear();
             std::fclose(fp);
         }
-    } else
-#endif
-    {
-        d->data.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+        return;
     }
+#endif
+    data.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+}
+
+bool TextRenderer::load(const TextStyle& style, std::string* err) {
+    d->release();
+    d->style = style;
+    read_font_file(style.font_file, d->data);
     if (d->data.empty()) { if (err) *err = "cannot read font file: " + style.font_file; return false; }
 
     const int off = stbtt_GetFontOffsetForIndex(d->data.data(), style.face_index);
@@ -222,7 +227,8 @@ bool TextRenderer::load(const TextStyle& style, std::string* err) {
 
 Layout TextRenderer::layout(const std::vector<std::string>& lines) const {
     Layout L;
-    L.line_height = d->style.size;
+    L.line_height = d->style.size * (d->style.line_spacing > 0 ? d->style.line_spacing : 1.0);
+    L.em = d->style.size;
     L.ascent = d->ascent;
     hb_buffer_t* buf = hb_buffer_create();
     for (const std::string& s : lines) {
@@ -236,7 +242,11 @@ Layout TextRenderer::layout(const std::vector<std::string>& lines) const {
         const hb_glyph_position_t* gp = hb_buffer_get_glyph_positions(buf, &n);
         double pen = 0;
         sl.glyphs.reserve(n);
+        const double ls = d->style.letter_spacing;
         for (unsigned i = 0; i < n; ++i) {
+            // letter spacing between clusters, never inside one (ligatures,
+            // combining marks) and never after the last
+            if (ls != 0 && i > 0 && gi[i].cluster != gi[i - 1].cluster) pen += ls;
             sl.glyphs.push_back({gi[i].codepoint, pen + gp[i].x_offset * d->scale, -gp[i].y_offset * d->scale});
             pen += gp[i].x_advance * d->scale;
         }
@@ -350,6 +360,113 @@ const Canvas& FrameRenderer::render(const std::vector<std::string>& lines) {
     dirty_ = last_.united(now);
     last_ = now;
     return canvas_;
+}
+
+// ---- typography options ------------------------------------------------------------
+
+std::vector<std::string> split_features(const std::string& list) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (char c : list) {
+        if (c == ' ' || c == ',' || c == ';' || c == '\t' || c == '\n' || c == '\r') {
+            if (!cur.empty()) out.push_back(cur);
+            cur.clear();
+        } else {
+            cur += c;
+        }
+    }
+    if (!cur.empty()) out.push_back(cur);
+    return out;
+}
+
+bool valid_feature(const std::string& f) {
+    hb_feature_t ft;
+    return !f.empty() && hb_feature_from_string(f.c_str(), (int)f.size(), &ft);
+}
+
+std::vector<std::string> Typography::features() const {
+    std::vector<std::string> v;
+    if (!kerning) v.push_back("-kern");
+    if (!ligatures) v.push_back("-liga");
+    if (slashed_zero) v.push_back("zero");
+    if (numerals == 1) v.push_back("lnum");
+    if (numerals == 2) v.push_back("onum");
+    if (numeral_width == 1) v.push_back("pnum");
+    if (numeral_width == 2) v.push_back("tnum");
+    for (int n = 1; n <= 20; ++n)
+        if (stylistic_sets & (1u << (n - 1))) {
+            char tag[8];
+            std::snprintf(tag, sizeof tag, "ss%02d", n);
+            v.push_back(tag);
+        }
+    for (const std::string& f : split_features(extra))   // later features override earlier ones
+        if (valid_feature(f)) v.push_back(f);
+    return v;
+}
+
+void Typography::apply(TextStyle& st) const {
+    st.features = features();
+    st.letter_spacing = letter_spacing;
+    st.line_spacing = line_spacing > 0 ? line_spacing : 1.0;
+}
+
+bool Typography::operator==(const Typography& o) const {
+    return kerning == o.kerning && ligatures == o.ligatures && slashed_zero == o.slashed_zero &&
+           numerals == o.numerals && numeral_width == o.numeral_width &&
+           stylistic_sets == o.stylistic_sets && extra == o.extra &&
+           letter_spacing == o.letter_spacing && line_spacing == o.line_spacing;
+}
+
+static std::string tag_string(hb_tag_t t) {
+    char s[5];
+    hb_tag_to_string(t, s);
+    s[4] = 0;
+    return s;
+}
+
+std::vector<FontFeature> font_features(const std::string& font_file, int face_index) {
+    std::vector<FontFeature> out;
+    std::vector<uint8_t> data;
+    read_font_file(font_file, data);
+    if (data.empty()) return out;
+    hb_blob_t* blob = hb_blob_create((const char*)data.data(), (unsigned)data.size(), HB_MEMORY_MODE_READONLY, nullptr, nullptr);
+    hb_face_t* face = hb_face_create(blob, (unsigned)face_index);
+    std::unordered_map<std::string, std::string> seen;   // tag -> name
+    for (hb_tag_t table : {HB_OT_TAG_GSUB, HB_OT_TAG_GPOS}) {
+        const unsigned total = hb_ot_layout_table_get_feature_tags(face, table, 0, nullptr, nullptr);
+        std::vector<hb_tag_t> tags(total);
+        unsigned n = total;
+        hb_ot_layout_table_get_feature_tags(face, table, 0, &n, tags.data());
+        for (unsigned i = 0; i < n; ++i) {   // feature index == position in this list
+            const std::string tag = tag_string(tags[i]);
+            std::string& name = seen[tag];
+            if (!name.empty()) continue;
+            hb_ot_name_id_t label = HB_OT_NAME_ID_INVALID;
+            if (table == HB_OT_TAG_GSUB &&
+                hb_ot_layout_feature_get_name_ids(face, table, i, &label, nullptr, nullptr, nullptr, nullptr) &&
+                label != HB_OT_NAME_ID_INVALID) {
+                unsigned len = hb_ot_name_get_utf8(face, label, HB_LANGUAGE_INVALID, nullptr, nullptr);
+                if (len) {
+                    std::string s(len + 1, '\0');
+                    unsigned cap = len + 1;
+                    hb_ot_name_get_utf8(face, label, HB_LANGUAGE_INVALID, &cap, &s[0]);
+                    s.resize(cap);
+                    name = s;
+                }
+            }
+        }
+    }
+    // legacy TrueType 'kern' table: HarfBuzz applies it as the "kern" feature
+    if (!seen.count("kern")) {
+        hb_blob_t* k = hb_face_reference_table(face, HB_TAG('k', 'e', 'r', 'n'));
+        if (hb_blob_get_length(k) > 0) seen["kern"];
+        hb_blob_destroy(k);
+    }
+    hb_face_destroy(face);
+    hb_blob_destroy(blob);
+    for (auto& kv : seen) out.push_back({kv.first, kv.second});
+    std::sort(out.begin(), out.end(), [](const FontFeature& a, const FontFeature& b) { return a.tag < b.tag; });
+    return out;
 }
 
 } // namespace fmcg_text

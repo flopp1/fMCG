@@ -100,6 +100,7 @@ static PatternData current_pattern_from_ui() {
     p.outline_enabled = g_ui.s.outline_enabled;
     p.outline_width = g_ui.s.outline_width;
     p.outline_color_aabbggrr = g_ui.s.outline_color_aabbggrr;
+    p.typo = g_ui.s.typo;
     p.commas = g_ui.s.commas;
     p.pad = g_ui.s.pad;
     p.bpm = g_ui.s.bpm;
@@ -121,6 +122,7 @@ static void apply_pattern_to_ui(const PatternData& p) {
     g_ui.s.outline_enabled = p.outline_enabled;
     g_ui.s.outline_width = p.outline_width;
     g_ui.s.outline_color_aabbggrr = p.outline_color_aabbggrr;
+    g_ui.s.typo = p.typo;
     g_ui.s.commas = p.commas;
     g_ui.s.pad = p.pad;
     g_ui.s.bpm = p.bpm;
@@ -155,6 +157,142 @@ static void refresh_pattern_list() {
 }
 
 static bool font_list_loaded = false;   // font-list lazy-init (set at startup)
+
+// Advanced typography (pattern-saved): OpenType features and spacing for the
+// in-built renderer. Options the selected font lacks are listed as such
+// (HarfBuzz ignores them, so they are harmless but do nothing).
+static void draw_typography_options() {
+    if (!ImGui::TreeNode("Advanced typography")) return;
+    fmcg_text::Typography& t = g_ui.s.typo;
+    const float k_ty_label = 150.0f;   // label column inside the indented tree
+
+    // Features of the selected font, re-read only when the family/style changes.
+    static std::string feats_for;
+    static std::vector<fmcg_text::FontFeature> feats;
+    const std::string fkey = g_ui.s.font_family + "|" + g_ui.s.font_variant;
+    if (fkey != feats_for) {
+        feats_for = fkey;
+        feats = fmcg_text::font_features(find_font_file_for_variant(g_ui.s.font_family, g_ui.s.font_variant));
+    }
+    auto has = [&](const std::string& tag) {
+        for (const auto& f : feats)
+            if (f.tag == tag) return true;
+        return false;
+    };
+    std::vector<std::string> missing;   // chosen options this font does not have
+
+    ImGui::Checkbox("Kerning##ty", &t.kerning);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pair kerning from the font (OpenType 'kern'). On by default.");
+    ImGui::SameLine();
+    ImGui::Checkbox("Ligatures##ty", &t.ligatures);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Standard ligatures such as fi / fl ('liga'). On by default.");
+    ImGui::SameLine();
+    ImGui::Checkbox("Slashed zero##ty", &t.slashed_zero);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Zero with a slash or dot, to tell it from O ('zero').");
+    if (t.slashed_zero && !has("zero")) missing.push_back("slashed zero");
+
+    ImGui::Text("Numerals");
+    ImGui::SameLine(k_ty_label);
+    ImGui::SetNextItemWidth(130);
+    static const char* k_num_style[] = {"Font default", "Lining", "Old-style"};
+    ImGui::Combo("##tynum", &t.numerals, k_num_style, 3);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Lining: capital-height digits ('lnum').\n"
+                          "Old-style: digits with ascenders/descenders, like lowercase text ('onum').");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(130);
+    static const char* k_num_width[] = {"Font default", "Proportional", "Tabular"};
+    ImGui::Combo("##tynumw", &t.numeral_width, k_num_width, 3);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Tabular: every digit has the same width ('tnum'), so counters do not\n"
+                          "shift sideways as their digits change.\n"
+                          "Proportional: each digit takes its natural width ('pnum').");
+    if (t.numerals == 1 && !has("lnum")) missing.push_back("lining numerals");
+    if (t.numerals == 2 && !has("onum")) missing.push_back("old-style numerals");
+    if (t.numeral_width == 1 && !has("pnum")) missing.push_back("proportional numerals");
+    if (t.numeral_width == 2 && !has("tnum")) missing.push_back("tabular numerals");
+
+    // Stylistic sets: the font's own, plus any the pattern enables that this font lacks.
+    {
+        bool any = false, prev_unnamed = false;
+        for (int n = 1; n <= 20; ++n) {
+            char tag[8];
+            std::snprintf(tag, sizeof tag, "ss%02d", n);
+            const uint32_t bit = 1u << (n - 1);
+            const bool in_font = has(tag);
+            if (!in_font && !(t.stylistic_sets & bit)) continue;
+            std::string label = tag;
+            for (const auto& f : feats)
+                if (f.tag == tag && !f.name.empty()) label += "  " + f.name;
+            if (!in_font) label += "  (not in this font)";
+            label += std::string("##ty") + tag;
+            bool on = (t.stylistic_sets & bit) != 0;
+            // unnamed sets flow on one row; named ones get their own line;
+            // all start in the label column
+            const bool named = label.find("  ") != std::string::npos;
+            if (!any) { ImGui::Text("Stylistic sets"); ImGui::SameLine(k_ty_label); any = true; }
+            else if (prev_unnamed && !named) ImGui::SameLine();
+            else { ImGui::Dummy(ImVec2(0, 0)); ImGui::SameLine(k_ty_label); }
+            if (ImGui::Checkbox(label.c_str(), &on)) t.stylistic_sets = on ? (t.stylistic_sets | bit) : (t.stylistic_sets & ~bit);
+            prev_unnamed = !named;
+        }
+        if (!any) ImGui::TextDisabled("Stylistic sets: none in this font");
+    }
+
+    ImGui::Text("More features");
+    ImGui::SameLine(k_ty_label);
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+    {
+        static char buf[256];
+        if (t.extra != buf) {   // pattern switched / reset
+            std::strncpy(buf, t.extra.c_str(), sizeof buf - 1);
+            buf[sizeof buf - 1] = '\0';
+        }
+        if (ImGui::InputTextWithHint("##tyextra", "e.g. cv01 salt -calt smcp", buf, sizeof buf)) t.extra = buf;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Any other OpenType features, separated by spaces or commas.\n"
+                              "'tag' turns a feature on, '-tag' off, 'tag=2' picks alternate 2.\n"
+                              "These are applied last, so they override the options above.");
+        std::string bad;
+        for (const std::string& f : fmcg_text::split_features(t.extra)) {
+            if (!fmcg_text::valid_feature(f)) { bad += (bad.empty() ? "" : ", ") + f; continue; }
+            std::string tag = f;
+            if (!tag.empty() && (tag[0] == '-' || tag[0] == '+')) tag.erase(0, 1);
+            tag = tag.substr(0, std::min(tag.find_first_of("=["), tag.size()));
+            if (!has(tag)) missing.push_back("'" + tag + "'");
+        }
+        if (!bad.empty()) ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "Ignored (not a valid feature): %s", bad.c_str());
+    }
+
+    ImGui::Text("Letter spacing");
+    ImGui::SameLine(k_ty_label);
+    ImGui::SetNextItemWidth(90);
+    float ls = (float)t.letter_spacing;
+    if (ImGui::InputFloat("px##tyls", &ls, 0.0f, 0.0f, "%.1f")) t.letter_spacing = std::max(-50.0f, std::min(200.0f, ls));
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Extra space between characters, in video pixels (negative = tighter).");
+    ImGui::SameLine();
+    ImGui::Text("Line spacing");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(70);
+    float lsp = (float)t.line_spacing;
+    if (ImGui::InputFloat("x##tylsp", &lsp, 0.0f, 0.0f, "%.2f")) t.line_spacing = std::max(0.5f, std::min(4.0f, lsp));
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Distance between lines as a multiple of the font size (1.00 = default).");
+
+    if (!missing.empty()) {
+        std::string m;
+        for (const std::string& s : missing) m += (m.empty() ? "" : ", ") + s;
+        ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f), "Not in this font (no effect): %s", m.c_str());
+    }
+    {
+        std::string tags;
+        for (const auto& f : feats) tags += (tags.empty() ? "" : " ") + f.tag;
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+        ImGui::TextWrapped("Font features: %s", tags.empty() ? "(none found)" : tags.c_str());
+        ImGui::PopStyleColor();
+    }
+    if (ImGui::Button("Reset typography")) t = fmcg_text::Typography();
+    ImGui::TreePop();
+}
 
 // Pattern section: the overlay look, saved with the selected pattern (right column).
 static void draw_pattern_section() {
@@ -334,6 +472,8 @@ static void draw_pattern_section() {
     ImGui::SetNextItemWidth(120);
     ImGui::InputInt("##fsize", &g_ui.s.font_size, 1, 10);
     if (g_ui.s.font_size < 1) g_ui.s.font_size = 1;
+
+    draw_typography_options();
 
     // Layout: one line per overlay row (pattern-saved).
     ImGui::Text("Layout (one line per overlay row; {nc}, {time-milli}, {bpm}, ...)");
@@ -914,6 +1054,7 @@ static void draw_frame(GLFWwindow* window) {
                 g_app.outline_enabled = g_ui.s.outline_enabled;
                 g_app.outline_width = g_ui.s.outline_width;
                 g_app.outline_colour_ass = g_ui.s.outline_color_aabbggrr;
+                g_app.typo = g_ui.s.typo;
                 g_app.font_size = g_ui.s.font_size;
                 g_app.font_family = g_ui.s.font_family;
                 g_app.font_variant = g_ui.s.font_variant;
@@ -1123,7 +1264,7 @@ static void draw_frame(GLFWwindow* window) {
 
     // --- Log ---
     ImGui::Text("Log Output:");
-    ImGui::BeginChild("log_area", ImVec2(0, ImGui::GetContentRegionAvail().y - 25), ImGuiChildFlags_None,
+    ImGui::BeginChild("log_area", ImVec2(0, std::max(150.0f, ImGui::GetContentRegionAvail().y - 25)), ImGuiChildFlags_None,
                       ImGuiWindowFlags_HorizontalScrollbar);
     {
         std::lock_guard<std::mutex> lock(g_app.log_mutex);

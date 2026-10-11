@@ -41,11 +41,42 @@ struct TextStyle {
     int face_index = 0;             // face inside a .ttc collection
     double size = 36.0;             // libass/VSFilter convention: ascender - descender = size px
     std::vector<std::string> features;   // HarfBuzz feature strings: "kern", "-liga", "ss01", "onum", "tnum"
+    double letter_spacing = 0.0;    // px added between characters (grapheme clusters), may be negative
+    double line_spacing = 1.0;      // line height = size * line_spacing
     RGBA colour = 0xFFFFFFFFu;
     bool outline = false;           // pattern setting, default off
     double outline_width = 1.0;     // px at video resolution
     RGBA outline_colour = 0x000000FFu;
 };
+
+// The GUI's "Advanced typography" options (saved in patterns). apply() turns
+// them into TextStyle features / spacing; defaults leave the font as designed.
+struct Typography {
+    bool kerning = true;            // "kern" (off -> "-kern")
+    bool ligatures = true;          // standard ligatures "liga" (off -> "-liga")
+    bool slashed_zero = false;      // "zero"
+    int numerals = 0;               // 0 font default, 1 lining "lnum", 2 old-style "onum"
+    int numeral_width = 0;          // 0 font default, 1 proportional "pnum", 2 tabular "tnum"
+    uint32_t stylistic_sets = 0;    // bit n-1 set = "ssNN" on (ss01..ss20)
+    std::string extra;              // more feature strings, space/comma separated: "cv01 salt -calt"
+    double letter_spacing = 0.0;    // px
+    double line_spacing = 1.0;      // multiplier
+
+    std::vector<std::string> features() const;
+    void apply(TextStyle& st) const;
+    bool operator==(const Typography& o) const;
+    bool operator!=(const Typography& o) const { return !(*this == o); }
+};
+// Tokens of a space/comma separated feature list.
+std::vector<std::string> split_features(const std::string& list);
+// True if HarfBuzz accepts the feature string ("kern", "-liga", "ss01=0", "aalt=2", "kern[3:5]").
+bool valid_feature(const std::string& f);
+
+// OpenType features a font offers (GSUB + GPOS, plus a legacy 'kern' table as
+// "kern"), sorted by tag. `name` is the font's own label (stylistic sets /
+// character variants), often empty.
+struct FontFeature { std::string tag, name; };
+std::vector<FontFeature> font_features(const std::string& font_file, int face_index = 0);
 
 // Where the text block goes (same meaning as the GUI settings).
 struct Placement {
@@ -64,9 +95,11 @@ struct ShapedLine {
 struct Layout {
     std::vector<ShapedLine> lines;
     double width = 0;               // max line advance
-    double line_height = 0;         // = style size (libass line spacing)
+    double line_height = 0;         // line pitch = style size * line_spacing (libass spacing at 1.0)
+    double em = 0;                  // one line's own height = style size
     double ascent = 0;              // baseline offset from a line's top
-    double height() const { return line_height * (double)lines.size(); }
+    // block height: no line spacing after the last line
+    double height() const { return lines.empty() ? 0.0 : em + line_height * (double)(lines.size() - 1); }
 };
 
 class TextRenderer {

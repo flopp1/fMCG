@@ -308,6 +308,21 @@ bool save_pattern(const std::string& name, const PatternData& p) {
     ss << "outline_enabled = " << (p.outline_enabled ? 1 : 0) << "\n";
     ss << "outline_width = " << p.outline_width << "\n";
     ss << "outline_color = " << p.outline_color_aabbggrr << "\n";
+    ss << "typo_kerning = " << (p.typo.kerning ? 1 : 0) << "\n";
+    ss << "typo_ligatures = " << (p.typo.ligatures ? 1 : 0) << "\n";
+    ss << "typo_slashed_zero = " << (p.typo.slashed_zero ? 1 : 0) << "\n";
+    ss << "typo_numerals = " << p.typo.numerals << "\n";
+    ss << "typo_numeral_width = " << p.typo.numeral_width << "\n";
+    {
+        std::string sets;   // "ss01 ss03" -- readable in the INI
+        for (int n = 1; n <= 20; ++n)
+            if (p.typo.stylistic_sets & (1u << (n - 1)))
+                sets += (sets.empty() ? "ss" : " ss") + std::string(n < 10 ? "0" : "") + std::to_string(n);
+        ss << "typo_stylistic_sets = " << sets << "\n";
+    }
+    ss << "typo_features = " << p.typo.extra << "\n";
+    ss << "letter_spacing = " << p.typo.letter_spacing << "\n";
+    ss << "line_spacing = " << p.typo.line_spacing << "\n";
     ss << "comma_notes = " << (p.commas.notes ? 1 : 0) << "\n";
     ss << "comma_poly = " << (p.commas.polyphony ? 1 : 0) << "\n";
     ss << "comma_nps = " << (p.commas.nps ? 1 : 0) << "\n";
@@ -343,6 +358,23 @@ bool load_pattern(const std::string& name, PatternData& out) {
     if (out.outline_width < 0.0) out.outline_width = 0.0;
     if (out.outline_width > 20.0) out.outline_width = 20.0;
     out.outline_color_aabbggrr = get_str(kv, "outline_color", "&H00000000");
+    out.typo = fmcg_text::Typography();
+    out.typo.kerning       = get_bool(kv, "typo_kerning", true);
+    out.typo.ligatures     = get_bool(kv, "typo_ligatures", true);
+    out.typo.slashed_zero  = get_bool(kv, "typo_slashed_zero", false);
+    out.typo.numerals      = get_int(kv, "typo_numerals", 0);
+    if (out.typo.numerals < 0 || out.typo.numerals > 2) out.typo.numerals = 0;
+    out.typo.numeral_width = get_int(kv, "typo_numeral_width", 0);
+    if (out.typo.numeral_width < 0 || out.typo.numeral_width > 2) out.typo.numeral_width = 0;
+    for (const std::string& t : fmcg_text::split_features(get_str(kv, "typo_stylistic_sets"))) {
+        const int n = (t.size() == 4 && t[0] == 's' && t[1] == 's') ? std::atoi(t.c_str() + 2) : 0;
+        if (n >= 1 && n <= 20) out.typo.stylistic_sets |= 1u << (n - 1);
+    }
+    out.typo.extra         = get_str(kv, "typo_features");
+    out.typo.letter_spacing = get_dbl(kv, "letter_spacing", 0.0);
+    if (!(out.typo.letter_spacing >= -50.0 && out.typo.letter_spacing <= 200.0)) out.typo.letter_spacing = 0.0;
+    out.typo.line_spacing  = get_dbl(kv, "line_spacing", 1.0);
+    if (!(out.typo.line_spacing >= 0.5 && out.typo.line_spacing <= 4.0)) out.typo.line_spacing = 1.0;
     out.commas.notes         = get_bool(kv, "comma_notes", true);
     out.commas.polyphony     = get_bool(kv, "comma_poly", true);
     out.commas.nps           = get_bool(kv, "comma_nps", true);

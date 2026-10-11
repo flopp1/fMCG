@@ -192,11 +192,19 @@ The window shows the MIDI file picker on top; below it the **Global settings** (
 - **Track deduplication** — experimental, **off by default**: before parsing each track, its raw bytes are hashed and compared against tracks already seen; byte-identical repeats replay the cached result instead of being parsed. Helps most on "concatenate-then-compress" files (one MIDI's track duplicated many times, then compressed), where it can skip almost all parse work; on fully unique content it only costs the hashing. Held-note duplicates are never reused (they cannot be replayed exactly), and the replay cache is budget-capped for very large unique files.
 - **Text / Background colour** — click the swatch to open a compact picker with R/G/B sliders and a live preview; the hex value updates in real time.
 - **Resolution / FPS / Font** — output video size, frame rate, and overlay font family + size.
+- **Advanced typography** (Pattern column, collapsible; saved with the pattern) — OpenType options applied by the HarfBuzz shaper:
+  - **Kerning** / **Ligatures** (on by default) and **Slashed zero**.
+  - **Numerals**: font default, *Lining* or *Old-style*; and font default, *Proportional* or *Tabular* width. Tabular digits all have the same width, so counters stop shifting sideways as digits change.
+  - **Stylistic sets**: the sets the selected font offers (`ss01`..`ss20`), with the font's own names when it provides them.
+  - **More features**: any other OpenType features, space/comma separated (`cv01 salt -calt smcp`, `tag=2` for an alternate); applied last, so they override the options above. Invalid entries are shown in red and ignored.
+  - **Letter spacing** (px, may be negative) and **Line spacing** (multiple of the font size).
+  
+  The block lists the features the selected font actually has, and warns when a chosen option is not in the font (it then has no effect).
 - **Preview without a MIDI** — the Preview button always works: with no file processed it shows the current pattern (layout, font, colours, position) with all stats at zero over the chosen background, including the start-delay countdown.
 
 ### Patterns and persistent settings
 
-A **pattern** bundles the overlay look: layout text, alignment/position, font family + style + size, text colour, background colour, comma options and padding. Pick one from the dropdown, **Save** to update it, **Save As...** to create a new one (saving over an existing name asks for confirmation first), **Delete** to remove. Patterns live in the per-user settings folder and survive program updates; switching patterns with unsaved edits asks before discarding.
+A **pattern** bundles the overlay look: layout text, alignment/position, font family + style + size, advanced typography, text colour, background colour, outline, comma options, padding and BPM decimals. Pick one from the dropdown, **Save** to update it, **Save As...** to create a new one (saving over an existing name asks for confirmation first), **Delete** to remove. Patterns live in the per-user settings folder and survive program updates; switching patterns with unsaved edits asks before discarding.
 
 Everything **not** in a pattern — resolution, FPS, vel-0 handling, delays, threads, output format and encoder settings — is a global setting: saved automatically as you change it (debounced to at most one disk write per second) and restored on the next launch.
 

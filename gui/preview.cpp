@@ -40,7 +40,8 @@ std::string canvas_key() {
       << g_app.text_colour_ass << '|' << g_app.bg_colour_ass << '|' << g_app.vid_width << 'x'
       << g_app.vid_height << '|' << g_app.pos_mode << '|' << g_app.pos_x << ',' << g_app.pos_y << '|'
       << g_app.ass_alignment << '|' << g_app.outline_enabled << ',' << g_app.outline_width << ','
-      << g_app.outline_colour_ass;
+      << g_app.outline_colour_ass << '|' << g_app.typo.letter_spacing << ',' << g_app.typo.line_spacing;
+    for (const std::string& f : g_app.typo.features()) k << ',' << f;
     return k.str();
 }
 
