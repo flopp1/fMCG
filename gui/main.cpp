@@ -50,17 +50,6 @@ static const char* k_default_layout =
 
 // --- persistence glue -------------------------------------------------------
 
-// Delete the generated <name>_fMCG.ass and the temp_stats.ass working copy
-// that belong to the currently processed MIDI. Called when the MIDI is
-// replaced (new file picked), explicitly unloaded, or the app exits.
-static void sweep_ass_files() {
-    if (g_app.ass_path.empty()) return;
-    std::remove(g_app.ass_path.c_str());
-    size_t sep = g_app.ass_path.find_last_of("/\\");
-    if (sep != std::string::npos)
-        std::remove((g_app.ass_path.substr(0, sep + 1) + "temp_stats.ass").c_str());
-}
-
 static void save_globals_now() {
     // Pull the live UI values into the store first: the checkboxes/fields bind
     // to g_ui.s, and without this sync every save would re-write the values
@@ -75,6 +64,8 @@ static void save_globals_now() {
     g_ui.globals.ffmpeg_threads = g_ui.s.ffmpeg_threads;
     g_ui.globals.parse_threads  = g_ui.s.parse_threads;
     g_ui.globals.track_dedup    = g_ui.s.track_dedup;
+    g_ui.globals.output_format  = g_ui.s.output_format;
+    g_ui.globals.transparent_bg = g_ui.s.transparent_bg;
     g_ui.globals_dirty = false;
     g_ui.last_globals_save = ImGui::GetTime();
     save_global_settings(g_ui.globals);
@@ -102,6 +93,9 @@ static PatternData current_pattern_from_ui() {
     p.font_size = g_ui.s.font_size;
     p.text_color_aabbggrr = g_ui.s.text_color_aabbggrr;
     p.bg_color_aabbggrr = g_ui.s.bg_color_aabbggrr;
+    p.outline_enabled = g_ui.s.outline_enabled;
+    p.outline_width = g_ui.s.outline_width;
+    p.outline_color_aabbggrr = g_ui.s.outline_color_aabbggrr;
     p.commas = g_ui.s.commas;
     p.pad = g_ui.s.pad;
     p.bpm = g_ui.s.bpm;
@@ -120,6 +114,9 @@ static void apply_pattern_to_ui(const PatternData& p) {
     g_ui.s.font_size = p.font_size;
     g_ui.s.text_color_aabbggrr = p.text_color_aabbggrr;
     g_ui.s.bg_color_aabbggrr = p.bg_color_aabbggrr;
+    g_ui.s.outline_enabled = p.outline_enabled;
+    g_ui.s.outline_width = p.outline_width;
+    g_ui.s.outline_color_aabbggrr = p.outline_color_aabbggrr;
     g_ui.s.commas = p.commas;
     g_ui.s.pad = p.pad;
     g_ui.s.bpm = p.bpm;
@@ -212,15 +209,11 @@ static void draw_frame(GLFWwindow* window) {
         if (!result.empty()) {
             std::string err;
             if (validate_midi(result, err)) {
-                // A new MIDI replaces the old one without going through the
-                // Unload modal: sweep the previous session's ASS files first.
-                sweep_ass_files();
-                g_app.ass_path.clear();
                 g_ui.s.midi_file = result;
                 strncpy(g_ui.midi_buf, result.c_str(), sizeof(g_ui.midi_buf) - 1);
                 std::string dir = extract_dir(result);
                 std::string stem = extract_stem(result);
-                g_ui.s.output_video = dir + stem + "_fMCG.mp4";
+                g_ui.s.output_video = dir + stem + "_fMCG" + fmcg_video::extension((fmcg_video::Format)g_ui.s.output_format);
                 strncpy(g_ui.output_buf, g_ui.s.output_video.c_str(), sizeof(g_ui.output_buf) - 1);
                 g_ui.globals.midi_dir = dir;
                 mark_globals_dirty();
@@ -503,6 +496,21 @@ static void draw_frame(GLFWwindow* window) {
             if (fmcg_ui::EditColour("##bgcol", rgb))
                 g_ui.s.bg_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
         }
+        // Text outline (pattern setting; off by default).
+        ImGui::Checkbox("Outline##ol", &g_ui.s.outline_enabled);
+        ImGui::SameLine(120);
+        if (!g_ui.s.outline_enabled) ImGui::BeginDisabled();
+        ImGui::SetNextItemWidth(90);
+        float ow = (float)g_ui.s.outline_width;
+        if (ImGui::InputFloat("px##olw", &ow, 0.0f, 0.0f, "%.1f")) {
+            if (ow < 0.0f) ow = 0.0f;
+            if (ow > 20.0f) ow = 20.0f;
+            g_ui.s.outline_width = ow;
+        }
+        ImGui::SameLine();
+        if (fmcg_ui::ass_to_rrggbb(g_ui.s.outline_color_aabbggrr, rgb) && fmcg_ui::EditColour("##olcol", rgb))
+            g_ui.s.outline_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
+        if (!g_ui.s.outline_enabled) ImGui::EndDisabled();
     }
 
     ImGui::Text("Comma separators:");
@@ -641,12 +649,12 @@ static void draw_frame(GLFWwindow* window) {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Skip re-processing repeated content.\nPlain MIDI: byte-identical tracks are parsed once and replayed.\nCompressed/layered files: only unique members are decoded and parsed,\nduplicates are counted by multiplicity, and uniform spam grids fold\nanalytically. Off by default -- enable for dedup-style constructions." );
 
-    ImGui::Text("FFmpeg threads");
+    ImGui::Text("Encoder threads");
     ImGui::SameLine(120);
     ImGui::SetNextItemWidth(120);
     int thr_input = g_ui.s.ffmpeg_threads;
     if (ImGui::InputInt("##threads", &thr_input, 0, 0)) {
-        // 0 = auto (ffmpeg default); negative makes no sense.
+        // 0 = auto (x264 picks); negative makes no sense.
         if (thr_input < 0) thr_input = 0;
         if (thr_input > 64) thr_input = 64;
         if (thr_input != g_ui.s.ffmpeg_threads) {
@@ -655,7 +663,41 @@ static void draw_frame(GLFWwindow* window) {
         }
     }
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Encoder threads for ffmpeg. 0 = auto (recommended).\nApplies at render time.");
+        ImGui::SetTooltip("Video encoder threads (H.264). 0 = auto (recommended).\nApplies at render time.");
+
+    // Output format (global). Switching it swaps the output file extension.
+    ImGui::Text("Format");
+    ImGui::SameLine(120);
+    ImGui::SetNextItemWidth(260);
+    {
+        static const char* k_formats[] = {"MP4 (H.264)", "MOV (QuickTime Animation, lossless)"};
+        int fmt = g_ui.s.output_format;
+        if (ImGui::Combo("##format", &fmt, k_formats, 2) && fmt != g_ui.s.output_format) {
+            g_ui.s.output_format = fmt;
+            std::string out = g_ui.output_buf;
+            const std::string want = fmcg_video::extension((fmcg_video::Format)fmt);
+            const size_t dot = out.find_last_of('.');
+            if (dot != std::string::npos && (out.substr(dot) == ".mp4" || out.substr(dot) == ".mov")) {
+                out = out.substr(0, dot) + want;
+                strncpy(g_ui.output_buf, out.c_str(), sizeof(g_ui.output_buf) - 1);
+                g_ui.output_buf[sizeof(g_ui.output_buf) - 1] = '\0';
+                g_ui.s.output_video = out;
+            }
+            mark_globals_dirty();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("MP4: H.264, plays everywhere (lossy).\n"
+                              "MOV: QuickTime Animation, lossless and fast, for video editors;\n"
+                              "supports a transparent background. Not playable in browsers.");
+        ImGui::SameLine();
+        const bool mov = g_ui.s.output_format == 1;
+        if (!mov) ImGui::BeginDisabled();
+        if (ImGui::Checkbox("Transparent background", &g_ui.s.transparent_bg)) mark_globals_dirty();
+        if (!mov) ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("MOV only: the background is fully transparent (alpha 0),\n"
+                              "so the counter can be overlaid in an editor without keying.");
+    }
 
     ImGui::Spacing();
     ImGui::Text("Output Path");
@@ -732,7 +774,7 @@ static void draw_frame(GLFWwindow* window) {
                 ImGui::SetTooltip("Abort the current operation");
             if (ImGui::IsItemClicked()) {
                 g_app.cancel = true;
-                if (g_app.render_active) g_app.gui_log("Cancelling ffmpeg...", false);
+                if (g_app.render_active) g_app.gui_log("Cancelling render...", false);
             }
         }
 
@@ -772,6 +814,9 @@ static void draw_frame(GLFWwindow* window) {
                 g_app.preview_bpm = g_ui.s.bpm;
                 g_app.text_colour_ass = g_ui.s.text_color_aabbggrr;
                 g_app.bg_colour_ass = g_ui.s.bg_color_aabbggrr;
+                g_app.outline_enabled = g_ui.s.outline_enabled;
+                g_app.outline_width = g_ui.s.outline_width;
+                g_app.outline_colour_ass = g_ui.s.outline_color_aabbggrr;
                 g_app.font_size = g_ui.s.font_size;
                 g_app.font_family = g_ui.s.font_family;
                 g_app.font_variant = g_ui.s.font_variant;
@@ -822,6 +867,8 @@ static void draw_frame(GLFWwindow* window) {
             // ffmpeg's -d run past the last ASS dialogue -> black tail.
             rs.ffmpeg_threads = g_ui.s.ffmpeg_threads;
             rs.bg_color_aabbggrr = g_app.bg_colour_ass;
+            rs.output_format = g_ui.s.output_format;
+            rs.transparent_bg = g_ui.s.transparent_bg;
             g_app.done = false;
             g_app.log_lines.clear();
             // Set busy on the GUI thread *before* detaching: the preview popup
@@ -943,10 +990,6 @@ static void draw_frame(GLFWwindow* window) {
             "Processed data will be discarded; the file must be re-processed to render.");
         ImGui::Spacing();
         if (ImGui::Button("Unload", ImVec2(140, 0))) {
-            // Remove the generated ASS next to the (former) MIDI, plus the
-            // temp_stats.ass copy ffmpeg consumed -- a failed render leaves
-            // both behind by design, so unload is the last chance to sweep.
-            sweep_ass_files();
             g_ui.midi_buf[0] = '\0';
             g_ui.output_buf[0] = '\0';
             g_ui.s.midi_file.clear();
@@ -957,7 +1000,6 @@ static void draw_frame(GLFWwindow* window) {
             g_app.op_result = AppState::OP_NONE;
             g_app.progress.store(0.0f);   // reset the progress bar too
             g_app.result_path.clear();
-            g_app.ass_path.clear();
             g_app.frames_data.clear();
             g_app.template_lines.clear();
             g_app.total_notes = 0;
@@ -1189,6 +1231,8 @@ int main() {
     g_ui.s.ffmpeg_threads = g_ui.globals.ffmpeg_threads;
     g_ui.s.parse_threads  = g_ui.globals.parse_threads;
     g_ui.s.track_dedup    = g_ui.globals.track_dedup;
+    g_ui.s.output_format  = g_ui.globals.output_format;
+    g_ui.s.transparent_bg = g_ui.globals.transparent_bg;
 
     // Refresh the variant cache for the bootstrapped family.
     g_ui.variants_for = g_ui.s.font_family;
@@ -1210,10 +1254,6 @@ int main() {
         glfwPollEvents();
         draw_frame(window);
     }
-
-    // Last session hygiene: the generated ASS and its temp copy die with the
-    // app (they are always regenerable by re-processing).
-    sweep_ass_files();
 
     // Flush pending settings on exit.
     if (g_ui.globals_dirty) save_globals_now();

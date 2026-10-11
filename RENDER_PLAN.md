@@ -121,7 +121,14 @@ the FFmpeg requirement in README, `test/cpp/test_ffspawn.cpp`, `test/cpp/test_do
 3. DONE (needs a visual check by the user): preview shows the renderer's own frame (`draw_canvas` in
    gui/preview.cpp: FrameRenderer at video resolution, dirty-rect GL texture upload, scaled to fit with a
    neutral letterbox so the frame edges are visible); processed preview takes its text from
-   FrameTextSource (identical to the encoder). The ASS + FFmpeg render path is still what Render uses.
-4. qtrle encoder + MOV muxer + render thread; GUI output format selector; tests.
-5. H.264 (if chosen): x264 integration + MP4 (avcC) + bootstrap/release/README updates.
-6. Remove FFmpeg path, update README / AGENTS / THIRD_PARTY_LICENSES.
+   FrameTextSource (identical to the encoder). (Render still used ASS + FFmpeg until step 4.)
+4. DONE: `src/fmcg_video` -- ISO-BMFF writer (MP4/MOV, co64, stss), qtrle encoder (24-bit / 32-bit ARGB,
+   delta lines inside the dirty rect, keyframe every 2 s, FFmpeg-compatible packets), x264 encoder (no
+   B-frames, CRF 18, veryfast, BT.709, dirty-rect RGBA->I420), `render_video` (progress, cancel deletes the
+   partial file). GUI: Format (MP4 default / MOV) + Transparent background (MOV) in Global; Outline on /
+   width / colour in Pattern. Tests: test_video (bit-exact qtrle via an independent decoder + FFmpeg,
+   H.264 structure + FFmpeg PSNR), test_render (MIDI -> file end to end, bit-exact MOV frames, duration,
+   cancel). Speed (1080p60, FINAL.mid, 14,245 frames): MP4 503 fps (8.4x realtime, 7.3 MB), MOV 2,100 fps.
+5. DONE with step 4 (x264 integration, bootstrap/release/README).
+6. DONE: FFmpeg path removed (fmcg_render.*, spawn_ffmpeg_cancellable, ASS temp files, test_ffspawn /
+   test_double_render); README / AGENTS / licences updated. `generate_ass` kept as a tested library fn.

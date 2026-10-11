@@ -2,6 +2,7 @@
 
 #include <sstream>
 #include <iomanip>
+#include <algorithm>
 
 AppState g_app;
 UiState  g_ui;
@@ -96,4 +97,43 @@ float AppState::display_progress() {
     if (scan_active && scan_frac >= 0.0)
         p = (float)(scan_frac * 0.85);   // scan = 85% of the process, then ASS/render
     return p;
+}
+
+fmcg_text::TextStyle app_text_style() {
+    fmcg_text::TextStyle st;
+    st.font_file = find_font_file_for_variant(g_app.font_family, g_app.font_variant);
+    st.size = g_app.font_size;
+    st.colour = fmcg_text::from_ass_colour(g_app.text_colour_ass);
+    st.outline = g_app.outline_enabled && g_app.outline_width > 0.0;
+    st.outline_width = g_app.outline_width;
+    st.outline_colour = fmcg_text::from_ass_colour(g_app.outline_colour_ass);
+    return st;
+}
+
+fmcg_text::Placement app_placement() {
+    fmcg_text::Placement pl;
+    pl.frame_w = std::max(16, g_app.vid_width);
+    pl.frame_h = std::max(16, g_app.vid_height);
+    pl.pos_mode = g_app.pos_mode;
+    pl.pos_x = g_app.pos_x;
+    pl.pos_y = g_app.pos_y;
+    pl.alignment = g_app.ass_alignment;
+    return pl;
+}
+
+FrameTextSource app_text_source() {
+    FrameTextSource src;
+    src.frames = &g_app.frames_data;
+    src.template_lines = g_app.template_lines;
+    src.total_notes = g_app.total_notes;
+    src.total_cc = g_app.frames_data.empty() ? 0 : g_app.frames_data.back().cumulative_cc;
+    src.total_ticks = g_app.total_ticks;
+    src.ppqn = g_app.ppqn;
+    src.fps = g_app.fps > 0 ? g_app.fps : 60.0;
+    src.start_delay = g_app.start_delay;
+    src.end_delay = g_app.end_delay;
+    src.commas = g_app.preview_commas;
+    src.pad = g_app.preview_pad;
+    src.bpm = g_app.preview_bpm;
+    return src;
 }

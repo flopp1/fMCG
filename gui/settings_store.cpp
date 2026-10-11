@@ -202,6 +202,9 @@ bool load_global_settings(GlobalSettings& out) {
     out.ffmpeg_threads = get_int(kv, "ffmpeg_threads", 0);
     out.parse_threads  = get_int(kv, "parse_threads", 0);
     out.track_dedup    = get_bool(kv, "track_dedup", false);
+    out.output_format  = get_int(kv, "output_format", 0);
+    if (out.output_format < 0 || out.output_format > 1) out.output_format = 0;
+    out.transparent_bg = get_bool(kv, "transparent_bg", false);
     if (out.fps <= 0) out.fps = 60.0;
     if (out.width <= 0) out.width = 1920;
     if (out.height <= 0) out.height = 1080;
@@ -229,6 +232,8 @@ bool save_global_settings(const GlobalSettings& s) {
     ss << "ffmpeg_threads = " << s.ffmpeg_threads << "\n";
     ss << "parse_threads = " << s.parse_threads << "\n";
     ss << "track_dedup = " << (s.track_dedup ? 1 : 0) << "\n";
+    ss << "output_format = " << s.output_format << "\n";
+    ss << "transparent_bg = " << (s.transparent_bg ? 1 : 0) << "\n";
     return write_file_atomic(fs::path(dir) / "settings.ini", ss.str());
 }
 
@@ -281,6 +286,9 @@ bool save_pattern(const std::string& name, const PatternData& p) {
     ss << "font_size = " << p.font_size << "\n";
     ss << "text_color = " << p.text_color_aabbggrr << "\n";
     ss << "bg_color = " << p.bg_color_aabbggrr << "\n";
+    ss << "outline_enabled = " << (p.outline_enabled ? 1 : 0) << "\n";
+    ss << "outline_width = " << p.outline_width << "\n";
+    ss << "outline_color = " << p.outline_color_aabbggrr << "\n";
     ss << "comma_notes = " << (p.commas.notes ? 1 : 0) << "\n";
     ss << "comma_poly = " << (p.commas.polyphony ? 1 : 0) << "\n";
     ss << "comma_nps = " << (p.commas.nps ? 1 : 0) << "\n";
@@ -311,6 +319,11 @@ bool load_pattern(const std::string& name, PatternData& out) {
     out.font_size            = get_int(kv, "font_size", 36);
     out.text_color_aabbggrr  = get_str(kv, "text_color", "&H00FFFFFF");
     out.bg_color_aabbggrr    = get_str(kv, "bg_color", "&H00000000");
+    out.outline_enabled      = get_bool(kv, "outline_enabled", false);
+    out.outline_width        = get_dbl(kv, "outline_width", 1.0);
+    if (out.outline_width < 0.0) out.outline_width = 0.0;
+    if (out.outline_width > 20.0) out.outline_width = 20.0;
+    out.outline_color_aabbggrr = get_str(kv, "outline_color", "&H00000000");
     out.commas.notes         = get_bool(kv, "comma_notes", true);
     out.commas.polyphony     = get_bool(kv, "comma_poly", true);
     out.commas.nps           = get_bool(kv, "comma_nps", true);

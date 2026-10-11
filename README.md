@@ -10,10 +10,11 @@ Thanks to Nitsua for the idea of zero copy mmap + other scanner micro optimisati
 
 - **Single-pass streaming engine** — the file is walked exactly once (mmap for plain files, chunked libarchive streaming for compressed archives). Memory scales with song *duration*, never with event count.
 - **Compressed input** — `.7z`, `.xz`, `.rar`, `.gz`, `.bz2`, `.zst`, `.lz4` and any nesting of these (e.g. `.rar.xz`, `7z inside 7z`) are decompressed on the fly via libarchive; the decompressed image is never materialized on disk or RAM. Decode is pipelined with parsing on a separate thread, and nesting is unwrapped recursively to arbitrary depth.
-- **Dear ImGui GUI** — process, preview the video live, and render with FFmpeg.
+- **Dear ImGui GUI** — process, preview the video live, and render it — all in-process. The preview shows exactly the frames that get encoded.
+- **Built-in renderer** — text is shaped with HarfBuzz (kerning, OpenType features) and drawn by fMCG itself; videos are encoded in-process to **MP4 (H.264, x264)** or **MOV (QuickTime Animation, lossless, optional transparent background)**. No FFmpeg needed.
 - **Customizable stats overlay** — one line per stat, any text around tokens, per-stat comma separators, optional leading-zero padding that auto-sizes to each stat's own maximum, corner alignment or an exact x/y position, text and background colours.
 - **Start delay** — black lead-in where all stats sit at zero and the current-time fields count up from negative to zero.
-- **Parallel parsing** — "Parsing threads" (default: all cores) splits a plain MIDI file's tracks across worker threads; "FFmpeg threads" (default: auto) controls encoder threads at render time.
+- **Parallel parsing** — "Parsing threads" (default: all cores) splits a plain MIDI file's tracks across worker threads; "Encoder threads" (default: auto) controls encoder threads at render time.
 - **Processing stats** — live event counter, events/second and elapsed time during the scan, with a smooth progress bar.
 
 ## Building
@@ -26,7 +27,7 @@ Thanks to Nitsua for the idea of zero copy mmap + other scanner micro optimisati
 
 Both scripts are idempotent; re-run `build.bat` after changing sources.
 
-`build.bat debug` (or `make debug` on Linux/macOS) builds with `FMCG_DEBUG=1`: ffmpeg's stderr log is kept in `<name>_fMCG_progress.txt` next to the output for diagnosis. Release builds (the default) discard it — end users never see progress artifacts, and a clean render leaves no files behind.
+`build.bat debug` (or `make debug` on Linux/macOS) builds with `FMCG_DEBUG=1` (a console window plus extra diagnostic logging).
 
 ### Linux / macOS
 
@@ -44,7 +45,7 @@ brew install pkg-config glfw libarchive harfbuzz x264
 
 git submodule update --init   # fetch Dear ImGui (pinned v1.92.9b)
 make                          # builds ./fMCG_gui (default target)
-make debug                    # variant: keeps ffmpeg's stderr log in <name>_fMCG_progress.txt
+make debug                    # variant: FMCG_DEBUG diagnostics
 make profile                  # -O3 plus debug symbols + frame pointers, for perf
 ```
 
@@ -61,28 +62,29 @@ python -I test/run_tests.py --level full    # + layered corpus (needs the test c
 
 The runner needs only Python 3 (standard library) and the same g++/libarchive toolchain as the build; it compiles the headless probe and the C++ tests into `build/test/` itself. `make test LEVEL=quick|corpus|full` does the same on Linux/macOS.
 
-## Rendering requirement
+## Output formats
 
-Rendering uses **FFmpeg** (the `subtitles` filter, i.e. a build with libass) and must be on PATH: `ffmpeg -version`. Any recent [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) full build works on Windows.
+- **MP4 (H.264)** — the default; plays everywhere. Encoded in-process with x264 (CRF 18, `veryfast`, BT.709).
+- **MOV (QuickTime Animation)** — lossless RGB, very fast, small for this kind of content; meant for video editors (Premiere, After Effects, Vegas, DaVinci Resolve). With **Transparent background** the frame keeps an alpha channel (32-bit ARGB) so it can be overlaid without keying. Not playable in browsers.
 
 ## Running a prebuilt Linux binary
 
-The Linux release binary is built on Ubuntu in WSL and links GLFW, libarchive, OpenGL and libstdc++ **dynamically**. You only need the runtime libraries (no `-dev` packages) and FFmpeg to run it:
+The Linux release binary is built on Ubuntu in WSL and links GLFW, libarchive, HarfBuzz, x264, OpenGL and libstdc++ **dynamically**. You only need the runtime libraries (no `-dev` packages) to run it:
 
 ```bash
 # Debian/Ubuntu
-sudo apt install libglfw3 libarchive libgl1 ffmpeg
+sudo apt install libglfw3 libarchive13 libharfbuzz0b libx264-165 libgl1   # libx264-NNN: your distro's x264 ABI
 # Fedora
-sudo dnf install glfw libarchive mesa-libGL ffmpeg
+sudo dnf install glfw libarchive harfbuzz x264-libs mesa-libGL   # x264-libs: RPM Fusion
 # Arch
-sudo pacman -S glfw libarchive mesa ffmpeg
+sudo pacman -S glfw libarchive harfbuzz x264 mesa
 ```
 
 Notes:
 
 - A desktop with X11 or Wayland is required (the app is a GUI). Under WSL itself, WSLg provides this on Windows 10/11.
 - The binary was built against the glibc of the Ubuntu it was built on, so it runs on that Ubuntu or any newer distro. If it fails with a `GLIBC_x.yy not found` error, your distro is older than the build system — build from source instead (section above).
-- FFmpeg is only needed for rendering; parsing and previewing work without it.
+- x264's library name carries its ABI version (`libx264.so.165` here); a distro with a different version needs a build from source.
 
 ## Distributing Windows binaries
 
@@ -95,7 +97,7 @@ A built `fMCG_gui.exe` links libarchive **dynamically** and needs `libarchive.dl
 
 The same applies to everything else bundled in this DLL: zlib (zlib licence), bzip2 (BSD-style), xz/LZMA (public domain / 0BSD), zstd (BSD), LZ4 (BSD/MIT), libxml2 (MIT) and libiconv (LGPL — dynamically linked inside the DLL, which LGPL permits). ImGui itself is MIT and GLFW's static import is zlib-style; neither adds obligations beyond the licence notice.
 
-So a shareable release is just: `fMCG_gui.exe` + `libarchive.dll` + a licence notice file — the user still supplies FFmpeg themselves (it's GPL on Windows, so it should never be merged into your own distribution anyway; instructing users to install it is the standard and compliant approach).
+So a shareable release is just: `fMCG_gui.exe` + `libarchive.dll` + a licence notice file. HarfBuzz and x264 are linked statically into the exe; x264 is GPL-2.0-or-later, compatible with fMCG's GPL-3.0, and `THIRD_PARTY_LICENSES.txt` records the exact x264 source commit.
 
 `THIRD_PARTY_LICENSES.txt` in the repo root is the ready-made notices file covering everything shipped in the binary and the DLL.
 
@@ -211,13 +213,8 @@ vendor/      third-party deps fetched by bootstrap.bat (imgui submodule, GLFW, l
 
 - Single sequential pass over the input; tick-space accumulation with an anchor-interpolated sweep converts events to per-frame stats in O(ticks + frames).
 - Plain (uncompressed) MIDI files can additionally parse tracks in parallel: the MTrk chunks are split across worker threads ("Parsing threads", default = all cores) and merged into the same per-tick arrays, whose per-tick accumulation is order-independent, so results are identical to the sequential walk. Compressed inputs (which cannot split) and the two-pass fallback always parse sequentially.
-- FFmpeg is spawned directly (no shell, no batch file), with its working directory set to the ASS's folder and a fixed bare filename (`temp_stats.ass`) passed to `subtitles=`. This is still required because ffmpeg's filter-argument parser mangles backslashes, apostrophes and colons — a user path can never be passed through `subtitles=` safely — but no `.bat` script is created and no temp files are left behind.
-- `test/` holds two self-contained suites plus fixture tooling:
-    - `test_harness.cpp` — parse-correctness regression suite (note/poly/NPS/BPM/tempo-map checks on generated fixtures, compressed-vs-plain equivalence for `.7z`/`.tar.xz`, CC counting, vel-0 handling). Run standalone: `test_harness.exe <file.mid>` prints a parse summary; `test_harness.exe --csv` also dumps a comparison CSV.
-    - `test_newopts.cpp` — formatting-layer checks (auto-padding, per-stat commas, CC tokens, negative countdown, ASS lead-in, colour conversion).
-    - `gen_midi.py` regenerates all fixtures (run it after cloning — the binary `.mid` files are not committed).
-    - `ref_csv.py` + `compare_csv.py` diff fMCG's output against an independent Python SMF parser; `check_full_csv.py` validates invariants of a full CSV dump; `extract_tracks.py` slices tracks off huge MIDIs for spot checks.
-  On Linux/macOS: `make test` builds and runs both suites. On Windows, compile each `src/*.cpp` to objects (flags in `build.bat`), compile the suite `.cpp`, and link them together against `vendor\libarchive\lib\libarchive.dll.a`; keep `libarchive.dll` beside the exe.
+- Rendering is in-process (`src/fmcg_text`, `src/fmcg_video`): per video frame, the overlay text is shaped (HarfBuzz) and rasterized (stb_truetype) into an RGBA canvas, redrawing only the area that changed; the encoders (x264 / QuickTime Animation) only convert or compare that area, and a small ISO-BMFF writer produces the MP4/MOV (64-bit offsets, so files over 4 GB work). The preview uploads the same canvas as a texture.
+- Tests: `python -I test/run_tests.py` (see *Tests* above) runs the oracle property suite, the C++ engine/renderer/encoder tests (`test/cpp/`) and the corpus checks; `test/tools/` holds fixture and inspection tooling.
 
 ## License
 

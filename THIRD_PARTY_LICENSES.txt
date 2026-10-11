@@ -15,8 +15,6 @@ Contents
                          bzip2 (BSD-style), liblzma / XZ Utils (0BSD),
                          Zstandard (BSD-3), LZ4 (BSD-2), libxml2 (MIT),
                          libiconv (LGPL-2.1)
-  FFmpeg         NOT included in this package; install separately. It is
-                 GPL/LGPL licensed -- see https://ffmpeg.org/legal.html
 
 Project homepages:
   fMCG        (this package)

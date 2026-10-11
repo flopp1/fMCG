@@ -39,7 +39,8 @@ std::string canvas_key() {
     k << g_app.font_family << '|' << g_app.font_variant << '|' << g_app.font_size << '|'
       << g_app.text_colour_ass << '|' << g_app.bg_colour_ass << '|' << g_app.vid_width << 'x'
       << g_app.vid_height << '|' << g_app.pos_mode << '|' << g_app.pos_x << ',' << g_app.pos_y << '|'
-      << g_app.ass_alignment;
+      << g_app.ass_alignment << '|' << g_app.outline_enabled << ',' << g_app.outline_width << ','
+      << g_app.outline_colour_ass;
     return k.str();
 }
 
@@ -50,14 +51,9 @@ void draw_canvas(const std::vector<std::string>& lines) {
     if (key != g_cp.key) {
         g_cp.key = key;
         g_cp.last_lines.clear();
-        fmcg_text::TextStyle st;
-        st.font_file = find_font_file_for_variant(g_app.font_family, g_app.font_variant);
-        st.size = g_app.font_size;
-        st.colour = fmcg_text::from_ass_colour(g_app.text_colour_ass);
-        fmcg_text::Placement pl;
+        const fmcg_text::TextStyle st = app_text_style();
+        fmcg_text::Placement pl = app_placement();
         pl.frame_w = W; pl.frame_h = H;
-        pl.pos_mode = g_app.pos_mode; pl.pos_x = g_app.pos_x; pl.pos_y = g_app.pos_y;
-        pl.alignment = g_app.ass_alignment;
         const fmcg_text::RGBA bg = fmcg_text::from_ass_colour(g_app.bg_colour_ass) | 0xFFu;   // opaque video bg
         g_cp.err.clear();
         g_cp.ok = g_cp.fr.init(st, pl, bg, &g_cp.err);
@@ -364,19 +360,7 @@ void render_preview_popup() {
         // Render text: the in-built renderer's frame for this video frame
         // (same FrameTextSource as the encoder: lead-in, song and tail).
         if (!g_app.frames_data.empty() && total_len > 0) {
-            FrameTextSource src;
-            src.frames = &g_app.frames_data;
-            src.template_lines = g_app.template_lines;
-            src.total_notes = g_app.total_notes;
-            src.total_cc = g_app.frames_data.back().cumulative_cc;
-            src.total_ticks = g_app.total_ticks;
-            src.ppqn = g_app.ppqn;
-            src.fps = g_app.fps > 0 ? g_app.fps : 60.0;
-            src.start_delay = g_app.start_delay;
-            src.end_delay = g_app.end_delay;
-            src.commas = g_app.preview_commas;
-            src.pad = g_app.preview_pad;
-            src.bpm = g_app.preview_bpm;
+            const FrameTextSource src = app_text_source();
             const size_t nf = src.frame_count();
             size_t k = (size_t)std::max(0.0, std::floor(g_app.preview_time * src.fps + 1e-9));
             if (nf && k >= nf) k = nf - 1;

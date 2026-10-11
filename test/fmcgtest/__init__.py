@@ -40,10 +40,10 @@ def seeds():
 
 CORE = ["src/fmcg_midi.cpp", "src/fmcg_format.cpp", "src/fmcg_util.cpp", "src/fmcg_path.cpp",
         "src/fmcg_engine.cpp", "src/fmcg_layered.cpp"]
-CORE_FULL = CORE + ["src/fmcg_fonts.cpp", "src/fmcg_render.cpp"]
+CORE_FULL = CORE + ["src/fmcg_fonts.cpp"]
 # In-built renderer: HarfBuzz is compiled from the vendored amalgamation on
 # Windows and comes from the system (pkg-config) elsewhere.
-TEXT = ["src/fmcg_text.cpp"] + (["vendor/harfbuzz/src/harfbuzz.cc"] if IS_WIN else [])
+TEXT = ["src/fmcg_text.cpp", "src/fmcg_video.cpp"] + (["vendor/harfbuzz/src/harfbuzz.cc"] if IS_WIN else [])
 
 
 def _pkg(args):
@@ -83,7 +83,7 @@ def _compile(src, flags):
     """Compile one source to a cached object (per flag set); returns the object path."""
     tag = "_".join(f.strip("-").replace("=", "") for f in flags) or "default"
     obj_dir = os.path.join(BUILD, "obj", sys.platform, tag)   # per platform: WSL shares this checkout
-    stem = src.replace("/", "_").replace("\\", "_")[:-4]
+    stem = os.path.splitext(src.replace("/", "_").replace("\\", "_"))[0]
     obj = os.path.join(obj_dir, stem + ".o")
     dep = os.path.join(obj_dir, stem + ".d")
     with _OBJ_LOCK:

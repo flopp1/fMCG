@@ -17,9 +17,12 @@ Pipeline today:
 2. **Sweep** (`sweep_to_frames`): tick space -> per-frame `FrameStats` (cumulative notes,
    NPS over a 1 s window, polyphony, peaks, BPM, CC).
 3. **Format** (`src/fmcg_format.cpp`): layout template (`{nc}`, `{nps}`, ... see README) ->
-   per-frame text -> an ASS subtitle file.
-4. **Render** (`src/fmcg_render.cpp`, `gui/jobs.cpp`): spawns FFmpeg (lavfi colour bg +
-   `subtitles` filter + libx264). Live preview (`gui/preview.cpp`) draws the text with ImGui.
+   per-video-frame text (`FrameTextSource`: start-delay lead-in, song, end tail).
+4. **Render** (`src/fmcg_text.cpp`, `src/fmcg_video.cpp`, `gui/jobs.cpp`): HarfBuzz-shaped text
+   rasterized into an RGBA canvas (dirty-rect redraw), encoded in-process to MP4 (x264) or MOV
+   (QuickTime Animation, optional alpha) by `fmcg_video::render_video`. The preview
+   (`gui/preview.cpp`) shows the same canvas as a GL texture. No FFmpeg, no ASS file
+   (`generate_ass` remains only as a tested library function).
 
 ## 2. Repository map
 | path | role |
@@ -29,13 +32,13 @@ Pipeline today:
 | `src/fmcg_engine_internal.h` | engine-private shared types (`TickData`, `TrackSummary`, `scan_layered`) |
 | `src/fmcg_midi.{h,cpp}` | `FrameStats`, `ProgressCallbacks`, format detection, mmap reader |
 | `src/fmcg_format.{h,cpp}` | template tokens, comma/pad/BPM options, ASS generation |
-| `src/fmcg_render.{h,cpp}` | FFmpeg argv construction (to be removed by goal 3) |
+| `src/fmcg_video.{h,cpp}` | encoders (x264 H.264, qtrle) + ISO-BMFF MP4/MOV writer + `render_video` (the Render button's loop) |
 | `src/fmcg_text.{h,cpp}` | in-built renderer, text: HarfBuzz shaping + stb_truetype raster (`src/stb_truetype.h`) into an RGBA canvas; `FrameRenderer` redraws only the dirty rect (RENDER_PLAN.md) |
 | `src/fmcg_fonts.{h,cpp}` | system font discovery (sfnt name/OS2 parsing) |
 | `src/fmcg_path.*`, `src/fmcg_util.*` | path + misc helpers; `src/xxhash64.h` vendored hash |
 | `fMCG_core.h` | umbrella header over `src/` |
 | `gui/main.cpp` | ImGui window, all settings widgets |
-| `gui/jobs.cpp` | worker threads: process (scan + ASS) and render (FFmpeg) |
+| `gui/jobs.cpp` | worker threads: process (scan) and render (`fmcg_video::render_video`) |
 | `gui/preview.cpp` | in-app live preview |
 | `gui/settings_store.*`, `gui/app_state.*` | persisted settings, shared cross-thread state |
 | `test/run_tests.py` | **single test entry point** (stdlib unittest; builds everything with g++) |
@@ -43,7 +46,7 @@ Pipeline today:
 | `test/fmcgtest/` | shared helpers: build, probe runner, paths, levels |
 | `test/fmcg_probe.cpp` | headless CLI over the engine (used by all automated tests) |
 | `test/dialects/` | generators (`gen.py`), brute-force oracle (`oracle.py`), table CLI (`run.py`) |
-| `test/cpp/` | C++ engine tests (newopts, twopass, parallel, dedup, burst_window, burst_fuzz, harness) + benchmarks (bench_throughput, test_tickspace) + ffmpeg/GUI tests not in the runner (test_ffspawn needs imgui, test_double_render needs ffmpeg) |
+| `test/cpp/` | C++ engine tests (newopts, twopass, parallel, dedup, burst_window, burst_fuzz, harness) + benchmarks (bench_throughput, test_tickspace) + test_text / test_video / test_render (renderer, encoders with bit-exact qtrle round trips + optional FFmpeg cross-decode, end to end) |
 | `test/tools/` | `shrink_layered.py` (rebuild a layered file with <= K repeats per run), `layered_inspect.py` / `layered_stream_cut.py` (sparse structure dumps of layered files, never full expansion), legacy CSV reference tools |
 | `test/data/`, `test/expected/` | small fixture MIDIs; verified full-corpus expected values |
 | `build.bat` / `bootstrap.bat` / `release.bat` | Windows build (w64devkit g++); `release.bat` also builds the Linux package through WSL via `release_linux.sh` |
@@ -144,8 +147,8 @@ No content heuristics. See DESIGN.md.
 2. DONE (session 3): layered dedup fixed and verified on all 8 files in
    `FMCG_TEST_FILES/LAYERED_COMPRESSED` (OPEN_QUESTIONS.md table); Windows + Linux builds;
    `test/` consolidated into `test/run_tests.py`. The standard (non-dedup) path stays the reference.
-3. NEXT (plan + user decisions in RENDER_PLAN.md): replace ASS+FFmpeg render with an in-built renderer (text + background drawn in-app),
-   using only a lightweight encoder + muxer.
+3. DONE (session 3, RENDER_PLAN.md): in-built renderer replaces ASS+FFmpeg -- HarfBuzz + stb_truetype
+   text, x264 MP4 (default) / qtrle MOV (optional alpha), shared by preview and render; outline setting.
 4. Typography options under Advanced: kerning, OpenType stylistic sets, old-style numerals, etc.
 5. Resolution limits so text never overflows the frame in preview or render (re-check after 3).
 6. GUI restructure (added 2026-10-11): the window is too tall. Today `gui/main.cpp` draw_frame stacks
@@ -185,5 +188,6 @@ No content heuristics. See DESIGN.md.
 - Session 3 (2026-10-10, Claude Code): layered dedup rewritten (fmcg_layered.cpp); all 8
   layered files verified (OPEN_QUESTIONS.md table); test/ restructured into run_tests.py; inclusive
   integer NPS window; tempo-meta window-straddle bug fixed in the standard parser; Windows + Linux
-  builds and suites green. BSOD solved (93,715,050,000,000; 16 min, decode-bound). Next: goal 3.
+  builds and suites green. BSOD solved (93,715,050,000,000; 16 min, decode-bound). Goal 3 done
+  (in-built renderer; FFmpeg removed). Next: goals 4/5/6/7/8/9 as the user prioritises.
 See OPEN_QUESTIONS.md "Corpus status" for the per-file table; update it every session.

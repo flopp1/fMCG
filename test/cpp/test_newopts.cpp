@@ -202,9 +202,11 @@ int main() {
             check("nps window literal 1s @59.94fps", std::to_string(frames.empty() ? -1 : (int)frames.back().peak_nps), "20");
         }
     }
-    {   // ffmpeg colour spec conversion (ASS &H00BBGGRR -> 0xRRGGBB).
-        check("ffmpeg color spec", ffmpeg_color_spec("&H00FF8040"), "0x4080FF");
-        check("ffmpeg color default", ffmpeg_color_spec("junk"), "0x000000");
+    {   // ASS colour (&HAABBGGRR, AA = transparency) -> renderer RGBA (0xRRGGBBAA).
+        auto hex = [](uint32_t v) { char b[16]; std::snprintf(b, sizeof b, "0x%08X", v); return std::string(b); };
+        check("ass colour -> rgba", hex(fmcg_text::from_ass_colour("&H00FF8040")), "0x4080FFFF");
+        check("ass colour alpha", hex(fmcg_text::from_ass_colour("&H80FF8040")), "0x4080FF7F");
+        check("ass colour default", hex(fmcg_text::from_ass_colour("junk")), "0xFFFFFFFF");
     }
     {   // Center alignments place the anchor mid-width; x/y clamp to the frame.
         std::vector<FrameStats> frames(1);

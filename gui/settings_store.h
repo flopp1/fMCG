@@ -27,6 +27,9 @@ struct PatternData {
     int         font_size = 36;
     std::string text_color_aabbggrr = "&H00FFFFFF";
     std::string bg_color_aabbggrr = "&H00000000";
+    bool        outline_enabled = false;     // text outline (in-built renderer), off by default
+    double      outline_width = 1.0;         // px at video resolution
+    std::string outline_color_aabbggrr = "&H00000000";
     CommaOpts   commas;
     PadOpts     pad;
     BpmOpts     bpm;
@@ -38,6 +41,8 @@ struct PatternData {
                font_size == o.font_size &&
                text_color_aabbggrr == o.text_color_aabbggrr &&
                bg_color_aabbggrr == o.bg_color_aabbggrr &&
+               outline_enabled == o.outline_enabled && outline_width == o.outline_width &&
+               outline_color_aabbggrr == o.outline_color_aabbggrr &&
                memcmp_commas(o) && pad.enabled == o.pad.enabled &&
                bpm.decimals == o.bpm.decimals;
     }
@@ -59,9 +64,11 @@ struct GlobalSettings {
     bool        close_held_notes = false;   // release notes still held at a track's end
     double      start_delay = 3.0;
     double      end_delay = 0.0;
-    int         ffmpeg_threads = 0;   // 0 = ffmpeg auto-selects encoder threads
+    int         ffmpeg_threads = 0;   // encoder (x264) threads, 0 = auto (saved key name kept for compatibility)
     int         parse_threads = 0;    // 0 = all cores (parallel per-track parse); 1 = sequential
     bool        track_dedup = false;  // skip repeated content (track replay / layered dedup)
+    int         output_format = 0;    // 0 = MP4 (H.264, x264), 1 = MOV (QuickTime Animation, lossless)
+    bool        transparent_bg = false;   // MOV only: alpha-transparent background
     std::string output_dir;           // last output video folder
 };
 

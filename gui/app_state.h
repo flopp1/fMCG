@@ -40,11 +40,16 @@ struct GuiSettings {
     int         pos_y = 30;
     bool        vel0_note_off = true;
     bool        close_held_notes = false;   // release notes still held at a track's end (off = MIDI-spec ons - offs)
-    int         ffmpeg_threads = 0;   // 0 = ffmpeg auto-selects (no -threads flag)
+    int         ffmpeg_threads = 0;   // encoder (x264) threads, 0 = auto; key name kept for saved settings
     int         parse_threads = 0;    // 0 = all cores (bounded to hw_concurrency); 1 = sequential parse
     bool        track_dedup = false;  // skip repeated content (track replay / layered dedup)
     std::string text_color_aabbggrr = "&H00FFFFFF";
     std::string bg_color_aabbggrr = "&H00000000";
+    bool        outline_enabled = false;     // pattern: text outline (in-built renderer)
+    double      outline_width = 1.0;
+    std::string outline_color_aabbggrr = "&H00000000";
+    int         output_format = 0;           // global: 0 = MP4 (H.264), 1 = MOV (qtrle)
+    bool        transparent_bg = false;      // global: MOV only
 };
 
 // Options snapshot handed to the render worker thread.
@@ -54,8 +59,10 @@ struct RenderSettings {
     std::string midi_stem;
     int width, height;
     double fps, total_duration;
-    int ffmpeg_threads = 0;           // 0 = ffmpeg auto-selects (no -threads flag)
+    int ffmpeg_threads = 0;           // encoder threads (x264), 0 = auto
     std::string bg_color_aabbggrr = "&H00000000";
+    int  output_format = 0;           // 0 = MP4 (H.264), 1 = MOV (qtrle)
+    bool transparent_bg = false;      // MOV only
 };
 
 struct AppState {
@@ -63,7 +70,7 @@ struct AppState {
     std::mutex                log_mutex;
     std::vector<std::string>  log_lines;
     std::atomic<float>        progress{0.0f};
-    std::atomic<float>        render_speed{0.0f};   // ffmpeg-reported encode speed (x realtime), 0 = unknown
+    std::atomic<float>        render_speed{0.0f};   // render speed (x realtime), 0 = unknown
     std::atomic<double>       render_wallclock{0.0};// render wall-clock seconds (for effective speed)
     std::atomic<bool>         busy{false};
     std::atomic<bool>         done{false};
@@ -84,7 +91,6 @@ struct AppState {
 
     // ---- processed state ------------------------------------------------------
     std::atomic<bool>         processed{false};
-    std::string               ass_path;
     std::string               midi_dir;
     std::string               midi_stem;
     double                    total_duration{0.0};
@@ -107,7 +113,7 @@ struct AppState {
     int                       font_bold = 0;
     int                       font_italic = 0;
     bool                      show_preview{false};
-    bool                      render_active{false};  // true while FFmpeg render is in progress
+    bool                      render_active{false};  // true while a render is in progress
     // The Preview popup was opened to watch a render (Render Video click, or
     // Preview while a render runs). Such a popup closes itself when the render
     // ends instead of degrading into a regular timeline preview.
@@ -151,6 +157,10 @@ struct AppState {
     PadOpts                   preview_pad;
     BpmOpts                   preview_bpm;
     std::string               bg_colour_ass{"&H00000000"};
+    // Text outline (pattern settings) for the in-built renderer / preview.
+    bool                      outline_enabled{false};
+    double                    outline_width{1.0};
+    std::string               outline_colour_ass{"&H00000000"};
 
     // ---- async file dialog state ---------------------------------------------
     std::atomic<bool>         dialog_busy{false};
@@ -220,6 +230,12 @@ extern AppState g_app;   // single global instance (defined in app_state.cpp)
 // GUI corner dropdown index -> ASS \an numpad alignment
 // (0 TL,1 TR,2 BL,3 BR,4 Top Center,5 Bottom Center -> 7,9,1,3,8,2)
 int gui_alignment_to_ass(int idx);
+
+// In-built renderer inputs built from the processed/preview state in g_app
+// (shared by the preview and the render job so both draw identical frames).
+fmcg_text::TextStyle app_text_style();
+fmcg_text::Placement app_placement();
+FrameTextSource app_text_source();
 
 // Recompute font_bold/font_italic from the variant's OS/2 metrics and refresh
 // the variant combo cache for `family`. Shared by the family combo and the

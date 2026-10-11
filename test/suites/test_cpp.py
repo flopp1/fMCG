@@ -23,7 +23,7 @@ def _files():
 
 
 def run(tc, name, args=(), cwd=None, sources=None, flags=(), timeout=900):
-    exe = T.build(name, (sources or T.CORE_FULL) + [f"test/cpp/{name}.cpp"], flags)
+    exe = T.build(name, (sources or (T.CORE_FULL + T.TEXT)) + [f"test/cpp/{name}.cpp"], flags)
     before = _files()
     try:
         r = subprocess.run([exe] + list(args), cwd=cwd or T.ROOT, capture_output=True, text=True, timeout=timeout)
@@ -57,11 +57,17 @@ class Cpp(unittest.TestCase):
         run(self, "test_burst_window")
 
     def test_burst_fuzz(self):
-        ref = T.build("test_burst_fuzz_ref", T.CORE_FULL + ["test/cpp/test_burst_fuzz.cpp"], ["-DFMCG_NO_BURST"])
+        ref = T.build("test_burst_fuzz_ref", T.CORE_FULL + T.TEXT + ["test/cpp/test_burst_fuzz.cpp"], ["-DFMCG_NO_BURST"])
         run(self, "test_burst_fuzz", [ref, "40"])
 
     def test_text(self):
-        run(self, "test_text", sources=T.TEXT)
+        run(self, "test_text", sources=T.CORE_FULL + T.TEXT)
+
+    def test_video(self):
+        run(self, "test_video", [T.BUILD], sources=T.CORE_FULL + T.TEXT)
+
+    def test_render(self):
+        run(self, "test_render", [T.BUILD, "test/data/tempo2.mid"], sources=T.CORE_FULL + T.TEXT)
 
     def test_harness(self):
         run(self, "test_harness", cwd=os.path.join(T.TEST_DIR, "data"))
