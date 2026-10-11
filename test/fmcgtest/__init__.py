@@ -1,7 +1,7 @@
 """Shared helpers for the fMCG test suites (stdlib only).
 
 Builds the headless probe / C++ test binaries with g++ (w64devkit on Windows,
-system g++ + libarchive on Linux/macOS) into build/test/, runs them, and parses
+system g++ + libarchive on Linux) into build/test/, runs them, and parses
 the probe's one-line result.
 
 Environment:

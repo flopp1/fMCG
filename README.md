@@ -28,9 +28,9 @@ Thanks to Nitsua for the idea of zero copy mmap + other scanner micro optimisati
 
 Both scripts are idempotent; re-run `build.bat` after changing sources.
 
-`build.bat debug` (or `make debug` on Linux/macOS) builds with `FMCG_DEBUG=1` (a console window plus extra diagnostic logging).
+`build.bat debug` (or `make debug` on Linux) builds with `FMCG_DEBUG=1` (a console window plus extra diagnostic logging).
 
-### Linux / macOS
+### Linux
 
 GLFW and libarchive are resolved via pkg-config (i.e. your system package manager):
 
@@ -41,8 +41,6 @@ sudo apt install build-essential pkg-config git libglfw3-dev libarchive-dev libh
 sudo dnf install gcc-c++ make pkgconf-pkg-config git glfw-devel libarchive-devel harfbuzz-devel x264-devel mesa-libGL-devel   # x264-devel: RPM Fusion
 # Arch
 sudo pacman -S base-devel pkgconf git glfw libarchive harfbuzz x264 mesa
-# macOS
-brew install pkg-config glfw libarchive harfbuzz x264
 
 git submodule update --init   # fetch Dear ImGui (pinned v1.92.9b)
 make                          # builds ./fMCG (default target)
@@ -61,7 +59,7 @@ python -I test/run_tests.py                 # quick: property suite vs oracle, C
 python -I test/run_tests.py --level full    # + layered corpus (needs the private test corpus)
 ```
 
-The runner needs only Python 3 (standard library) and the same g++/libarchive toolchain as the build; it compiles the headless probe and the C++ tests into `build/test/` itself. `make test LEVEL=quick|corpus|full` does the same on Linux/macOS.
+The runner needs only Python 3 (standard library) and the same g++/libarchive toolchain as the build; it compiles the headless probe and the C++ tests into `build/test/` itself. `make test LEVEL=quick|corpus|full` does the same on Linux.
 
 ## CJCMCG preprocessed files (`.cjcmcg`)
 
@@ -130,7 +128,7 @@ So a shareable release is just `fMCG.exe` plus the licence files. `THIRD_PARTY_L
 ```bat
 release.bat            :: -> dist\fMCG-windows\ + .zip, dist\fMCG-linux\ + .tar.gz
 release.bat v1.2       :: -> dist\fMCG-v1.2-windows\, dist\fMCG-v1.2-linux\ ... (name suffix)
-debug build            :: build.bat debug (Windows) or make debug (Linux/macOS)
+debug build            :: build.bat debug (Windows) or make debug (Linux)
 ```
 
 The script builds the Windows exe first, assembles `fMCG.exe`, `LICENSE`, `THIRD_PARTY_LICENSES.txt` and `README.md`, verifies nothing is missing and that the exe imports only Windows system DLLs, and zips it via PowerShell. It then builds the Linux binary through **WSL** (`release_linux.sh`, in a temporary Linux-side copy of the sources) and packages it with the same licence files and README as a `.tar.gz`.
@@ -147,7 +145,7 @@ then, inside the distribution (Debian/Ubuntu):
 sudo apt install build-essential pkg-config libglfw3-dev libarchive-dev libharfbuzz-dev libx264-dev libgl1-mesa-dev
 ```
 
-Without WSL (or with packages missing) the Windows release is still produced and `release.bat` reports the Linux step as an error with what to install. On a Linux/macOS machine, `./release_linux.sh "$PWD" fMCG` (or `make release`) builds the Linux package directly.
+Without WSL (or with packages missing) the Windows release is still produced and `release.bat` reports the Linux step as an error with what to install. On a Linux machine, `./release_linux.sh "$PWD" fMCG` (or `make release`) builds the Linux package directly.
 
 ## Usage
 1. Pick a MIDI file (plain `.mid`, or `.7z`/`.xz`/`.rar`/`.rar.xz` containing one).
@@ -179,7 +177,7 @@ The layout textbox defines the overlay. **Each line becomes one overlay row**, a
 |---|---|
 | `{sec}` / `{sec-max}` / `{sec-rem}` | Time in seconds (current / total / remaining) |
 | `{time}` / `{time-max}` / `{time-rem}` | Time as `mm:ss` (rolls over to `h:mm:ss`) |
-| `{time-milli}` / `{time-milli-max}` / `{time-milli-rem}` | Time as `mm:ss.mmm` |
+| `{time-milli}` / `{time-milli-max}` / `{time-milli-rem}` | Time as `mm:ss.mmm` (rolls over to `h:mm:ss.mmm`) |
 
 During the start delay, `{sec}`/`{time}`/`{time-milli}` run from negative and count up to zero.
 
@@ -232,7 +230,6 @@ All persistent state lives in the per-user config directory (created on first ru
 |---|---|
 | Windows | `%APPDATA%\fMCG\` |
 | Linux | `$XDG_CONFIG_HOME/fMCG/` or `~/.config/fMCG/` |
-| macOS | `~/Library/Application Support/fMCG/` |
 
 Inside: `settings.ini` (global settings) and `patterns/<name>.ini` (one file per pattern). The files are plain `key = value` INI — hand-editable, and never touched by program updates. Deleting the folder resets everything; the `Default` pattern is recreated on next launch.
 

@@ -78,6 +78,28 @@ for _k in gen.GENS:
     _add(_k)
 
 
+class RealtimeRunningStatus(unittest.TestCase):
+    """A real-time byte (F8..FE) between running-status notes keeps the running
+    status; a sysex cancels it. Fixed expectations, not just engine == oracle."""
+
+    def test_counts(self):
+        body = (b"\x00\x90\x3c\x40" b"\x00\xf8" b"\x00\x3d\x40" b"\x00\xfe" b"\x00\x3e\x40"
+                b"\x00\xf0\x01\xf7" b"\x00\x90\x3f\x40" b"\x00\x40\x40" + gen.EOT)
+        f = gen.mthd(480, 1) + gen.mtrk(body)
+        self.assertEqual(oracle.stats_of_file(f)["notes"], 5)
+        tmp = tempfile.mkdtemp(prefix="fmcg_rt_")
+        for name, blob, dedup in (("plain.mid", f, 0), ("layered.mid.xz", gen.xz(f), 1)):
+            p = os.path.join(tmp, name)
+            with open(p, "wb") as fh:
+                fh.write(blob)
+            got, line = T.run_probe(p, dedup, timeout=60)
+            with self.subTest(name=name):
+                self.assertIsNotNone(got, line)
+                self.assertEqual(got["notes"], 5, line)
+            os.remove(p)
+        os.rmdir(tmp)
+
+
 class RiskyDedup(unittest.TestCase):
     """The opt-in risky fast dedup (goal 8) on constructions where its assumption is
     right, wrong by design, or must not fire. Without the option every case is exact."""

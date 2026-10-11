@@ -555,8 +555,6 @@ static void draw_pattern_section() {
                   "$f.Filter = 'Text files (*.txt)|*.txt|All files (*.*)|*.*'; "
                   "$f.Title = 'Select layout template'; "
                   "if ($f.ShowDialog() -eq 'OK') { $f.FileName }\"";
-#elif defined(__APPLE__)
-            cfg_cmd = "osascript -e 'tell application \"System Events\" to set f to (choose file with prompt \"Select layout template\") as alias' -e 'POSIX path of f'";
 #else
             cfg_cmd = "zenity --file-selection --title='Select layout template' 2>/dev/null || "
                   "kdialog --getopenfilename . 'Text files (*.txt)' 'Select layout template' 2>/dev/null";
@@ -948,8 +946,6 @@ static void draw_global_section() {
                              : "$f.Filter = 'MP4 video (*.mp4)|*.mp4|All files (*.*)|*.*'; ")
                   + "$f.Title = 'Select output video'; "
                   "if ($f.ShowDialog() -eq 'OK') { $f.FileName }\"";
-#elif defined(__APPLE__)
-            cmd = "osascript -e 'tell application \"System Events\" to set f to (choose file name with prompt \"Select output video\") as alias' -e 'POSIX path of f'";
 #else
             cmd = std::string("zenity --file-selection --save --title='Select output video' --file-filter='")
                   + (mov_out ? "QuickTime movie | *.mov" : "MP4 video | *.mp4") + "' 2>/dev/null || "
@@ -974,6 +970,72 @@ static void draw_global_section() {
 // Extracted from the main loop so it can also run from the window-refresh
 // callback: on Windows, border-drag/resize enters a modal loop that never
 // returns to glfwPollEvents, and GLFW repaints through this callback there.
+// Snap the live mirror (g_app) to the settings currently in the UI: everything
+// that does not need a re-scan (pattern, text options, resolution, start
+// delay). Preview and Render both call it, so they always use the newest
+// settings. FPS, end delay and the scan options are baked into the processed
+// frames; render_stale_note() reports when those changed since Process.
+static void snap_live_settings() {
+    g_app.template_lines.clear();
+    {
+        std::istringstream tstream(g_ui.layout_buf);
+        std::string ln;
+        while (std::getline(tstream, ln)) {
+            while (!ln.empty() && ln.back() == '\r') ln.pop_back();
+            if (!ln.empty()) g_app.template_lines.push_back(ln);
+        }
+    }
+    if (g_app.template_lines.empty())   // same fallback as Process
+        g_app.template_lines = {"Time: {time-milli}/{time-milli-max}", "Notes: {nc}/{nc-total}/{nc-rem}",
+                                "NPS: {nps}/{nps-max}", "Polyphony: {plph}/{plph-max}", "BPM: {bpm}"};
+    g_app.preview_commas = g_ui.s.commas;
+    g_app.preview_pad = g_ui.s.pad;
+    g_app.preview_bpm = g_ui.s.bpm;
+    g_app.text_colour_ass = g_ui.s.text_color_aabbggrr;
+    g_app.bg_colour_ass = g_ui.s.bg_color_aabbggrr;
+    g_app.outline_enabled = g_ui.s.outline_enabled;
+    g_app.outline_width = g_ui.s.outline_width;
+    g_app.outline_colour_ass = g_ui.s.outline_color_aabbggrr;
+    g_app.typo = g_ui.s.typo;
+    g_app.font_size = g_ui.s.font_size;
+    g_app.font_family = g_ui.s.font_family;
+    g_app.font_variant = g_ui.s.font_variant;
+    g_app.font_bold = g_ui.s.font_bold;
+    g_app.font_italic = g_ui.s.font_italic;
+    g_app.pos_mode = g_ui.s.pos_mode;
+    g_app.pos_x = g_ui.s.pos_x;
+    g_app.pos_y = g_ui.s.pos_y;
+    g_app.frame_anchor = g_ui.s.frame_anchor;
+    g_app.block_anchor = g_ui.s.block_anchor;
+    g_app.cells = g_ui.s.cells;
+    g_app.cell_align = g_ui.s.cell_align;
+    g_app.alignment = g_ui.s.alignment;
+    g_app.ass_alignment = gui_alignment_to_ass(g_ui.s.alignment);
+    g_app.vid_width = g_ui.s.width;
+    g_app.vid_height = g_ui.s.height;
+    g_app.start_delay = g_ui.s.start_delay;
+    // end_delay stays as processed: the tail frames were built with it.
+}
+
+// Settings changed since Process that only a re-process can apply ("" = none).
+static std::string render_stale_note() {
+    const GuiSettings& p = g_app.processed_with;
+    const GuiSettings& s = g_ui.s;
+    std::string what;
+    auto add = [&](bool changed, const char* name) {
+        if (changed) what += (what.empty() ? "" : ", ") + std::string(name);
+    };
+    add(std::string(g_ui.midi_buf) != p.midi_file, "MIDI file");
+    add(s.fps != p.fps, "FPS");
+    add(s.end_delay != p.end_delay, "end delay");
+    add(s.vel0_note_off != p.vel0_note_off, "velocity-0 handling");
+    add(s.close_held_notes != p.close_held_notes, "close held notes");
+    add(s.track_dedup != p.track_dedup || (s.track_dedup && s.risky_dedup != p.risky_dedup), "dedup");
+    if (what.empty()) return what;
+    return "Note: " + what + " changed since Process; the video uses the processed values. "
+           "Press Process again to apply them.";
+}
+
 static void draw_frame(GLFWwindow* window) {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
@@ -1010,8 +1072,6 @@ static void draw_frame(GLFWwindow* window) {
                   "$f.Filter = 'MIDI, CJCMCG & archives (*.mid;*.midi;*.cjcmcg;*.7z;*.xz;*.rar;*.gz;*.bz2;*.zst;*.lz4)|*.mid;*.midi;*.cjcmcg;*.7z;*.xz;*.rar;*.gz;*.bz2;*.zst;*.lz4|All files (*.*)|*.*'; "
                   "$f.Title = 'Select MIDI file'; "
                   "if ($f.ShowDialog() -eq 'OK') { $f.FileName }\"";
-#elif defined(__APPLE__)
-            cmd = "osascript -e 'tell application \"System Events\" to set f to (choose file with prompt \"Select MIDI file\") as alias' -e 'POSIX path of f'";
 #else
             cmd = "zenity --file-selection --title='Select MIDI file' --file-filter='MIDI, CJCMCG & archives | *.mid *.midi *.cjcmcg *.7z *.xz *.rar *.gz *.bz2 *.zst *.lz4' 2>/dev/null || "
                   "kdialog --getopenfilename . 'MIDI, CJCMCG & archives (*.mid *.midi *.cjcmcg *.7z *.xz *.rar *.gz *.bz2 *.zst *.lz4)' 'Select MIDI file' 2>/dev/null";
@@ -1116,47 +1176,7 @@ static void draw_frame(GLFWwindow* window) {
             // restore the popup would have done, then clear the latch.
             if (!preview_starts_render_view && g_app.render_watch_done.exchange(false))
                 g_app.preview_time = g_app.preview_saved_pos;
-            {
-                // Snap the live mirror to the current pattern so Preview
-                // (with or without a processed MIDI) shows the edited look.
-                // Always: the pattern-only preview needs template_lines too.
-                g_app.template_lines.clear();
-                {
-                    std::istringstream tstream(g_ui.layout_buf);
-                    std::string ln;
-                    while (std::getline(tstream, ln)) {
-                        while (!ln.empty() && ln.back() == '\r') ln.pop_back();
-                        if (!ln.empty()) g_app.template_lines.push_back(ln);
-                    }
-                }
-                g_app.preview_commas = g_ui.s.commas;
-                g_app.preview_pad = g_ui.s.pad;
-                g_app.preview_bpm = g_ui.s.bpm;
-                g_app.text_colour_ass = g_ui.s.text_color_aabbggrr;
-                g_app.bg_colour_ass = g_ui.s.bg_color_aabbggrr;
-                g_app.outline_enabled = g_ui.s.outline_enabled;
-                g_app.outline_width = g_ui.s.outline_width;
-                g_app.outline_colour_ass = g_ui.s.outline_color_aabbggrr;
-                g_app.typo = g_ui.s.typo;
-                g_app.font_size = g_ui.s.font_size;
-                g_app.font_family = g_ui.s.font_family;
-                g_app.font_variant = g_ui.s.font_variant;
-                g_app.font_bold = g_ui.s.font_bold;
-                g_app.font_italic = g_ui.s.font_italic;
-                g_app.pos_mode = g_ui.s.pos_mode;
-                g_app.pos_x = g_ui.s.pos_x;
-                g_app.pos_y = g_ui.s.pos_y;
-                g_app.frame_anchor = g_ui.s.frame_anchor;
-                g_app.block_anchor = g_ui.s.block_anchor;
-                g_app.cells = g_ui.s.cells;
-                g_app.cell_align = g_ui.s.cell_align;
-                g_app.alignment = g_ui.s.alignment;
-                g_app.ass_alignment = gui_alignment_to_ass(g_ui.s.alignment);
-                g_app.vid_width = g_ui.s.width;
-                g_app.vid_height = g_ui.s.height;
-                g_app.start_delay = g_ui.s.start_delay;
-                g_app.end_delay = g_ui.s.end_delay;
-            }
+            snap_live_settings();
             g_app.show_preview = true;
             // Auto-play on open (pattern-only or full preview alike).
             g_app.preview_playing = !preview_starts_render_view;
@@ -1176,6 +1196,7 @@ static void draw_frame(GLFWwindow* window) {
             g_app.preview_playing = false;
             g_app.preview_time = 0.0;
             ImGui::OpenPopup("Preview");
+            snap_live_settings();   // the newest pattern / resolution / delay
 
             RenderSettings rs;
             rs.output_video = g_ui.output_buf;
@@ -1197,6 +1218,12 @@ static void draw_frame(GLFWwindow* window) {
             rs.x264_preset = g_ui.s.x264_preset;
             rs.x264_tune = g_ui.s.x264_tune;
             rs.keyframe_seconds = g_ui.s.keyframe_seconds;
+            // Built here, on the UI thread: a Preview click mid-render rewrites
+            // the g_app mirror the worker would otherwise read.
+            rs.text_source = app_text_source();
+            rs.text_style = app_text_style();
+            rs.placement = app_placement();
+            rs.note = render_stale_note();
             g_app.done = false;
             g_app.log_lines.clear();
             // Set busy on the GUI thread *before* detaching: the preview popup

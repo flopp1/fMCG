@@ -232,6 +232,36 @@ def d_tempo_diff(rng):
     return header + cur, "tiled tracks with differing, interleaved tempo patterns"
 
 
+def _realtime_body(rng, nev=60):
+    """Running-status notes with system bytes in between: real-time F8..FE keep
+    running status, sysex / system common / meta cancel it (re-stated after)."""
+    b = bytearray(b"\x00\x90" + bytes([rng.randrange(128), rng.randrange(1, 128)]))
+    for _ in range(nev):
+        r = rng.random()
+        b += vlq(rng.choice([0, 0, 1, 7]))
+        if r < 0.3:
+            b += bytes([rng.choice([0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE])])
+        elif r < 0.4:
+            b += rng.choice([b"\xf0\x02\x7e\xf7", b"\xf7\x01\x00", b"\xf1\x10", b"\xf2\x01\x02",
+                             b"\xf3\x05", b"\xf6", b"\xff\x01\x01A"])
+            b += b"\x00" + bytes([rng.choice([0x90, 0x91, 0x80])])   # running status re-stated
+            b += bytes([rng.randrange(128), rng.randrange(1, 128)])
+        else:
+            b += bytes([rng.randrange(128), rng.randrange(128)])   # running status
+    return bytes(b) + EOT
+
+
+def d_realtime(rng):
+    """Real-time bytes inside running-status runs, cut into arbitrary xz members."""
+    stream = mtrk(_realtime_body(rng)) + mtrk(_realtime_body(rng, 30))
+    members, pos = [xz(mthd(480, 2))], 0
+    while pos < len(stream):
+        step = rng.randrange(1, 40)
+        members.append(xz(stream[pos:pos + step], rng.choice(CHECKS)))
+        pos += step
+    return b"".join(members), "real-time bytes in running-status runs, arbitrary cuts"
+
+
 GENS = {k[2:]: v for k, v in globals().items() if k.startswith("d_")}
 
 

@@ -1,4 +1,5 @@
 #include "fmcg_fonts.h"
+#include "fmcg_path.h"
 
 #include <fstream>
 #include <cstdint>
@@ -7,8 +8,11 @@
 #include <cstdlib>
 #include <algorithm>
 #include <set>
-#include <sys/stat.h>
-#include <dirent.h>
+#include <filesystem>
+#include <system_error>
+#if defined(_WIN32)
+#include <cwchar>
+#endif
 
 namespace {
 
@@ -157,27 +161,28 @@ bool ci_less_str(const std::string& a, const std::string& b) {
 
 } // namespace
 
+// Paths in and out are UTF-8; the directory walk itself is Unicode
+// (std::filesystem, wide on Windows), so file names outside the ANSI code
+// page are found too.
 void collect_font_files(const std::string& dir, std::vector<std::string>& out, int depth) {
+    namespace fs = std::filesystem;
     if (depth > 8) return;
-    DIR* d = opendir(dir.c_str());
-    if (!d) return;
-    struct dirent* ent;
-    while ((ent = readdir(d)) != nullptr) {
-        std::string name = ent->d_name;
-        if (name == "." || name == "..") continue;
-        std::string full = dir + "/" + name;
-        struct stat st;
-        if (stat(full.c_str(), &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) {
+    std::error_code ec;
+    fs::directory_iterator it(path_from_utf8(dir), fs::directory_options::skip_permission_denied, ec), end;
+    for (; !ec && it != end; it.increment(ec)) {
+        const fs::path& p = it->path();
+        const std::string name = path_to_utf8(p.filename());
+        const std::string full = dir + "/" + name;
+        std::error_code sec;
+        if (fs::is_directory(p, sec)) {   // follows symlinks, like stat()
             collect_font_files(full, out, depth + 1);
-        } else {
+        } else if (!sec) {
             size_t dot = name.find_last_of('.');
             std::string ext = (dot == std::string::npos) ? "" : name.substr(dot);
             for (auto& c : ext) c = (char)tolower((unsigned char)c);
             if (ext == ".ttf" || ext == ".otf" || ext == ".ttc") out.push_back(full);
         }
     }
-    closedir(d);
 }
 
 
@@ -209,7 +214,7 @@ static std::vector<uint64_t> face_bases(std::ifstream& f) {
 // Cambria Math), in face order, without duplicates.
 std::vector<std::string> read_font_families(const std::string& path) {
     std::vector<std::string> out;
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream f(path_from_utf8(path), std::ios::binary);
     if (!f) return out;
     for (uint64_t base : face_bases(f)) {
         std::string fam;
@@ -227,26 +232,32 @@ std::string read_font_family(const std::string& path) {
 std::vector<std::string> get_font_directories() {
     std::vector<std::string> dirs;
 #if defined(_WIN32)
-    const char* windir = std::getenv("WINDIR");
-    if (windir) dirs.push_back(std::string(windir) + "/Fonts");
-    const char* local = std::getenv("LOCALAPPDATA");
-    if (local) dirs.push_back(std::string(local) + "/Microsoft/Windows/Fonts");
+    // Wide environment reads: a user name outside the ANSI code page would
+    // otherwise come back as '?' and the per-user font folder never be found.
+    auto env = [](const wchar_t* name) -> std::string {
+        const wchar_t* v = _wgetenv(name);
+        return v && *v ? path_to_utf8(std::filesystem::path(v)) : std::string();
+    };
+    const std::string windir = env(L"WINDIR");
+    if (!windir.empty()) dirs.push_back(windir + "/Fonts");
+    const std::string local = env(L"LOCALAPPDATA");
+    if (!local.empty()) dirs.push_back(local + "/Microsoft/Windows/Fonts");
 #else
-    for (const char* d : {"/usr/share/fonts", "/usr/local/share/fonts", "/System/Library/Fonts", "/Library/Fonts"})
+    for (const char* d : {"/usr/share/fonts", "/usr/local/share/fonts"})
         dirs.push_back(d);
 #endif
-    const char* home = std::getenv("HOME");
 #if defined(_WIN32)
-    if (!home) home = std::getenv("USERPROFILE");
-    if (home) dirs.push_back(std::string(home) + "/AppData/Local/Microsoft/Windows/Fonts");
+    std::string home = env(L"HOME");
+    if (home.empty()) home = env(L"USERPROFILE");
+    if (!home.empty()) dirs.push_back(home + "/AppData/Local/Microsoft/Windows/Fonts");
     // %LOCALAPPDATA% and %USERPROFILE%/AppData/Local name the same folder with
     // different separators: normalise, or every per-user font is listed twice.
     for (std::string& d : dirs) std::replace(d.begin(), d.end(), '\\', '/');
 #else
+    const char* home = std::getenv("HOME");
     if (home) {
         dirs.push_back(std::string(home) + "/.fonts");
         dirs.push_back(std::string(home) + "/.local/share/fonts");
-        dirs.push_back(std::string(home) + "/Library/Fonts");
     }
 #endif
     std::sort(dirs.begin(), dirs.end(), ci_less_str);
@@ -304,7 +315,7 @@ std::vector<FontVariant> enumerate_font_variants(const std::string& family) {
         collect_font_files(dir, files, 0);
         for (const auto& path : files) {
             if (!seen_files.insert(path).second) continue;
-            std::ifstream f(path, std::ios::binary);
+            std::ifstream f(path_from_utf8(path), std::ios::binary);
             if (!f) continue;
             const std::vector<uint64_t> bases = face_bases(f);
             f.clear();
@@ -396,7 +407,7 @@ std::string find_font_file_for_family(const std::string& family, int* face_index
         for (const auto& path : files) {
             if (first_file.empty()) first_file = path;
             if (family.empty()) continue;
-            std::ifstream f(path, std::ios::binary);
+            std::ifstream f(path_from_utf8(path), std::ios::binary);
             const std::vector<uint64_t> bases = face_bases(f);
             for (size_t face = 0; face < bases.size(); ++face) {
                 std::string fam;

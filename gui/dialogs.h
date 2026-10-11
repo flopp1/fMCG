@@ -1,7 +1,7 @@
 // dialogs.h -- non-blocking native file-open dialogs.
 //
 // Runs the platform dialog in a detached worker thread (the commands shell out
-// to PowerShell on Windows, osascript on macOS, zenity/kdialog elsewhere) and
+// to PowerShell on Windows, zenity/kdialog on Linux) and
 // reports the picked path back through AppState.
 #pragma once
 #include <string>

@@ -78,6 +78,14 @@ int main() {
         z.timestamp_sec = 0.0;
         auto out3 = ProcessTemplateLine("T:{time-milli}", z, 0, 0, tmax, ppqn, c, p0);
         check("countdown at zero", out3, "T:00:00.000");
+        z.timestamp_sec = 3725.25;   // one hour on: h:mm:ss
+        check("time over an hour", ProcessTemplateLine("{time} {time-milli}", z, 0, 0, tmax, ppqn, c, p0),
+              "1:02:05 1:02:05.250");
+        z.timestamp_sec = 3599.0;
+        check("time just under an hour", ProcessTemplateLine("{time}", z, 0, 0, tmax, ppqn, c, p0), "59:59");
+        z.timestamp_sec = -3600.5;
+        check("negative time over an hour", ProcessTemplateLine("{time-milli}", z, 0, 0, tmax, ppqn, c, p0),
+              "-1:00:00.500");
     }
     {   // Zero-stats block (delay lead-in) shows 0 counters, starting BPM.
         FrameStats z; z.bpm = 150.0;

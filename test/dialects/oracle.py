@@ -24,6 +24,7 @@ Standard-scan rules mirrored here (keep in sync with the engine):
   * the delta is added before the event is read, so truncated events still advance;
   * status < 0x80 with running status 0 consumes nothing (the byte is re-read as a
     delta); meta/sysex lengths are skipped (clamped); F1/F3 skip 1, F2 skips 2;
+  * F0..F7 and FF cancel running status; real-time bytes F8..FE keep it;
   * channel events read their data bytes whatever their value; note number is
     clamped & 0x7F; note-on vel 0 is an off when vel0_off; offs are refcounted per
     (channel, note) and only fire when the count is > 0;
@@ -93,7 +94,12 @@ def parse_track(body, vel0_off=True):
         if b >= 0x80:
             status = b
             i += 1
-            running = b if b < 0xF0 else 0
+            # sysex / system common / meta cancel running status; real-time
+            # bytes (F8..FE) leave it alone (MIDI spec)
+            if b < 0xF0:
+                running = b
+            elif not (0xF8 <= b <= 0xFE):
+                running = 0
         else:
             status = running
         if status == 0xFF:

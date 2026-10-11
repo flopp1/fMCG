@@ -3,7 +3,6 @@
 // Storage layout (created on first run):
 //   Windows : %APPDATA%\fMCG\settings.ini, %APPDATA%\fMCG\patterns\<name>.ini
 //   Linux   : $XDG_CONFIG_HOME/fMCG/... (~/.config/fMCG)
-//   macOS   : ~/Library/Application Support/fMCG/...
 //
 // Global settings hold everything EXCEPT what a pattern defines. Patterns
 // bundle the overlay appearance: layout text, alignment/position, font

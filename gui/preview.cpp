@@ -119,48 +119,6 @@ void draw_canvas(const fmcg_text::PieceLines& pieces, const FrameTextSource& src
 
 
 // ---------------------------------------------------------------------------
-// Preview helpers
-// ---------------------------------------------------------------------------
-
-ImVec4 ass_colour_to_imgui(const std::string& ass_col) {
-    // ASS colour format: &HAABBGGRR
-    if (ass_col.size() >= 8 && ass_col[0] == '&' && (ass_col[1] == 'H' || ass_col[1] == 'h')) {
-        std::string hex = ass_col.substr(2);
-        if (hex.size() == 8) hex = hex.substr(2);   // drop alpha byte -> BBGGRR
-        if (hex.size() == 6) {
-            unsigned int b = std::stoul(hex.substr(0, 2), nullptr, 16);
-            unsigned int g = std::stoul(hex.substr(2, 2), nullptr, 16);
-            unsigned int r = std::stoul(hex.substr(4, 2), nullptr, 16);
-            return ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f);
-        }
-    }
-    return ImVec4(1, 1, 1, 1);
-}
-
-ImU32 ass_colour_to_imcol32(const std::string& ass_col) {
-    ImVec4 c = ass_colour_to_imgui(ass_col);
-    return IM_COL32((int)(c.x * 255.0f), (int)(c.y * 255.0f), (int)(c.z * 255.0f), 255);
-}
-
-const FrameStats& find_frame(double time_sec) {
-    const auto& data = g_app.frames_data;
-    if (data.empty()) {
-        static FrameStats empty;
-        return empty;
-    }
-    size_t lo = 0, hi = data.size();
-    while (lo < hi) {
-        size_t mid = (lo + hi) / 2;
-        if (data[mid].timestamp_sec <= time_sec)
-            lo = mid + 1;
-        else
-            hi = mid;
-    }
-    if (lo == 0) return data[0];
-    return data[lo - 1];
-}
-
-// ---------------------------------------------------------------------------
 // Pattern-only preview: shown when no MIDI is processed. Renders the current
 // pattern with all stats at zero over the background colour; a short fixed
 // timeline lets the user see the start-delay countdown behaviour too.

@@ -76,39 +76,6 @@ std::string extract_stem(const std::string& path) {
     return (dot != std::string::npos) ? basename.substr(0, dot) : basename;
 }
 
-std::string app_temp_dir() {
-    static std::string cached;
-    if (!cached.empty()) return cached;
-    std::string base;
-#if defined(_WIN32)
-    const char* t = std::getenv("TEMP");
-    if (!t || !t[0]) t = std::getenv("TMP");
-    if (t && t[0]) base = t;
-    if (base.empty()) base = "C:/Windows/Temp";
-#else
-    const char* t = std::getenv("TMPDIR");
-    if (!t || !t[0]) t = "/tmp";
-    base = t;
-#endif
-    fs::path dir = fs::path(base) / "fMCG";
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    cached = dir.string();
-    return cached;
-}
-
-std::string trim_path(std::string s) {
-    if (s.size() >= 3 && (unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBB && (unsigned char)s[2] == 0xBF)
-        s.erase(0, 3);
-    auto is_space = [](unsigned char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
-    while (!s.empty() && is_space(s.front())) s.erase(s.begin());
-    while (!s.empty() && is_space(s.back())) s.pop_back();
-    if (s.size() >= 2 && s.front() == '"' && s.back() == '"') s = s.substr(1, s.size() - 2);
-    while (!s.empty() && is_space(s.front())) s.erase(s.begin());
-    while (!s.empty() && is_space(s.back())) s.pop_back();
-    return s;
-}
-
 bool validate_midi(const std::string& path, std::string& err) {
     std::ifstream f(path_from_utf8(path), std::ios::binary);
     if (!f) { err = "cannot open file"; return false; }

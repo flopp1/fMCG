@@ -1,4 +1,4 @@
-# fMCG Makefile (Linux / macOS)
+# fMCG Makefile (Linux)
 #
 # Resolves dependencies through pkg-config, so libraries installed by your
 # system package manager are picked up automatically:
@@ -7,7 +7,6 @@
 #   Fedora        : sudo dnf install gcc-c++ make pkgconf-pkg-config glfw-devel libarchive-devel mesa-libGL-devel
 #   Arch          : sudo pacman -S base-devel pkgconf glfw libarchive mesa
 #   openSUSE      : sudo zypper install gcc-c++ make pkgconf-pkg-config glfw-devel libarchive-devel Mesa-libGL-devel
-#   macOS         : brew install pkg-config glfw libarchive
 #
 # Dear ImGui is a git submodule at vendor/imgui (fetch it with
 # `git submodule update --init`), or point IMGUI_CFLAGS at a system copy:
@@ -32,15 +31,10 @@
 CXX      ?= g++
 CXXFLAGS ?= -std=c++17 -O3 -Wall -Wextra
 LDFLAGS  ?=
-UNAME    := $(shell uname)
 PKG      := pkg-config
 
-# --- OpenGL linkage differs by platform ---------------------------------------
-ifeq ($(UNAME),Darwin)
-GL_LDLIBS := -framework OpenGL
-else
+# --- OpenGL -------------------------------------------------------------------
 GL_LDLIBS := -lGL
-endif
 
 # --- GLFW: try both common pkg-config module names ----------------------------
 GLFW_PC := $(shell $(PKG) --exists glfw3 2>/dev/null && echo glfw3)
@@ -52,7 +46,6 @@ $(warning pkg-config cannot find GLFW. Install the development package:)
 $(warning   Debian/Ubuntu: sudo apt install libglfw3-dev)
 $(warning   Fedora:        sudo dnf install glfw-devel)
 $(warning   Arch:          sudo pacman -S glfw)
-$(warning   macOS:         brew install glfw)
 GLFW_CFLAGS :=
 GLFW_LIBS   := -lglfw
 else
@@ -69,7 +62,6 @@ $(warning pkg-config cannot find libarchive. Install the development package:)
 $(warning   Debian/Ubuntu: sudo apt install libarchive-dev)
 $(warning   Fedora:        sudo dnf install libarchive-devel)
 $(warning   Arch:          sudo pacman -S libarchive)
-$(warning   macOS:         brew install libarchive)
 ARCH_CFLAGS :=
 ARCH_LIBS   := -larchive
 endif
@@ -83,7 +75,6 @@ $(warning pkg-config cannot find harfbuzz and/or x264. Install the development p
 $(warning   Debian/Ubuntu: sudo apt install libharfbuzz-dev libx264-dev)
 $(warning   Fedora:        sudo dnf install harfbuzz-devel x264-devel)
 $(warning   Arch:          sudo pacman -S harfbuzz x264)
-$(warning   macOS:         brew install harfbuzz x264)
 RENDER_CFLAGS :=
 RENDER_LIBS   := -lharfbuzz -lx264
 endif

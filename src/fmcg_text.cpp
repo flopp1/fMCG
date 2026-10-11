@@ -1,5 +1,6 @@
 // fmcg_text.cpp -- see fmcg_text.h.
 #include "fmcg_text.h"
+#include "fmcg_path.h"
 
 #include <hb.h>
 #include <hb-ot.h>
@@ -168,32 +169,7 @@ const TextStyle& TextRenderer::style() const { return d->style; }
 
 static void read_font_file(const std::string& path, std::vector<uint8_t>& data) {
     data.clear();
-    std::ifstream f(path, std::ios::binary);
-#if defined(_WIN32)
-    if (!f) {   // UTF-8 path on Windows
-        FILE* fp = nullptr;
-        std::wstring w;
-        for (size_t i = 0; i < path.size();) {   // minimal UTF-8 -> UTF-16
-            unsigned c = (unsigned char)path[i++];
-            unsigned cp = c;
-            int extra = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
-            if (extra) cp = c & (0x3F >> extra);
-            while (extra-- > 0 && i < path.size()) cp = (cp << 6) | ((unsigned char)path[i++] & 0x3F);
-            if (cp >= 0x10000) { cp -= 0x10000; w += (wchar_t)(0xD800 + (cp >> 10)); w += (wchar_t)(0xDC00 + (cp & 0x3FF)); }
-            else w += (wchar_t)cp;
-        }
-        fp = _wfopen(w.c_str(), L"rb");
-        if (fp) {
-            std::fseek(fp, 0, SEEK_END);
-            const long n = std::ftell(fp);
-            std::fseek(fp, 0, SEEK_SET);
-            data.resize(n > 0 ? (size_t)n : 0);
-            if (n > 0 && std::fread(data.data(), 1, (size_t)n, fp) != (size_t)n) data.clear();
-            std::fclose(fp);
-        }
-        return;
-    }
-#endif
+    std::ifstream f(path_from_utf8(path), std::ios::binary);   // UTF-8 path (wide on Windows)
     data.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
 }
 

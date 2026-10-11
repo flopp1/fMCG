@@ -156,6 +156,7 @@ void run_process(GuiSettings s) {
     app.cell_align = s.cell_align;
     app.alignment = s.alignment;
 
+    app.processed_with = s;
     app.frames_data = std::move(frames);
     app.template_lines = template_lines;
     app.text_colour_ass = text_color_ass;
@@ -194,6 +195,7 @@ void run_render(RenderSettings s) {
     }
     app.result_path.clear();
     app.render_active = true;
+    if (!s.note.empty()) app.gui_log(s.note.c_str(), false);
 
     // In-built renderer: the same FrameTextSource -> FrameRenderer path the
     // preview draws, encoded in-process (no FFmpeg, no subtitle file).
@@ -221,8 +223,8 @@ void run_render(RenderSettings s) {
     vo.keyframe_seconds = s.keyframe_seconds;
     const auto t0 = std::chrono::steady_clock::now();
     double text_scale = 1.0;
-    const int rc = fmcg_video::render_video(s.output_video, vo, app_text_source(), app_text_style(),
-        app_placement(), bg, &app.cancel,
+    const int rc = fmcg_video::render_video(s.output_video, vo, s.text_source, s.text_style,
+        s.placement, bg, &app.cancel,
         [&](size_t done, size_t total) {
             app.progress.store((float)((double)done / (double)total));
             const double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -232,7 +234,7 @@ void run_render(RenderSettings s) {
         char msg[200];
         std::snprintf(msg, sizeof msg, "Note: the largest counter text did not fit the %dx%d frame; "
                       "font scaled to %.0f%% (%.1f px) for the whole video.",
-                      s.width, s.height, text_scale * 100.0, app.font_size * text_scale);
+                      s.width, s.height, text_scale * 100.0, s.text_style.size * text_scale);
         app.gui_log(msg, false);
     }
     app.render_wallclock.store(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());

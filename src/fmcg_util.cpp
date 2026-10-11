@@ -53,7 +53,7 @@ std::string pad_num(uint64_t val, int pad) {
 }
 
 // Negative-aware, truncating toward zero (standard clock behaviour):
-// -2.5 -> "-00:02.500". Used for the start-delay countdown, where current-time
+// -2.5 -> "-00:02.500", 3725 -> "1:02:05". Used for the start-delay countdown, where current-time
 // fields run from negative up to 0 as the song approaches.
 std::string format_time(double total_sec, bool milli, int pad) {
     (void)pad;   // padding applies to numeric fields only, not mm:ss
@@ -63,10 +63,12 @@ std::string format_time(double total_sec, bool milli, int pad) {
     int ms = milli ? static_cast<int>(std::lround((av - (double)iv) * 1000.0)) : 0;
     if (ms >= 1000) { ms -= 1000; iv += 1; }
     unsigned long long a = (unsigned long long)iv;
-    int mins = (int)(a / 60);
+    unsigned long long hours = a / 3600;
+    int mins = (int)(a / 60 % 60);
     int secs = (int)(a % 60);
     std::ostringstream ss;
     if (neg) ss << '-';
+    if (hours) ss << hours << ':';   // h:mm:ss from one hour on
     ss << std::setfill('0') << std::setw(2) << mins << ":" << std::setw(2) << secs;
     if (milli) ss << "." << std::setw(3) << ms;
     return ss.str();

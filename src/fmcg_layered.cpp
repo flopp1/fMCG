@@ -658,7 +658,7 @@ private:
                 }
                 break;
             case E_STATUS:
-                if (b >= 0x80) { ++i; s_.status = b; s_.running = b < 0xF0 ? b : 0; }
+                if (b >= 0x80) { ++i; s_.status = b; s_.running = b < 0xF0 ? b : (b >= 0xF8 && b != 0xFF) ? s_.running : 0; }   // F8..FE keep it
                 else s_.status = s_.running;
                 dispatch();
                 break;
@@ -1557,8 +1557,6 @@ int scan_layered(const std::string& filename, bool vel0_as_note_off, TickData& t
                 if (td.runs.size() >= kRunBudget) throw WalkError{"layered walk: too many tick runs to materialize"};
                 td.runs.push_back({start, step, count, o, d, c});
             }
-            const uint64_t last = start + (count - 1) * step;
-            if (last > max_tick && (o || d)) {}   // max_tick comes from track ends, not cells
         };
         for (const Item& it : items) {
             const Contrib& c = W.contribs[it.contrib];

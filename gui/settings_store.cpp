@@ -44,9 +44,6 @@ std::string settings_dir() {
             dir = fs::path(appdata) / "fMCG";
         else
             dir = fs::path(".") / "fMCG_settings";   // last resort: portable
-#elif defined(__APPLE__)
-        const char* home = getenv("HOME");
-        dir = fs::path(home ? home : ".") / "Library" / "Application Support" / "fMCG";
 #else
         const char* xdg = getenv("XDG_CONFIG_HOME");
         if (xdg && xdg[0]) dir = fs::path(xdg) / "fMCG";

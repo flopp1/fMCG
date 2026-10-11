@@ -77,6 +77,10 @@ struct RenderSettings {
     std::string x264_preset = "veryfast";    // fmcg_video::k_presets
     std::string x264_tune;                   // "" = none, else fmcg_video::k_tunes
     double      keyframe_seconds = 2.0;      // both formats
+    FrameTextSource       text_source;       // frames + pattern, snapped at the Render click
+    fmcg_text::TextStyle  text_style;
+    fmcg_text::Placement  placement;
+    std::string           note;              // logged at the start ("" = none)
 };
 
 struct AppState {
@@ -114,6 +118,7 @@ struct AppState {
     uint16_t                  ppqn{480};
     uint64_t                  total_notes{0};
     uint64_t                  total_ticks{0};
+    GuiSettings               processed_with;      // the settings the last Process ran with
 
     // ---- preview data ---------------------------------------------------------
     std::vector<FrameStats>   frames_data;

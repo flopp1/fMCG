@@ -28,7 +28,7 @@ static thread_local std::vector<uint8_t> tls_io_scratch;
 
 #if defined(_WIN32)
 #include <windows.h>
-#elif defined(__unix__) || defined(__APPLE__)
+#elif defined(__unix__)
 #include <pthread.h>
 #include <time.h>
 #endif
@@ -974,22 +974,6 @@ static void replay_track_summary(const TrackSummary& s, TickData& td,
     if (s.desync) td.desync_tracks++;
 }
 
-// Merge a worker's summary list into the shared store under a mutex. Hit
-// store keeps only unique (bytes, hash) keys, so hit lookups stay O(unique
-// tracks) -- normally one or two entries even for tens of thousands of copies.
-// Records ending with held notes are dropped: they can never be replayed.
-static void dedup_merge_records(std::vector<TrackSummary>& mine, TickData& td) {
-    std::lock_guard<std::mutex> lk(g_dedup_mutex);
-    for (auto& s : mine) {
-        if (s.end_refcount) continue;
-        bool known = false;
-        for (const auto& r : td.dedup.records)
-            if (r->bytes == s.bytes && r->hash == s.hash) { known = true; break; }
-        if (!known) td.dedup.records.push_back(std::make_shared<TrackSummary>(std::move(s)));
-    }
-    mine.clear();
-}
-
 // Approximate resident size of a summary (the per-tick lists dominate).
 static uint64_t summary_bytes(const TrackSummary& s) {
     return sizeof(TrackSummary)
@@ -1229,7 +1213,9 @@ static uint64_t parse_track_body(StreamT& bs, bool accumulate, bool vel0_as_note
         } else {
             bs.get();   // consume the status byte
             status = (uint8_t)st;
-            running = (status < 0xF0) ? status : 0;
+            // Sysex / system common / meta cancel running status; real-time
+            // bytes (F8..FE) leave it alone (MIDI spec).
+            running = (status < 0xF0) ? status : (status >= 0xF8 && status != 0xFF) ? running : 0;
         }
 
         if (__builtin_expect(status >= 0xF0, 0)) {
@@ -1354,21 +1340,7 @@ static uint64_t parse_track_body(StreamT& bs, bool accumulate, bool vel0_as_note
 // A truncated/desynced track yields bytes < the chunk length, so its record
 // can never produce a false hit on a full-length candidate. The CALLER fills
 // rec.bytes/.hash/.events (it owns the chunk length and the returned count).
-// Returns the number of events walked in this track (including early exits).// Forward declarations: the scan bodies are stream-generic (templated over
-// ByteStream or RawStream) and defined further below, after FrameBuckets.
-template <typename StreamT>
-static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickData& td,
-                        std::vector<TempoChange>& tempo_raw, uint16_t& out_division,
-                        const ProgressCallbacks& cb, ScanMode mode);
-
-bool scan_image(DataSrc& src, bool vel0_as_note_off, TickData& td,
-                std::vector<TempoChange>& tempo_raw, uint16_t& out_division,
-                const ProgressCallbacks& cb, ScanMode mode = ScanMode::ACCUMULATE) {
-    ByteStream bs(src);
-    return scan_stream(bs, src, vel0_as_note_off, td, tempo_raw, out_division, cb, mode);
-}
-
-// ---- single sequential walk over the image (stream-generic) ------------------
+// Returns the number of events walked in this track (including early exits).// ---- single sequential walk over the image (stream-generic) ------------------
 template <typename StreamT>
 static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickData& td,
                         std::vector<TempoChange>& tempo_raw, uint16_t& out_division,
@@ -1450,7 +1422,6 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
     // (reset() clears it) so the replay helper can consult the cache and the
     // final summary can merge its records.
     TrackDataDedup* dedup_store = nullptr;
-    std::vector<TrackSummary> dedup_records_mine;   // merged after the walk
     uint64_t dedup_replayed_events = 0;             // events from replays (not walked)
     if (accumulate && td.dedup_enabled) {
         dedup_store = &td.dedup;
@@ -1689,8 +1660,6 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
     ping();
     report_tracks(true);
     td.total_events_seen = ev_count + dedup_replayed_events;
-    if (dedup_store && !dedup_records_mine.empty())
-        dedup_merge_records(dedup_records_mine, td);
     if (dedup_store) {
         const uint64_t hits = td.dedup.hits.load(std::memory_order_relaxed);
         const uint64_t misses = td.dedup.misses.load(std::memory_order_relaxed);
@@ -1999,7 +1968,7 @@ struct FrameBuckets {
     void add_cc(size_t fi)   { ensure(fi); cc[fi]++;     total_cc++; }
 };
 
-// Pass 2 walk: same event grammar as scan_image, but events land in frame
+// Pass 2 walk: same event grammar as scan_stream, but events land in frame
 // buckets through the precomputed tempo map. Tick-space is never materialized.
 template <typename StreamT>
 static bool scan_frames_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
@@ -2192,12 +2161,12 @@ static bool scan_frames_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off,
             if (!burst_at_event) continue;   // stream sits at a delta: back to loop top
             // Fall through: the event at the stream head goes through the slow path.
 #endif   // FMCG_NO_BURST
-            // Peek-based running-status handling (mirrors scan_image).
+            // Peek-based running-status handling (mirrors parse_track_body).
             int st = bs.peek();
             if (st < 0) break;
             uint8_t status;
             if (st < 0x80) { status = running; }
-            else { bs.get(); status = (uint8_t)st; running = (status < 0xF0) ? status : 0; }
+            else { bs.get(); status = (uint8_t)st; running = (status < 0xF0) ? status : (status >= 0xF8 && status != 0xFF) ? running : 0; }
 
             if (status >= 0xF0) {
                 if (status == 0xFF) {
@@ -2881,7 +2850,7 @@ static double thread_cpu_seconds() {
         return to_s(k) + to_s(u);
     }
     return 0.0;
-#elif defined(__unix__) || defined(__APPLE__)
+#elif defined(__unix__)
     timespec ts;
     if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0)
         return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
