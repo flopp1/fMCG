@@ -64,8 +64,6 @@ deps/
 *.7
 
 # --- agent scratch (local only, never committed) ------------------------------
-# (AGENTS.md / CLAUDE.md / DESIGN.md / DIALECTS.md / OPEN_QUESTIONS.md ARE tracked:
-#  they are the onboarding docs for agents working from a fresh clone)
 .agent/
 build/
 scratch/
@@ -76,3 +74,8 @@ test/dialects/__pycache__/
 test/dialects/_keep/
 __pycache__/
 *.pyc
+
+# --- docs: local only, except the README ---------------------------------------
+# (AGENTS.md, CLAUDE.md, DESIGN.md, ... stay on disk for local agents/notes)
+*.md
+!README.md

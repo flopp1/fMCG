@@ -58,7 +58,7 @@ Dear ImGui is a git submodule compiled from `vendor/imgui` (no standard distro p
 
 ```bash
 python -I test/run_tests.py                 # quick: property suite vs oracle, C++ tests, corpus differential
-python -I test/run_tests.py --level full    # + layered corpus (needs the test corpus, see AGENTS.md)
+python -I test/run_tests.py --level full    # + layered corpus (needs the private test corpus)
 ```
 
 The runner needs only Python 3 (standard library) and the same g++/libarchive toolchain as the build; it compiles the headless probe and the C++ tests into `build/test/` itself. `make test LEVEL=quick|corpus|full` does the same on Linux/macOS.
