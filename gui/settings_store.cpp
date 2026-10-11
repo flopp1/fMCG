@@ -8,6 +8,7 @@
 #include "settings_store.h"
 
 #include "../src/fmcg_path.h"     // extract_dir / extract_stem helpers
+#include "../src/fmcg_video.h"    // k_presets / k_tunes
 
 #include <algorithm>
 #include <cstdio>
@@ -205,6 +206,20 @@ bool load_global_settings(GlobalSettings& out) {
     out.output_format  = get_int(kv, "output_format", 0);
     if (out.output_format < 0 || out.output_format > 1) out.output_format = 0;
     out.transparent_bg = get_bool(kv, "transparent_bg", false);
+    out.x264_crf       = get_int(kv, "x264_crf", 18);
+    if (out.x264_crf < 0 || out.x264_crf > 51) out.x264_crf = 18;
+    out.x264_preset    = get_str(kv, "x264_preset");
+    {
+        bool known = false;
+        for (const char* p : fmcg_video::k_presets) known |= out.x264_preset == p;
+        if (!known) out.x264_preset = "veryfast";
+        out.x264_tune = get_str(kv, "x264_tune");
+        known = out.x264_tune.empty();
+        for (const char* t : fmcg_video::k_tunes) known |= out.x264_tune == t;
+        if (!known) out.x264_tune.clear();
+    }
+    out.keyframe_seconds = get_dbl(kv, "keyframe_seconds", 2.0);
+    if (!(out.keyframe_seconds >= 0.1 && out.keyframe_seconds <= 60.0)) out.keyframe_seconds = 2.0;
     if (out.fps <= 0) out.fps = 60.0;
     if (out.width <= 0) out.width = 1920;
     if (out.height <= 0) out.height = 1080;
@@ -234,6 +249,10 @@ bool save_global_settings(const GlobalSettings& s) {
     ss << "track_dedup = " << (s.track_dedup ? 1 : 0) << "\n";
     ss << "output_format = " << s.output_format << "\n";
     ss << "transparent_bg = " << (s.transparent_bg ? 1 : 0) << "\n";
+    ss << "x264_crf = " << s.x264_crf << "\n";
+    ss << "x264_preset = " << s.x264_preset << "\n";
+    ss << "x264_tune = " << s.x264_tune << "\n";
+    ss << "keyframe_seconds = " << s.keyframe_seconds << "\n";
     return write_file_atomic(fs::path(dir) / "settings.ini", ss.str());
 }
 

@@ -151,12 +151,13 @@ No content heuristics. See DESIGN.md.
    text, x264 MP4 (default) / qtrle MOV (optional alpha), shared by preview and render; outline setting.
 4. Typography options under Advanced: kerning, OpenType stylistic sets, old-style numerals, etc.
 5. Resolution limits so text never overflows the frame in preview or render (re-check after 3).
-6. GUI restructure (added 2026-10-11): the window is too tall. Today `gui/main.cpp` draw_frame stacks
-   MIDI File (~L179) -> Pattern section (~L235-571: font, size, layout, colours, commas, BPM decimals,
-   counter position) -> Global section (~L572-700: delays, vel-0 / close-held, resolution, FPS,
-   threads, output path) -> action buttons -> progress -> log. New layout: MIDI File input area stays
-   on top; BELOW it, Global on the LEFT and Pattern on the RIGHT, side by side (e.g. two columns /
-   child regions). Do NOT change any individual option inside either group -- only move the groups.
+6. DONE (session 3): GUI restructure. `gui/main.cpp` draw_frame: MIDI File row on top, then a 2-column
+   resizable ImGui table -- `draw_global_section()` LEFT, `draw_pattern_section()` RIGHT -- then action
+   buttons, progress, log. The options inside each group are unchanged (only moved). Done together with
+   the user's request for encoder settings (Global, collapsible "Encoder settings": CRF 0..51, x264
+   preset, tune, keyframe interval; `fmcg_video::Options` crf/preset/tune/keyframe_seconds,
+   `fmcg_video::k_presets` / `k_tunes`; settings.ini keys x264_crf / x264_preset / x264_tune /
+   keyframe_seconds).
 7. Fixed-width cells (added 2026-10-11; AFTER goal 3, since the in-built renderer controls glyph
    placement directly): let a stat occupy a fixed-width cell (e.g. width of its widest possible value,
    or a user-set width, with alignment inside the cell) so several stats on one line no longer shift
@@ -189,5 +190,6 @@ No content heuristics. See DESIGN.md.
   layered files verified (OPEN_QUESTIONS.md table); test/ restructured into run_tests.py; inclusive
   integer NPS window; tempo-meta window-straddle bug fixed in the standard parser; Windows + Linux
   builds and suites green. BSOD solved (93,715,050,000,000; 16 min, decode-bound). Goal 3 done
-  (in-built renderer; FFmpeg removed). Next: goals 4/5/6/7/8/9 as the user prioritises.
+  (in-built renderer; FFmpeg removed). Goal 6 done + encoder settings in the GUI.
+  Next: goals 4/5/7/8/9 as the user prioritises.
 See OPEN_QUESTIONS.md "Corpus status" for the per-file table; update it every session.

@@ -64,8 +64,19 @@ The runner needs only Python 3 (standard library) and the same g++/libarchive to
 
 ## Output formats
 
-- **MP4 (H.264)** — the default; plays everywhere. Encoded in-process with x264 (CRF 18, `veryfast`, BT.709).
+- **MP4 (H.264)** — the default; plays everywhere. Encoded in-process with x264 (BT.709; defaults CRF 18, `veryfast`).
 - **MOV (QuickTime Animation)** — lossless RGB, very fast, small for this kind of content; meant for video editors (Premiere, After Effects, Vegas, DaVinci Resolve). With **Transparent background** the frame keeps an alpha channel (32-bit ARGB) so it can be overlaid without keying. Not playable in browsers.
+
+**Encoder settings** (Global column, collapsible; saved globally):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| Quality (CRF) | 18 | MP4 only. 0..51, lower = better quality and bigger files; 18 is visually lossless for text. 0 is mathematically lossless (High 4:4:4 profile, which many players and browsers cannot play). |
+| Speed preset | veryfast | MP4 only. x264 preset, `ultrafast` .. `placebo`: slower presets give smaller files at the same quality but render slower. |
+| Tune | None | MP4 only. x264 tune: Animation, Still image, Film, Grain, Fast decode. |
+| Keyframe every | 2 s | Both formats. Maximum keyframe distance (0.1..60 s); shorter = faster seeking in editors, slightly bigger files. |
+
+**Reset encoder defaults** restores the table's defaults.
 
 ## Running a prebuilt Linux binary
 
@@ -128,9 +139,9 @@ Without WSL (or with packages missing) the Windows release is still produced and
 ## Usage
 1. Pick a MIDI file (plain `.mid`, or `.7z`/`.xz`/`.rar`/`.rar.xz` containing one).
 2. Adjust settings (see below), then **Process** — the file is scanned and the stats overlay is generated.
-3. **Preview** plays the video live in-app; **Render Video** encodes the final MP4 next to the MIDI.
+3. **Preview** plays the video live in-app; **Render Video** encodes the final video (MP4 or MOV, see *Output formats*) next to the MIDI.
 
-The output is `<midi name>_fMCG.mp4` in the MIDI's folder (editable).
+The output is `<midi name>_fMCG.mp4` (or `.mov`) in the MIDI's folder (editable).
 
 ## Layout configuration
 
@@ -169,6 +180,8 @@ During the start delay, `{sec}`/`{time}`/`{time-milli}` run from negative and co
 
 ## Options
 
+The window shows the MIDI file picker on top; below it the **Global settings** (left column: delays, vel-0 / held notes, resolution, FPS, threads, dedup, output format, encoder settings, output path) and the **Pattern** (right column: the overlay look) sit side by side, with the action buttons, progress bar and log underneath. The divider between the two columns can be dragged.
+
 - **Comma separators** — per-stat toggles (Notes / Poly / NPS / CC) to format numbers like `1,234,567`.
 - **Leading zeros** — pads every number with zeros so digits line up; each stat pads toward its own maximum (notes → total notes, polyphony → peak polyphony, seconds → total seconds), so no width needs to be set.
 - **BPM decimals** — how many decimal places `{bpm}` renders (0 = whole numbers like `120`; default 2; capped at 6). Saved with the pattern.
@@ -185,7 +198,7 @@ During the start delay, `{sec}`/`{time}`/`{time-milli}` run from negative and co
 
 A **pattern** bundles the overlay look: layout text, alignment/position, font family + style + size, text colour, background colour, comma options and padding. Pick one from the dropdown, **Save** to update it, **Save As...** to create a new one (saving over an existing name asks for confirmation first), **Delete** to remove. Patterns live in the per-user settings folder and survive program updates; switching patterns with unsaved edits asks before discarding.
 
-Everything **not** in a pattern — resolution, FPS, CC counting, vel-0 handling, start delay — is a global setting: saved automatically as you change it (debounced to at most one disk write per second) and restored on the next launch.
+Everything **not** in a pattern — resolution, FPS, vel-0 handling, delays, threads, output format and encoder settings — is a global setting: saved automatically as you change it (debounced to at most one disk write per second) and restored on the next launch.
 
 All persistent state lives in the per-user config directory (created on first run):
 

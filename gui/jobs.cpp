@@ -189,7 +189,8 @@ void run_render(RenderSettings s) {
     app.gui_log(("Rendering video: " + s.output_video
                  + (fmt == fmcg_video::Format::MOV_QTRLE
                         ? (transparent ? "  [MOV, QuickTime Animation, transparent]" : "  [MOV, QuickTime Animation]")
-                        : "  [MP4, H.264]")).c_str(), false);
+                        : "  [MP4, H.264, CRF " + std::to_string(s.x264_crf) + ", " + s.x264_preset
+                              + (s.x264_tune.empty() ? "" : ", tune " + s.x264_tune) + "]")).c_str(), false);
 
     std::string err;
     fmcg_text::RGBA bg = fmcg_text::from_ass_colour(s.bg_color_aabbggrr) | 0xFFu;
@@ -201,6 +202,10 @@ void run_render(RenderSettings s) {
     vo.fps = s.fps;
     vo.transparent = transparent;
     vo.threads = s.ffmpeg_threads;
+    vo.crf = s.x264_crf;
+    vo.preset = s.x264_preset;
+    vo.tune = s.x264_tune;
+    vo.keyframe_seconds = s.keyframe_seconds;
     const auto t0 = std::chrono::steady_clock::now();
     const int rc = fmcg_video::render_video(s.output_video, vo, app_text_source(), app_text_style(),
         app_placement(), bg, &app.cancel,

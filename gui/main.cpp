@@ -66,6 +66,10 @@ static void save_globals_now() {
     g_ui.globals.track_dedup    = g_ui.s.track_dedup;
     g_ui.globals.output_format  = g_ui.s.output_format;
     g_ui.globals.transparent_bg = g_ui.s.transparent_bg;
+    g_ui.globals.x264_crf       = g_ui.s.x264_crf;
+    g_ui.globals.x264_preset    = g_ui.s.x264_preset;
+    g_ui.globals.x264_tune      = g_ui.s.x264_tune;
+    g_ui.globals.keyframe_seconds = g_ui.s.keyframe_seconds;
     g_ui.globals_dirty = false;
     g_ui.last_globals_save = ImGui::GetTime();
     save_global_settings(g_ui.globals);
@@ -152,81 +156,9 @@ static void refresh_pattern_list() {
 
 static bool font_list_loaded = false;   // font-list lazy-init (set at startup)
 
-// --- per-frame drawing -------------------------------------------------------
-// Extracted from the main loop so it can also run from the window-refresh
-// callback: on Windows, border-drag/resize enters a modal loop that never
-// returns to glfwPollEvents, and GLFW repaints through this callback there.
-static void draw_frame(GLFWwindow* window) {
-    process_preview_font_reload();   // font/atlas changes must happen outside the frame
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
-    ImGui::NewFrame();
-
-    ImGui::SetNextWindowPos(ImVec2(0, 0));
-    ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
-    ImGui::Begin("fMCG", nullptr,
-        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-        ImGuiWindowFlags_NoBringToFrontOnFocus);
-
-    ImGui::Text("fMCG - Fast MIDI Counter Generator");
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    // --- MIDI File ---
-    ImGui::Text("MIDI File:");
-    ImGui::SameLine(120);
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 80);
-    ImGui::InputText("##midi", g_ui.midi_buf, sizeof(g_ui.midi_buf), ImGuiInputTextFlags_ReadOnly);
-    ImGui::SameLine();
-
-    {
-        bool dialog_active = g_app.dialog_busy.load();
-        if (dialog_active) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
-        if (ImGui::Button("Browse") && !dialog_active) {
-            std::string cmd;
-#if defined(_WIN32)
-            cmd = "powershell -NoProfile -Command \""
-                  "Add-Type -AssemblyName System.Windows.Forms; "
-                  "$f = New-Object System.Windows.Forms.OpenFileDialog; "
-                  "$f.Filter = 'MIDI & archives (*.mid;*.midi;*.7z;*.xz;*.rar;*.gz;*.bz2;*.zst;*.lz4)|*.mid;*.midi;*.7z;*.xz;*.rar;*.gz;*.bz2;*.zst;*.lz4|All files (*.*)|*.*'; "
-                  "$f.Title = 'Select MIDI file'; "
-                  "if ($f.ShowDialog() -eq 'OK') { $f.FileName }\"";
-#elif defined(__APPLE__)
-            cmd = "osascript -e 'tell application \"System Events\" to set f to (choose file with prompt \"Select MIDI file\") as alias' -e 'POSIX path of f'";
-#else
-            cmd = "zenity --file-selection --title='Select MIDI file' --file-filter='MIDI & archives | *.mid *.midi *.7z *.xz *.rar *.gz *.bz2 *.zst *.lz4' 2>/dev/null || "
-                  "kdialog --getopenfilename . 'MIDI & archives (*.mid *.midi *.7z *.xz *.rar *.gz *.bz2 *.zst *.lz4)' 'Select MIDI file' 2>/dev/null";
-#endif
-            launch_dialog(cmd, "midi");
-        }
-        if (dialog_active) ImGui::PopStyleVar();
-    }
-
-    // Poll MIDI file dialog result
-    {
-        std::string result = poll_dialog_result("midi");
-        if (!result.empty()) {
-            std::string err;
-            if (validate_midi(result, err)) {
-                g_ui.s.midi_file = result;
-                strncpy(g_ui.midi_buf, result.c_str(), sizeof(g_ui.midi_buf) - 1);
-                std::string dir = extract_dir(result);
-                std::string stem = extract_stem(result);
-                g_ui.s.output_video = dir + stem + "_fMCG" + fmcg_video::extension((fmcg_video::Format)g_ui.s.output_format);
-                strncpy(g_ui.output_buf, g_ui.s.output_video.c_str(), sizeof(g_ui.output_buf) - 1);
-                g_ui.globals.midi_dir = dir;
-                mark_globals_dirty();
-            }
-        }
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    // --- Pattern section: everything below (until Global) is saved under
-    // --- the selected pattern --------------------------------------------
+// Pattern section: the overlay look, saved with the selected pattern (right column).
+static void draw_pattern_section() {
+    // --- Pattern section: everything here is saved under the selected pattern
     ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f),
         "Pattern - the overlay look, saved with the selected pattern");
     ImGui::Spacing();
@@ -576,11 +508,11 @@ static void draw_frame(GLFWwindow* window) {
         ImGui::TextDisabled("(top-left of text block)");
         ImGui::TextDisabled("x: 0..%d  y: 0..%d  (block is auto-shifted left/up to stay fully visible)", max_x, max_y);
     }
+}
 
+// Global section: session-wide settings, autosaved, not in patterns (left column).
+static void draw_global_section() {
     // --- Global section: session-wide settings, autosaved, NOT in patterns --
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
     ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f),
         "Global settings - autosaved, separate from patterns");
     ImGui::Spacing();
@@ -668,7 +600,7 @@ static void draw_frame(GLFWwindow* window) {
     // Output format (global). Switching it swaps the output file extension.
     ImGui::Text("Format");
     ImGui::SameLine(120);
-    ImGui::SetNextItemWidth(260);
+    ImGui::SetNextItemWidth(300);
     {
         static const char* k_formats[] = {"MP4 (H.264)", "MOV (QuickTime Animation, lossless)"};
         int fmt = g_ui.s.output_format;
@@ -699,6 +631,83 @@ static void draw_frame(GLFWwindow* window) {
                               "so the counter can be overlaid in an editor without keying.");
     }
 
+    // Encoder settings (global). CRF / preset / tune are H.264 only; the
+    // keyframe interval applies to both formats.
+    if (ImGui::TreeNode("Encoder settings")) {
+        const bool mp4 = g_ui.s.output_format == 0;
+        if (!mp4) ImGui::BeginDisabled();
+        ImGui::Text("Quality (CRF)");
+        ImGui::SameLine(170);
+        ImGui::SetNextItemWidth(160);
+        int crf = g_ui.s.x264_crf;
+        if (ImGui::SliderInt("##crf", &crf, 0, 51, "%d", ImGuiSliderFlags_AlwaysClamp) && crf != g_ui.s.x264_crf) {
+            g_ui.s.x264_crf = crf;
+            mark_globals_dirty();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("H.264 constant quality. Lower = better quality, bigger file.\n"
+                              "18 (default) is visually lossless for text; 23 is x264's usual default.\n"
+                              "0 = mathematically lossless (High 4:4:4 profile: many players and\n"
+                              "browsers cannot play it). Ctrl+click to type a value.");
+        ImGui::Text("Speed preset");
+        ImGui::SameLine(170);
+        ImGui::SetNextItemWidth(160);
+        {
+            const int np = (int)(sizeof(fmcg_video::k_presets) / sizeof(fmcg_video::k_presets[0]));
+            int idx = 2;
+            for (int i = 0; i < np; ++i)
+                if (g_ui.s.x264_preset == fmcg_video::k_presets[i]) idx = i;
+            if (ImGui::Combo("##preset", &idx, fmcg_video::k_presets, np)
+                && g_ui.s.x264_preset != fmcg_video::k_presets[idx]) {
+                g_ui.s.x264_preset = fmcg_video::k_presets[idx];
+                mark_globals_dirty();
+            }
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("x264 speed/size trade-off at the same quality.\n"
+                              "Slower presets make smaller files but render slower.\n"
+                              "veryfast (default) renders 1080p60 at several times realtime.");
+        ImGui::Text("Tune");
+        ImGui::SameLine(170);
+        ImGui::SetNextItemWidth(160);
+        {
+            static const char* k_tune_labels[] = {"None", "Animation", "Still image", "Film", "Grain", "Fast decode"};
+            const int nt = (int)(sizeof(fmcg_video::k_tunes) / sizeof(fmcg_video::k_tunes[0]));
+            int idx = 0;
+            for (int i = 0; i < nt; ++i)
+                if (g_ui.s.x264_tune == fmcg_video::k_tunes[i]) idx = i + 1;
+            if (ImGui::Combo("##tune", &idx, k_tune_labels, nt + 1)) {
+                const std::string t = idx == 0 ? "" : fmcg_video::k_tunes[idx - 1];
+                if (t != g_ui.s.x264_tune) { g_ui.s.x264_tune = t; mark_globals_dirty(); }
+            }
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("x264 tuning for the content. None (default) suits text overlays;\n"
+                              "Still image / Animation favour flat areas and sharp edges.");
+        if (!mp4) ImGui::EndDisabled();
+        ImGui::Text("Keyframe every");
+        ImGui::SameLine(170);
+        ImGui::SetNextItemWidth(100);
+        double kf = g_ui.s.keyframe_seconds;
+        if (ImGui::InputDouble("##keyint", &kf, 0, 0, "%.2f")) {
+            if (kf < 0.1) kf = 0.1;
+            if (kf > 60.0) kf = 60.0;
+            if (kf != g_ui.s.keyframe_seconds) { g_ui.s.keyframe_seconds = kf; mark_globals_dirty(); }
+        }
+        ImGui::SameLine();
+        ImGui::Text("seconds");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Maximum distance between keyframes (0.1..60 s), both formats.\n"
+                              "Shorter = faster seeking in editors, slightly bigger files.");
+        if (ImGui::Button("Reset encoder defaults")) {
+            g_ui.s.x264_crf = 18;
+            g_ui.s.x264_preset = "veryfast";
+            g_ui.s.x264_tune.clear();
+            g_ui.s.keyframe_seconds = 2.0;
+            mark_globals_dirty();
+        }
+        ImGui::TreePop();
+    }
     ImGui::Spacing();
     ImGui::Text("Output Path");
     ImGui::SameLine(120);
@@ -735,6 +744,94 @@ static void draw_frame(GLFWwindow* window) {
             g_ui.output_buf[sizeof(g_ui.output_buf) - 1] = '\0';
             g_ui.s.output_video = g_ui.output_buf;
         }
+    }
+}
+
+// --- per-frame drawing -------------------------------------------------------
+// Extracted from the main loop so it can also run from the window-refresh
+// callback: on Windows, border-drag/resize enters a modal loop that never
+// returns to glfwPollEvents, and GLFW repaints through this callback there.
+static void draw_frame(GLFWwindow* window) {
+    process_preview_font_reload();   // font/atlas changes must happen outside the frame
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+    ImGui::Begin("fMCG", nullptr,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    ImGui::Text("fMCG - Fast MIDI Counter Generator");
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // --- MIDI File ---
+    ImGui::Text("MIDI File:");
+    ImGui::SameLine(120);
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 80);
+    ImGui::InputText("##midi", g_ui.midi_buf, sizeof(g_ui.midi_buf), ImGuiInputTextFlags_ReadOnly);
+    ImGui::SameLine();
+
+    {
+        bool dialog_active = g_app.dialog_busy.load();
+        if (dialog_active) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
+        if (ImGui::Button("Browse") && !dialog_active) {
+            std::string cmd;
+#if defined(_WIN32)
+            cmd = "powershell -NoProfile -Command \""
+                  "Add-Type -AssemblyName System.Windows.Forms; "
+                  "$f = New-Object System.Windows.Forms.OpenFileDialog; "
+                  "$f.Filter = 'MIDI & archives (*.mid;*.midi;*.7z;*.xz;*.rar;*.gz;*.bz2;*.zst;*.lz4)|*.mid;*.midi;*.7z;*.xz;*.rar;*.gz;*.bz2;*.zst;*.lz4|All files (*.*)|*.*'; "
+                  "$f.Title = 'Select MIDI file'; "
+                  "if ($f.ShowDialog() -eq 'OK') { $f.FileName }\"";
+#elif defined(__APPLE__)
+            cmd = "osascript -e 'tell application \"System Events\" to set f to (choose file with prompt \"Select MIDI file\") as alias' -e 'POSIX path of f'";
+#else
+            cmd = "zenity --file-selection --title='Select MIDI file' --file-filter='MIDI & archives | *.mid *.midi *.7z *.xz *.rar *.gz *.bz2 *.zst *.lz4' 2>/dev/null || "
+                  "kdialog --getopenfilename . 'MIDI & archives (*.mid *.midi *.7z *.xz *.rar *.gz *.bz2 *.zst *.lz4)' 'Select MIDI file' 2>/dev/null";
+#endif
+            launch_dialog(cmd, "midi");
+        }
+        if (dialog_active) ImGui::PopStyleVar();
+    }
+
+    // Poll MIDI file dialog result
+    {
+        std::string result = poll_dialog_result("midi");
+        if (!result.empty()) {
+            std::string err;
+            if (validate_midi(result, err)) {
+                g_ui.s.midi_file = result;
+                strncpy(g_ui.midi_buf, result.c_str(), sizeof(g_ui.midi_buf) - 1);
+                std::string dir = extract_dir(result);
+                std::string stem = extract_stem(result);
+                g_ui.s.output_video = dir + stem + "_fMCG" + fmcg_video::extension((fmcg_video::Format)g_ui.s.output_format);
+                strncpy(g_ui.output_buf, g_ui.s.output_video.c_str(), sizeof(g_ui.output_buf) - 1);
+                g_ui.globals.midi_dir = dir;
+                mark_globals_dirty();
+            }
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    // MIDI file stays on top; below it Global (left) and Pattern (right) side
+    // by side, so the window no longer has to fit both groups stacked.
+    if (ImGui::BeginTable("##settings_cols", 2,
+                          ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoSavedSettings)) {
+        ImGui::TableSetupColumn("Global", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("Pattern", ImGuiTableColumnFlags_WidthStretch, 1.1f);
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        draw_global_section();
+        ImGui::TableSetColumnIndex(1);
+        draw_pattern_section();
+        ImGui::EndTable();
     }
 
     maybe_autosave_globals();
@@ -869,6 +966,10 @@ static void draw_frame(GLFWwindow* window) {
             rs.bg_color_aabbggrr = g_app.bg_colour_ass;
             rs.output_format = g_ui.s.output_format;
             rs.transparent_bg = g_ui.s.transparent_bg;
+            rs.x264_crf = g_ui.s.x264_crf;
+            rs.x264_preset = g_ui.s.x264_preset;
+            rs.x264_tune = g_ui.s.x264_tune;
+            rs.keyframe_seconds = g_ui.s.keyframe_seconds;
             g_app.done = false;
             g_app.log_lines.clear();
             // Set busy on the GUI thread *before* detaching: the preview popup
@@ -1233,6 +1334,10 @@ int main() {
     g_ui.s.track_dedup    = g_ui.globals.track_dedup;
     g_ui.s.output_format  = g_ui.globals.output_format;
     g_ui.s.transparent_bg = g_ui.globals.transparent_bg;
+    g_ui.s.x264_crf       = g_ui.globals.x264_crf;
+    g_ui.s.x264_preset    = g_ui.globals.x264_preset;
+    g_ui.s.x264_tune      = g_ui.globals.x264_tune;
+    g_ui.s.keyframe_seconds = g_ui.globals.keyframe_seconds;
 
     // Refresh the variant cache for the bootstrapped family.
     g_ui.variants_for = g_ui.s.font_family;

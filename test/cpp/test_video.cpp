@@ -183,6 +183,68 @@ static void test_mp4(const std::string& dir, bool ff) {
     std::remove(path.c_str());
 }
 
+// Encodes the synthetic frames with the given options; returns the file size (0 = failed).
+static size_t encode_mp4(const std::string& path, const fmcg_video::Options& o, Samples* out = nullptr) {
+    std::string err;
+    auto w = fmcg_video::create_writer(path, o, &err);
+    if (!w) return 0;
+    bool ok = true;
+    for (auto& f : make_frames(false)) ok &= w->add_frame(f.c, f.dirty);
+    ok &= w->finish();
+    const std::vector<uint8_t> file = slurp(path);
+    if (out) *out = samples(file);
+    std::remove(path.c_str());
+    return ok ? file.size() : 0;
+}
+
+// The GUI's encoder settings (CRF, preset, tune, keyframe interval) reach x264.
+static void test_mp4_options(const std::string& dir) {
+    const std::string path = dir + "/_test_video_opts.mp4";
+    fmcg_video::Options base;
+    base.width = W; base.height = H; base.fps = FPS;
+    const size_t def = encode_mp4(path, base);
+    fmcg_video::Options lo = base;
+    lo.crf = 40;
+    const size_t small = encode_mp4(path, lo);
+    check("mp4 opts: CRF 40 file is smaller than CRF 18", def && small && small < def);
+    bool all = true;
+    for (const char* p : fmcg_video::k_presets) {
+        if (std::string(p) == "placebo") continue;   // slow; same code path as the others
+        fmcg_video::Options o = base;
+        o.preset = p;
+        all &= encode_mp4(path, o) > 0;
+    }
+    check("mp4 opts: every listed preset encodes", all);
+    all = true;
+    for (const char* t : fmcg_video::k_tunes) {
+        fmcg_video::Options o = base;
+        o.tune = t;
+        all &= encode_mp4(path, o) > 0;
+    }
+    check("mp4 opts: every listed tune encodes", all);
+    fmcg_video::Options ll = base;
+    ll.crf = 0;
+    check("mp4 opts: CRF 0 (lossless) encodes", encode_mp4(path, ll) > 0);
+    fmcg_video::Options kf = base;
+    kf.keyframe_seconds = 0.5;   // 15 frames at 30 fps; x264 may add scene-cut keys on top
+    Samples s;
+    const bool kf_ok = encode_mp4(path, kf, &s) > 0 && s.ok && s.keys.size() >= 10;
+    bool gaps = kf_ok;
+    for (size_t i = 1; i < s.keys.size() && gaps; ++i) gaps = s.keys[i] - s.keys[i - 1] <= 15;
+    check("mp4 opts: keyframe interval 0.5 s honoured (gap <= 15 frames)", gaps);
+    std::string err;
+    fmcg_video::Options bad = base;
+    bad.preset = "warp9";
+    check("mp4 opts: unknown preset is refused with an error",
+          !fmcg_video::create_writer(path, bad, &err) && !err.empty());
+    bad = base;
+    bad.crf = 52;
+    err.clear();
+    check("mp4 opts: CRF > 51 is refused with an error",
+          !fmcg_video::create_writer(path, bad, &err) && !err.empty());
+    std::remove(path.c_str());
+}
+
 int main(int argc, char** argv) {
     const std::string dir = argc > 1 ? argv[1] : ".";
     const bool ff = have_ffmpeg();
@@ -190,6 +252,7 @@ int main(int argc, char** argv) {
     test_mov(dir, false, ff);
     test_mov(dir, true, ff);
     test_mp4(dir, ff);
+    test_mp4_options(dir);
     std::printf("\n%s (%d failures)\n", fails ? "FAILURES" : "ALL OK", fails);
     return fails ? 1 : 0;
 }

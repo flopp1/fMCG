@@ -132,3 +132,6 @@ the FFmpeg requirement in README, `test/cpp/test_ffspawn.cpp`, `test/cpp/test_do
 5. DONE with step 4 (x264 integration, bootstrap/release/README).
 6. DONE: FFmpeg path removed (fmcg_render.*, spawn_ffmpeg_cancellable, ASS temp files, test_ffspawn /
    test_double_render); README / AGENTS / licences updated. `generate_ass` kept as a tested library fn.
+7. DONE (follow-up, with goal 6): encoder settings in the GUI (Global > "Encoder settings": CRF 0..51,
+   x264 preset, tune, keyframe interval for both formats). CRF 0 skips the High-profile clamp (lossless =
+   High 4:4:4 Predictive). test_video covers every preset/tune, CRF ordering, keyframe gaps and refusals.

@@ -366,7 +366,11 @@ public:
         o_ = o;
         if ((o.width & 1) || (o.height & 1)) { err = "H.264 (4:2:0) needs an even width and height"; return false; }
         x264_param_t p;
-        if (x264_param_default_preset(&p, o.preset.c_str(), nullptr) < 0) { err = "unknown x264 preset " + o.preset; return false; }
+        if (o.crf < 0 || o.crf > 51) { err = "CRF must be 0..51"; return false; }
+        if (x264_param_default_preset(&p, o.preset.c_str(), o.tune.empty() ? nullptr : o.tune.c_str()) < 0) {
+            err = "unknown x264 preset/tune " + o.preset + (o.tune.empty() ? "" : "/" + o.tune);
+            return false;
+        }
         p.i_width = o.width; p.i_height = o.height;
         p.i_csp = X264_CSP_I420;
         p.i_threads = o.threads > 0 ? o.threads : X264_THREADS_AUTO;
@@ -383,7 +387,7 @@ public:
         p.vui.i_colorprim = 1; p.vui.i_transfer = 1; p.vui.i_colmatrix = 1;   // BT.709
         p.vui.b_fullrange = 0;
         p.i_log_level = X264_LOG_WARNING;
-        x264_param_apply_profile(&p, "high");
+        if (o.crf > 0) x264_param_apply_profile(&p, "high");   // CRF 0 is lossless: High 4:4:4 Predictive
         enc_ = x264_encoder_open(&p);
         if (!enc_) { err = "x264 encoder failed to open"; return false; }
         if (x264_picture_alloc(&pic_, X264_CSP_I420, o.width, o.height) < 0) { err = "out of memory"; return false; }

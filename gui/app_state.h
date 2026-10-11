@@ -50,6 +50,10 @@ struct GuiSettings {
     std::string outline_color_aabbggrr = "&H00000000";
     int         output_format = 0;           // global: 0 = MP4 (H.264), 1 = MOV (qtrle)
     bool        transparent_bg = false;      // global: MOV only
+    int         x264_crf = 18;               // global encoder settings (MP4): CRF 0..51
+    std::string x264_preset = "veryfast";    // fmcg_video::k_presets
+    std::string x264_tune;                   // "" = none, else fmcg_video::k_tunes
+    double      keyframe_seconds = 2.0;      // both formats
 };
 
 // Options snapshot handed to the render worker thread.
@@ -63,6 +67,10 @@ struct RenderSettings {
     std::string bg_color_aabbggrr = "&H00000000";
     int  output_format = 0;           // 0 = MP4 (H.264), 1 = MOV (qtrle)
     bool transparent_bg = false;      // MOV only
+    int         x264_crf = 18;               // global encoder settings (MP4): CRF 0..51
+    std::string x264_preset = "veryfast";    // fmcg_video::k_presets
+    std::string x264_tune;                   // "" = none, else fmcg_video::k_tunes
+    double      keyframe_seconds = 2.0;      // both formats
 };
 
 struct AppState {

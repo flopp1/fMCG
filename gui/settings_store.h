@@ -69,6 +69,10 @@ struct GlobalSettings {
     bool        track_dedup = false;  // skip repeated content (track replay / layered dedup)
     int         output_format = 0;    // 0 = MP4 (H.264, x264), 1 = MOV (QuickTime Animation, lossless)
     bool        transparent_bg = false;   // MOV only: alpha-transparent background
+    int         x264_crf = 18;               // global encoder settings (MP4): CRF 0..51
+    std::string x264_preset = "veryfast";    // fmcg_video::k_presets
+    std::string x264_tune;                   // "" = none, else fmcg_video::k_tunes
+    double      keyframe_seconds = 2.0;      // both formats
     std::string output_dir;           // last output video folder
 };
 

@@ -25,10 +25,16 @@ struct Options {
     double fps = 60.0;
     bool transparent = false;   // MOV only: 32-bit ARGB with the canvas alpha
     int threads = 0;            // x264 threads, 0 = auto
-    int crf = 18;               // x264 constant-quality factor
-    std::string preset = "veryfast";
+    int crf = 18;               // x264 constant-quality factor, 0 (lossless) .. 51
+    std::string preset = "veryfast";  // one of k_presets
+    std::string tune;           // "" = none, else one of k_tunes
     double keyframe_seconds = 2.0;   // keyframe interval (x264 max GOP / qtrle full frames)
 };
+
+// x264 speed presets, fastest first, and the tunes offered in the GUI.
+inline const char* const k_presets[] = {"ultrafast", "superfast", "veryfast", "faster", "fast",
+                                        "medium", "slow", "slower", "veryslow", "placebo"};
+inline const char* const k_tunes[] = {"animation", "stillimage", "film", "grain", "fastdecode"};
 
 // File extension for a format, with the dot.
 const char* extension(Format f);
