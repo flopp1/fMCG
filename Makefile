@@ -15,14 +15,14 @@
 #   make IMGUI_CFLAGS=-I/usr/include/imgui IMGUI_SOURCES=
 #
 # Targets:
-#   make              build ./fMCG_gui (default)
+#   make              build ./fMCG (default)
 #   make run          build and launch the GUI
 #   make debug        build with FMCG_DEBUG=1 (keeps ffmpeg's stderr log in
 #                     <name>_fMCG_progress.txt next to the output; release
 #                     builds discard it)
 #   make profile      build with -O3 PLUS debug symbols (-g) and frame
 #                     pointers, for profiling the optimised binary with
-#                     perf:  perf record --call-graph fp ./fMCG_gui
+#                     perf:  perf record --call-graph fp ./fMCG
 #                     (objects are rebuilt automatically when switching
 #                     between 'make' and 'make profile')
 #   make test         build and run both test suites (test/)
@@ -102,7 +102,7 @@ IMGUI_SOURCES ?= $(IMGUI_DIR)/imgui.cpp \
 # --- build modes ----------------------------------------------------------------
 #   make            release  (-O3)
 #   make profile    -O3 PLUS -g and frame pointers, for perf:
-#                     perf record --call-graph fp ./fMCG_gui
+#                     perf record --call-graph fp ./fMCG
 #   make debug      -O3 + FMCG_DEBUG (keeps ffmpeg's stderr log file)
 # Modes combine, e.g. `make profile DEBUG=1`.
 #
@@ -134,7 +134,7 @@ PROFILE_STAMP := .build_mode
 # 'all' must stay the FIRST target -- GNU Make treats it as the default.
 .PHONY: all run debug profile test release clean
 
-all: fMCG_gui
+all: fMCG
 
 debug:
 	@$(MAKE) DEBUG=1 all
@@ -150,9 +150,9 @@ FORCE:
 $(PROFILE_STAMP): FORCE
 	@printf 'profile=%s debug=%s\n' '$(PROFILE)' '$(DEBUG)' > $@.tmp
 	@if cmp -s $@.tmp $@; then rm -f $@.tmp; \
-	else rm -f $(CORE_OBJECTS) $(GUI_OBJECTS) fMCG_gui; mv -f $@.tmp $@; fi
+	else rm -f $(CORE_OBJECTS) $(GUI_OBJECTS) fMCG; mv -f $@.tmp $@; fi
 
-fMCG_gui: $(GUI_OBJECTS) $(CORE_OBJECTS) $(IMGUI_SOURCES)
+fMCG: $(GUI_OBJECTS) $(CORE_OBJECTS) $(IMGUI_SOURCES)
 	$(CXX) $(ALL_CFLAGS) -o $@ $(GUI_OBJECTS) $(CORE_OBJECTS) $(IMGUI_SOURCES) $(LDFLAGS) $(ALL_LIBS)
 
 src/%.o: src/%.cpp $(wildcard src/*.h) fMCG_core.h $(PROFILE_STAMP)
@@ -161,8 +161,8 @@ src/%.o: src/%.cpp $(wildcard src/*.h) fMCG_core.h $(PROFILE_STAMP)
 gui/%.o: gui/%.cpp $(wildcard gui/*.h) $(wildcard src/*.h) fMCG_core.h $(PROFILE_STAMP)
 	$(CXX) $(ALL_CFLAGS) -c $< -o $@
 
-run: fMCG_gui
-	./fMCG_gui
+run: fMCG
+	./fMCG
 
 # All suites live under test/ (stdlib-only Python runner; builds the probe and
 # the C++ tests into build/test/). LEVEL=quick|corpus|full.
@@ -171,11 +171,11 @@ test:
 	python3 -I test/run_tests.py --level $(LEVEL)
 
 clean:
-	rm -rf fMCG_gui $(CORE_OBJECTS) $(GUI_OBJECTS) build/test dist .build_mode
+	rm -rf fMCG $(CORE_OBJECTS) $(GUI_OBJECTS) build/test dist .build_mode
 
 # Assemble a ready-to-share release: binary + licences + README.
 release: all test
 	@mkdir -p dist/fMCG-linux
-	cp fMCG_gui LICENSE THIRD_PARTY_LICENSES.txt README.md dist/fMCG-linux/
+	cp fMCG LICENSE THIRD_PARTY_LICENSES.txt README.md dist/fMCG-linux/
 	tar -czf dist/fMCG-linux.tar.gz -C dist fMCG-linux
 	@echo "Release ready: dist/fMCG-linux.tar.gz"

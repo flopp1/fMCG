@@ -58,7 +58,7 @@ Pipeline today:
 
 ## 3. Building
 **Windows (this machine):** w64devkit g++ 16 at `C:\Users\ethen\Downloads\w64devkit\bin`.
-`build.bat` -> `fMCG_gui.exe`. Headless probe:
+`build.bat` -> `fMCG.exe`. Headless probe:
 ```
 L=vendor/libarchive/lib
 g++ -std=c++17 -O2 -DLIBARCHIVE_STATIC -I. -Isrc -Ivendor/libarchive src/fmcg_{midi,format,util,path,engine,layered,cjcmcg}.cpp \
@@ -210,13 +210,13 @@ No content heuristics. See DESIGN.md.
    (`fmcg_text::Placement`, `TextRenderer::place`); extend Placement with a block anchor rather than
    overloading `alignment`. Keep clamping so the whole block stays on screen (goal 5).
 
-10. DONE (session 3): static libarchive on Windows; fMCG_gui.exe imports only system DLLs.
+10. DONE (session 3): static libarchive on Windows; fMCG.exe imports only system DLLs.
    test/cpp/test_archive_formats.cpp writes a fixture with libarchive's writer as gzip/bzip2/xz/zstd/lz4
    and 7z (lzma1/lzma2/bzip2/deflate/ppmd/zstd) and checks the engine reads identical counts (Windows +
    Linux). Original request: build libarchive from source (plus the compression
    libraries it needs for the supported inputs: zlib, bzip2, xz/liblzma, zstd, lz4, and 7z/rar support
    from libarchive itself) as static libraries with the w64devkit toolchain, SHA-256-pinned in
-   `bootstrap.bat` like HarfBuzz/x264, and link them into `fMCG_gui.exe` so the Windows release is a single
+   `bootstrap.bat` like HarfBuzz/x264, and link them into `fMCG.exe` so the Windows release is a single
    exe with no `libarchive.dll`. Update build.bat, release.bat (no DLL to ship / verify), the test build
    (test/fmcgtest: link the static libs, no DLL copy), README "Distributing Windows binaries" and
    THIRD_PARTY_LICENSES.txt (notices for every statically linked library). Linux keeps the system

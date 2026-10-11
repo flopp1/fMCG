@@ -7,7 +7,7 @@ the GNU GPL-3.0 (see LICENSE).
 
 Contents
 --------
-  fMCG_gui.exe links (Windows: all statically -- the exe needs no DLLs):
+  fMCG.exe links (Windows: all statically -- the exe needs no DLLs):
     Dear ImGui (MIT), GLFW (zlib licence), XXHash64 by Stephan Brumme (MIT),
     HarfBuzz (Old MIT), stb_truetype (public domain/MIT), x264 (GPL-2.0+),
     libarchive (BSD-2 + notes below), zlib (zlib licence), bzip2 (BSD-style),
@@ -32,7 +32,7 @@ Project homepages:
   MinGW-w64   https://www.mingw-w64.org/
 
 ================================================================================
-Dear ImGui (compiled into fMCG_gui.exe) -- MIT Licence
+Dear ImGui (compiled into fMCG.exe) -- MIT Licence
 ================================================================================
 Copyright (c) 2014-2025 Omar Cornut
 
@@ -55,7 +55,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
-GLFW (compiled into fMCG_gui.exe) -- zlib licence
+GLFW (compiled into fMCG.exe) -- zlib licence
 ================================================================================
 Copyright (c) 2002-2006 Marcus Geelnard
 Copyright (c) 2006-2019 Camilla Löwy <elmindreda@glfw.org>
@@ -79,7 +79,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 
 ================================================================================
-MinGW-w64 runtime (linked into fMCG_gui.exe)
+MinGW-w64 runtime (linked into fMCG.exe)
 ================================================================================
 Distributed under the GNU General Public License with the GCC Runtime Library
 Exception -- the exception explicitly permits distribution of executables
@@ -87,7 +87,7 @@ linked against the runtime without the GPL applying to them.
 See https://www.gnu.org/licenses/gcc-exception-3.1.html
 
 ================================================================================
-libarchive 3.8.9 (compiled into fMCG_gui.exe on Windows; system library on Linux) -- BSD-2-Clause (+ per-file notes); verbatim COPYING
+libarchive 3.8.9 (compiled into fMCG.exe on Windows; system library on Linux) -- BSD-2-Clause (+ per-file notes); verbatim COPYING
 ================================================================================
 The libarchive distribution as a whole is Copyright by Tim Kientzle
 and is subject to the copyright notice reproduced at the bottom of
@@ -156,7 +156,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ================================================================================
-zlib 1.3.2 (compiled into fMCG_gui.exe on Windows; system library on Linux) -- zlib licence; verbatim LICENSE
+zlib 1.3.2 (compiled into fMCG.exe on Windows; system library on Linux) -- zlib licence; verbatim LICENSE
 ================================================================================
 Copyright notice:
 
@@ -182,7 +182,7 @@ Copyright notice:
   jloup@gzip.org          madler@alumni.caltech.edu
 
 ================================================================================
-bzip2 / libbzip2 1.0.8 (compiled into fMCG_gui.exe on Windows; system library on Linux) -- BSD-style; verbatim LICENSE
+bzip2 / libbzip2 1.0.8 (compiled into fMCG.exe on Windows; system library on Linux) -- BSD-style; verbatim LICENSE
 ================================================================================
 --------------------------------------------------------------------------
 
@@ -227,7 +227,7 @@ bzip2/libbzip2 version 1.0.8 of 13 July 2019
 --------------------------------------------------------------------------
 
 ================================================================================
-liblzma / XZ Utils 5.8.4 (compiled into fMCG_gui.exe on Windows; system library on Linux) -- liblzma: BSD Zero Clause (0BSD); verbatim COPYING
+liblzma / XZ Utils 5.8.4 (compiled into fMCG.exe on Windows; system library on Linux) -- liblzma: BSD Zero Clause (0BSD); verbatim COPYING
 ================================================================================
 XZ Utils Licensing
 ==================
@@ -299,7 +299,7 @@ XZ Utils Licensing
     The contact information is in the README file.
 
 ================================================================================
-Zstandard / libzstd 1.5.7 (compiled into fMCG_gui.exe on Windows; system library on Linux) -- BSD-3-Clause; verbatim LICENSE
+Zstandard / libzstd 1.5.7 (compiled into fMCG.exe on Windows; system library on Linux) -- BSD-3-Clause; verbatim LICENSE
 ================================================================================
 BSD License
 
@@ -333,7 +333,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ================================================================================
-LZ4 / liblz4 1.10.0 (compiled into fMCG_gui.exe on Windows; system library on Linux) -- BSD-2-Clause; verbatim lib/LICENSE
+LZ4 / liblz4 1.10.0 (compiled into fMCG.exe on Windows; system library on Linux) -- BSD-2-Clause; verbatim lib/LICENSE
 ================================================================================
 LZ4 Library
 Copyright (c) 2011-2020, Yann Collet
@@ -361,7 +361,7 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ================================================================================
-XXHash64 (src/xxhash64.h, compiled into fMCG_gui.exe) -- MIT Licence
+XXHash64 (src/xxhash64.h, compiled into fMCG.exe) -- MIT Licence
 ================================================================================
 Copyright (c) 2016 Stephan Brumme. All rights reserved.
 (https://create.stephan-brumme.com/xxhash/)
@@ -385,7 +385,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
-HarfBuzz 14.5.0 (compiled into fMCG_gui.exe on Windows; system library on Linux) -- "Old MIT" licence
+HarfBuzz 14.5.0 (compiled into fMCG.exe on Windows; system library on Linux) -- "Old MIT" licence
 ================================================================================
 HarfBuzz is licensed under the so-called "Old MIT" license.  Details follow.
 For parts of HarfBuzz that are licensed under different licenses see individual
@@ -431,7 +431,7 @@ ON AN "AS IS" BASIS, AND THE COPYRIGHT HOLDER HAS NO OBLIGATION TO
 PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS.
 
 ================================================================================
-stb_truetype v1.26 (src/stb_truetype.h, compiled into fMCG_gui.exe) -- public domain / MIT
+stb_truetype v1.26 (src/stb_truetype.h, compiled into fMCG.exe) -- public domain / MIT
 ================================================================================
 This software is available under 2 licenses -- choose whichever you prefer.
 ALTERNATIVE A - MIT License
@@ -470,7 +470,7 @@ ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-x264 (compiled into fMCG_gui.exe on Windows; system library on Linux) -- GNU GPL v2 or later
+x264 (compiled into fMCG.exe on Windows; system library on Linux) -- GNU GPL v2 or later
 ================================================================================
 Copyright (C) 2003-2025 x264 project (https://www.videolan.org/developers/x264.html).
 x264 is licensed under the GNU General Public License version 2 or (at your option) any later

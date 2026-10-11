@@ -3,7 +3,6 @@
 *.o
 *.obj
 *.a
-fMCG_gui
 fMCG
 test_harness
 test_newopts

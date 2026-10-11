@@ -24,7 +24,7 @@ Thanks to Nitsua for the idea of zero copy mmap + other scanner micro optimisati
 
 1. Install a MinGW-w64 toolchain ([w64devkit](https://github.com/skeeto/w64devkit/releases)) and [Git for Windows](https://git-scm.com/download/win).
 2. Run `bootstrap.bat` once — it fetches the Dear ImGui submodule, downloads GLFW 3.4, and downloads the **sources** of HarfBuzz, x264, libarchive 3.8.9 and its codecs (zlib, bzip2, xz, zstd, lz4), each pinned by SHA-256, then builds x264 and libarchive + codecs as static libraries into `vendor/` (a few minutes, once; needs w64devkit's `sh`, `make` and `cmake`).
-3. Run `build.bat`. This produces a self-contained `fMCG_gui.exe` (it imports only Windows system DLLs).
+3. Run `build.bat`. This produces a self-contained `fMCG.exe` (it imports only Windows system DLLs).
 
 Both scripts are idempotent; re-run `build.bat` after changing sources.
 
@@ -45,12 +45,12 @@ sudo pacman -S base-devel pkgconf git glfw libarchive harfbuzz x264 mesa
 brew install pkg-config glfw libarchive harfbuzz x264
 
 git submodule update --init   # fetch Dear ImGui (pinned v1.92.9b)
-make                          # builds ./fMCG_gui (default target)
+make                          # builds ./fMCG (default target)
 make debug                    # variant: FMCG_DEBUG diagnostics
 make profile                  # -O3 plus debug symbols + frame pointers, for perf
 ```
 
-`make profile` keeps every optimisation and adds `-g -fno-omit-frame-pointer`, so the optimised binary can be profiled: `perf record --call-graph fp ./fMCG_gui`, then `perf report`. Switching between `make` and `make profile` automatically rebuilds the objects with the new flags (a `.build_mode` stamp tracks the current mode), and the modes combine: `make profile DEBUG=1`.
+`make profile` keeps every optimisation and adds `-g -fno-omit-frame-pointer`, so the optimised binary can be profiled: `perf record --call-graph fp ./fMCG`, then `perf report`. Switching between `make` and `make profile` automatically rebuilds the objects with the new flags (a `.build_mode` stamp tracks the current mode), and the modes combine: `make profile DEBUG=1`.
 
 Dear ImGui is a git submodule compiled from `vendor/imgui` (no standard distro package). To use a system copy instead: `make IMGUI_CFLAGS=-I/usr/include/imgui IMGUI_SOURCES=`.
 
@@ -116,14 +116,14 @@ Notes:
 
 ## Distributing Windows binaries
 
-A built `fMCG_gui.exe` is **self-contained**: libarchive and its compression codecs, HarfBuzz, x264, GLFW and Dear ImGui are all linked statically, and the exe imports only Windows system DLLs (kernel32, user32, gdi32, opengl32, shell32, bcrypt, msvcrt). Copy the exe anywhere and it runs; `release.bat` checks this before packaging.
+A built `fMCG.exe` is **self-contained**: libarchive and its compression codecs, HarfBuzz, x264, GLFW and Dear ImGui are all linked statically, and the exe imports only Windows system DLLs (kernel32, user32, gdi32, opengl32, shell32, bcrypt, msvcrt). Copy the exe anywhere and it runs; `release.bat` checks this before packaging.
 
 Everything linked in is under a licence that permits redistribution in binary form, provided the licence notices travel with it:
 
 - libarchive (BSD-2-Clause, with a few per-file notes: UC Regents BSD-3, public domain, and BLAKE2 under CC0 / OpenSSL / Apache 2.0), zlib (zlib licence), bzip2 (BSD-style), liblzma (0BSD), Zstandard (BSD-3-Clause), LZ4 (BSD-2-Clause), HarfBuzz (Old MIT), stb_truetype (public domain / MIT), Dear ImGui (MIT), GLFW (zlib licence);
 - x264 is GPL-2.0-or-later, compatible with fMCG's GPL-3.0; `THIRD_PARTY_LICENSES.txt` records the exact x264 source commit.
 
-So a shareable release is just `fMCG_gui.exe` plus the licence files. `THIRD_PARTY_LICENSES.txt` in the repo root is the ready-made notices file, with every library's upstream licence text verbatim for the exact versions built.
+So a shareable release is just `fMCG.exe` plus the licence files. `THIRD_PARTY_LICENSES.txt` in the repo root is the ready-made notices file, with every library's upstream licence text verbatim for the exact versions built.
 
 **Making a release** — one command builds and packages both platforms:
 
@@ -133,7 +133,7 @@ release.bat v1.2       :: -> dist\fMCG-v1.2-windows\, dist\fMCG-v1.2-linux\ ... 
 debug build            :: build.bat debug (Windows) or make debug (Linux/macOS)
 ```
 
-The script builds the Windows exe first, assembles `fMCG_gui.exe`, `LICENSE`, `THIRD_PARTY_LICENSES.txt` and `README.md`, verifies nothing is missing and that the exe imports only Windows system DLLs, and zips it via PowerShell. It then builds the Linux binary through **WSL** (`release_linux.sh`, in a temporary Linux-side copy of the sources) and packages it with the same licence files and README as a `.tar.gz`.
+The script builds the Windows exe first, assembles `fMCG.exe`, `LICENSE`, `THIRD_PARTY_LICENSES.txt` and `README.md`, verifies nothing is missing and that the exe imports only Windows system DLLs, and zips it via PowerShell. It then builds the Linux binary through **WSL** (`release_linux.sh`, in a temporary Linux-side copy of the sources) and packages it with the same licence files and README as a `.tar.gz`.
 
 **Requirement for the Linux package: WSL** with a Linux distribution and its build packages:
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # release_linux.sh <repo-path> <dist-name>
 #
-# Builds the Linux fMCG_gui inside WSL (or any Linux shell) and packages it as
+# Builds the Linux fMCG inside WSL (or any Linux shell) and packages it as
 # dist/<dist-name>-linux/ + dist/<dist-name>-linux.tar.gz. Called by
 # release.bat; can also be run directly: ./release_linux.sh "$PWD" fMCG
 #
@@ -38,8 +38,8 @@ mkdir -p "$WORK/vendor"
 cp -r "$SRC/vendor/imgui" "$WORK/vendor/"
 rm -f "$WORK"/src/*.o "$WORK"/gui/*.o
 
-echo "  building fMCG_gui (Linux) ..."
-if ! make -C "$WORK" -j"$(nproc)" fMCG_gui >"$WORK/build.log" 2>&1; then
+echo "  building fMCG (Linux) ..."
+if ! make -C "$WORK" -j"$(nproc)" fMCG >"$WORK/build.log" 2>&1; then
     tail -30 "$WORK/build.log"
     echo "ERROR: Linux build failed."
     exit 1
@@ -48,7 +48,7 @@ fi
 DIST="$SRC/dist/$NAME-linux"
 rm -rf "$DIST" "$DIST.tar.gz"
 mkdir -p "$DIST"
-cp "$WORK/fMCG_gui" "$DIST/"
+cp "$WORK/fMCG" "$DIST/"
 cp "$SRC/LICENSE" "$SRC/THIRD_PARTY_LICENSES.txt" "$SRC/README.md" "$DIST/"
 tar -czf "$DIST.tar.gz" -C "$SRC/dist" "$NAME-linux"
 echo "  OK: dist/$NAME-linux and dist/$NAME-linux.tar.gz"
