@@ -40,10 +40,17 @@ bool close_held_notes();
 // When enabled, a track whose raw bytes match one seen earlier in the same
 // scan is replayed from a cached summary instead of being parsed again --
 // O(unique bytes) instead of O(total bytes). Off by default.
+//
+// risky_dedup (needs track_dedup; layered xz files only): in each layer, once
+// the first repeated tile is seen, assume the rest of the layer is that tile
+// repeated if the remaining size is an exact multiple of the tile's size, and
+// stop decoding the layer. WRONG (silently) on files where the rest of a layer
+// is made of different tiles with a matching total size; the log states every
+// assumption applied. Off by default.
 std::vector<FrameStats> process_streaming(
     const std::string& filename, double fps, uint16_t& out_division,
     uint64_t& out_total_notes, bool vel0_as_note_off, uint64_t& out_total_ticks,
     const ProgressCallbacks& cb, double end_delay = 0.0,
-    int parse_threads = 0, bool track_dedup = false);
+    int parse_threads = 0, bool track_dedup = false, bool risky_dedup = false);
 
 } // namespace fmcg_stream

@@ -132,8 +132,9 @@ struct TickData {
 //         0 = not applicable (not an xz layer chain): caller runs the standard scan,
 //        -1 = error (message already emitted).
 // Throws ScanCancelled on cancel.
+// risky: the opt-in "risky fast dedup" assumption (see process_streaming).
 int scan_layered(const std::string& filename, bool vel0_as_note_off, TickData& td,
                  std::vector<TempoChange>& tempo_raw, uint16_t& out_division,
-                 const ProgressCallbacks& cb);
+                 const ProgressCallbacks& cb, bool risky = false);
 
 } // namespace fmcg_stream

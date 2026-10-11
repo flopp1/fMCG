@@ -1185,7 +1185,7 @@ void Composer::run_child(uint32_t child, uint64_t r) {
 
 class Discovery {
 public:
-    Discovery(Walk& w, const ProgressCallbacks& cb) : W_(w), cb_(cb) {}
+    Discovery(Walk& w, const ProgressCallbacks& cb, bool risky = false) : W_(w), cb_(cb), risky_(risky) {}
 
     struct Key { uint64_t h, n; bool operator==(const Key& o) const { return h == o.h && n == o.n; } };
     struct KeyHash { size_t operator()(const Key& k) const { return (size_t)(k.h ^ (k.n * 0x9E3779B97F4A7C15ull)); } };
@@ -1193,6 +1193,7 @@ public:
     std::vector<uint32_t> queue;
     uint64_t held_bytes = 0, decoded = 0, occurrences = 0;
     uint64_t truncated_members = 0, raw_tails = 0;
+    uint64_t assumed_layers = 0;   // layers whose rest was ASSUMED (risky fast dedup)
     static constexpr uint64_t kMaxHeld = (uint64_t)6 << 30;   // owned compressed bytes of unique members
 
     // Intern one member; `owned`: copy the bytes (they live in a transient buffer).
@@ -1267,6 +1268,45 @@ public:
             recent.insert(recent.begin(), {L, id});
             if (recent.size() > 32) recent.pop_back();
         };
+        // Risky fast dedup (opt-in, goal 8): the FIRST member that occurs
+        // twice in a row is the layer's tile; everything before it is header.
+        // If the rest of the layer (declared payload size minus the header)
+        // is an exact multiple of the tile, it is ASSUMED to be that tile
+        // repeated and the layer is not decoded further. Only that first
+        // repeated tile is ever tried. Returns true when the assumption was
+        // applied (the caller stops cutting this layer).
+        bool risky_open = risky_ && unc_total > 0;
+        uint32_t prev_id = UINT32_MAX;
+        uint64_t prev_pos = 0, prev_len = 0;
+        auto after_member = [&](uint32_t id, uint64_t pos, uint64_t L) -> bool {
+            if (!risky_open) return false;
+            if (!(id == prev_id && L == prev_len && pos == prev_pos + L)) {
+                prev_id = id; prev_pos = pos; prev_len = L;
+                return false;
+            }
+            risky_open = false;
+            const uint64_t hdr = prev_pos;
+            const uint64_t rest = unc_total > hdr ? unc_total - hdr : 0;
+            std::ostringstream os;
+            if (rest < 2 * L || rest % L != 0) {
+                os << "  [layered] risky fast dedup: layer member " << parent << ": first repeated tile ("
+                   << format_with_commas(L) << " bytes after " << format_with_commas(hdr)
+                   << " header bytes) does not divide the remaining " << format_with_commas(rest)
+                   << " bytes; layer decoded normally.\n";
+                emit(cb_, os.str());
+                return false;
+            }
+            const uint64_t m = rest / L;
+            W_.nodes[parent].kids.back().second += m - 2;   // the two seen copies are already counted
+            occurrences += m - 2;
+            ++assumed_layers;
+            os << "  WARNING: risky fast dedup ASSUMED layer member " << parent << " = "
+               << format_with_commas(hdr) << " header bytes + a " << format_with_commas(L) << "-byte tile x "
+               << format_with_commas(m) << " (" << fmt_bytes(rest - 2 * L)
+               << " not decoded). The counts are wrong if that part of the layer holds other tiles.\n";
+            emit(cb_, os.str(), true);
+            return true;
+        };
         for (;;) {
             if (avail() < 32 && !eof) { fill(); continue; }
             if (avail() == 0) break;
@@ -1306,6 +1346,7 @@ public:
                     ++occurrences;                 // byte-identical to a validated member
                     push_kid(W_.nodes[parent], rid);
                     if (ri) remember(L, rid);
+                    if (after_member(rid, node_decoded - avail(), L)) return;
                     head += (size_t)L; scan = 0; found = true;
                     break;
                 }
@@ -1314,6 +1355,7 @@ public:
                     const uint32_t id = intern(p, L, unc, false, true);
                     push_kid(W_.nodes[parent], id);
                     remember(L, id);
+                    if (after_member(id, node_decoded - avail(), L)) return;
                     head += (size_t)L; scan = 0; found = true;
                     break;
                 }
@@ -1331,6 +1373,7 @@ public:
                     const uint32_t id = intern(p, L, unc, false, true);
                     push_kid(W_.nodes[parent], id);
                     remember(L, id);
+                    if (after_member(id, node_decoded - avail(), L)) return;
                     head += (size_t)L; scan = 0; found = true;
                     break;
                 }
@@ -1396,6 +1439,7 @@ public:
 private:
     Walk& W_;
     const ProgressCallbacks& cb_;
+    bool risky_ = false;
 };
 
 // Saturating flat-size computation over the grammar (for the log).
@@ -1424,7 +1468,7 @@ uint64_t flat_size(const Walk& W, uint32_t id, std::vector<uint64_t>& memo_sz) {
 
 int scan_layered(const std::string& filename, bool vel0_as_note_off, TickData& td,
                  std::vector<TempoChange>& tempo_raw, uint16_t& out_division,
-                 const ProgressCallbacks& cb) {
+                 const ProgressCallbacks& cb, bool risky) {
     BinaryReader reader(filename, 0, /*mmap=*/true);
     const uint8_t* img = reader.mmap_data();
     const uint64_t isz = reader.mmap_size();
@@ -1434,7 +1478,7 @@ int scan_layered(const std::string& filename, bool vel0_as_note_off, TickData& t
     if (!xz_cut_backward(img, isz, top)) return 0;
 
     Walk W(cb, vel0_as_note_off);
-    Discovery D(W, cb);
+    Discovery D(W, cb, risky);
     try {
         emit(cb, "  [layered] " + std::to_string(top.size()) + " top-level xz stream(s); discovering structure...\n");
         W.nodes.emplace_back();   // node 0: the file itself
@@ -1572,6 +1616,9 @@ int scan_layered(const std::string& filename, bool vel0_as_note_off, TickData& t
         emit(cb, os.str());
         uint64_t trunc = 0, decerr = 0;
         for (const Node& n : W.nodes) { trunc += n.truncated; decerr += n.decode_error; }
+        if (D.assumed_layers)
+            emit(cb, "  WARNING: these counts rely on the risky fast-dedup assumption in "
+                     + std::to_string(D.assumed_layers) + " layer(s) (see above); untick it for exact counts.\n", true);
         if (trunc || decerr || D.raw_tails) {
             std::ostringstream ws;
             ws << "  WARNING: " << decerr << " member(s) failed to decode, " << trunc

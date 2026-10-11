@@ -233,3 +233,52 @@ def d_tempo_diff(rng):
 
 
 GENS = {k[2:]: v for k, v in globals().items() if k.startswith("d_")}
+
+
+# ------------------------------------------------- risky fast dedup (opt-in, goal 8)
+# Each returns (file_bytes, description, expect):
+#   "exact"  -- the assumption fires and is right (result == oracle),
+#   "wrong"  -- the assumption fires and is WRONG by design (result != oracle),
+#   "normal" -- the first repeated tile does not divide the rest: decoded normally.
+# Not in GENS: the regular suites never run with the risky option.
+
+def _same_len_tile(rng, length, notes_not):
+    """A track member of exactly `length` compressed bytes whose note count differs from `notes_not`."""
+    for _ in range(20000):
+        body = melody_body(rng, rng.randrange(8, 40), with_tempo=False)
+        unit = xz(mtrk(body))
+        if len(unit) == length and body.count(b"\x90") != notes_not:
+            return unit
+    raise RuntimeError("no same-length tile found")
+
+
+def r_exact(rng):
+    """Header member + one track member tiled N times, then the whole layer tiled K times."""
+    n = rng.randrange(2, 9)
+    header = xz(mthd(480, n + 1) + mtrk(melody_body(rng, 15)))
+    unit = xz(mtrk(melody_body(rng, rng.randrange(10, 30), with_tempo=False)))
+    inner = xz(header + unit * n)
+    return xz(inner * rng.randrange(2, 6)), "header + tile x N, layer tiled x K", "exact"
+
+
+def r_wrong(rng):
+    """Header + T T U U with |U| == |T| but different notes: the rest is a multiple of |T| yet not T."""
+    header = xz(mthd(480, 5) + mtrk(melody_body(rng, 15)))
+    tbody = melody_body(rng, 20, with_tempo=False)
+    t = xz(mtrk(tbody))
+    u = _same_len_tile(rng, len(t), tbody.count(b"\x90"))
+    return xz(header + t + t + u + u), "header + T T U U, |U| == |T| (wrong by design)", "wrong"
+
+
+def r_nodivide(rng):
+    """Header + T T V where |V| is not a multiple of |T|: the assumption must not fire."""
+    header = xz(mthd(480, 4) + mtrk(melody_body(rng, 15)))
+    t = xz(mtrk(melody_body(rng, 20, with_tempo=False)))
+    while True:
+        v = xz(mtrk(melody_body(rng, rng.randrange(5, 60), with_tempo=False)))
+        if len(v) % len(t):
+            break
+    return xz(header + t + t + v), "header + T T V, |V| not a multiple of |T|", "normal"
+
+
+RISKY = {k[2:]: v for k, v in globals().items() if k.startswith("r_")}

@@ -56,6 +56,12 @@ struct ProgressCallbacks {
     // branch-cheap): events parsed so far, elapsed seconds, events/second, and
     // a stream fraction 0..1 (negative when the total size is unknown).
     std::function<void(uint64_t events, double elapsed_sec, double ev_per_s, double frac)> on_scan_progress;
+    // Live track count: tracks finished so far and the total (0 = unknown),
+    // at most ~10 calls per second plus a final one. Only scans that walk the
+    // file's tracks in order report it (sequential, parallel, two-pass); the
+    // layered dedup walk folds repeats out of order and reports its exact total
+    // in the log at the end instead.
+    std::function<void(uint64_t done, uint64_t total)> on_tracks;
     // CC events are always counted (kept for source compatibility; ignored).
     bool cc_stats = true;
     // Set (from another thread) to abort the scan at the next progress ping.
@@ -122,7 +128,8 @@ public:
         const std::string& filename, double fps, uint16_t& out_division,
         uint64_t& out_total_notes, bool vel0_as_note_off,
         uint64_t& out_total_ticks, const ProgressCallbacks& cb = {},
-        double end_delay = 0.0, int parse_threads = 0, bool track_dedup = false);
+        double end_delay = 0.0, int parse_threads = 0, bool track_dedup = false,
+        bool risky_dedup = false);
     // Back-compat form used by tests/benchmarks (total ticks not reported).
     static std::vector<FrameStats> process_midi(
         const std::string& filename, double fps, uint16_t& out_division,

@@ -204,6 +204,35 @@ int main() {
         check("ass colour alpha", hex(fmcg_text::from_ass_colour("&H80FF8040")), "0x4080FF7F");
         check("ass colour default", hex(fmcg_text::from_ass_colour("junk")), "0xFFFFFFFF");
     }
+    {   // Live track count: the last on_tracks call reports every track, with the
+        // total where it is known (parallel) -- sequential, parallel and two-pass.
+        std::vector<uint8_t> mid = {'M','T','h','d', 0,0,0,6, 0,1, 0,5, 0x01,0xE0};
+        for (int t = 0; t < 5; ++t) {
+            const uint8_t trk[] = {0x00, 0x90,0x3C,0x40, 0x64, 0x80,0x3C,0x00, 0x00, 0xFF,0x2F,0x00};
+            const uint8_t hdr[] = {'M','T','r','k', 0,0,0,(uint8_t)sizeof trk};
+            mid.insert(mid.end(), hdr, hdr + sizeof hdr);
+            mid.insert(mid.end(), trk, trk + sizeof trk);
+        }
+        std::ofstream mf("_tracks.mid", std::ios::binary);
+        mf.write((const char*)mid.data(), (std::streamsize)mid.size());
+        mf.close();
+        auto run = [](int threads, bool two_pass) {
+            uint64_t done = 0, total = 0;
+            ProgressCallbacks cb;
+            cb.on_tracks = [&](uint64_t d, uint64_t t) { done = d; total = t; };
+            if (two_pass) {   // cross the (lowered) spec limit and pick the two-pass path
+                cb.spec_tick_limit = 50;
+                cb.on_spec_violation = [](uint64_t, size_t) { return 1; };
+            }
+            uint16_t div = 0; uint64_t tn = 0, tt = 0;
+            fmcg_stream::process_streaming("_tracks.mid", 60.0, div, tn, true, tt, cb, 0.0, threads);
+            return std::to_string(done) + "/" + std::to_string(total);
+        };
+        check("tracks: sequential reports 5 (total unknown)", run(1, false), "5/0");
+        check("tracks: parallel reports 5 of 5", run(4, false), "5/5");
+        check("tracks: two-pass reports 5", run(1, true), "5/0");
+        std::remove("_tracks.mid");
+    }
     printf("\n%s (%d failures)\n", fails ? "FAILURES" : "ALL OK", fails);
     return fails ? 1 : 0;
 }

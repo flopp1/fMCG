@@ -72,6 +72,7 @@ void run_process(GuiSettings s) {
     cb.on_scan_progress = [](uint64_t ev, double el, double evps, double frac) {
         g_app.gui_scan_progress(ev, el, evps, frac);
     };
+    cb.on_tracks = [](uint64_t done, uint64_t total) { g_app.gui_scan_tracks(done, total); };
     cb.cancel_flag = &app.cancel;
     app.cancel = false;
 
@@ -100,6 +101,7 @@ void run_process(GuiSettings s) {
         std::lock_guard<std::mutex> lock(app.scan_mutex);
         app.scan_events = 0; app.scan_elapsed = 0.0; app.scan_evps = 0.0;
         app.scan_frac = -1.0; app.scan_active = false;
+        app.scan_has_tracks = false; app.scan_tracks = 0; app.scan_tracks_total = 0;
     }
 
     app.gui_log(("Processing MIDI: " + s.midi_file + "...").c_str(), false);
@@ -107,7 +109,8 @@ void run_process(GuiSettings s) {
     fmcg_stream::set_close_held_notes(s.close_held_notes);
     auto frames = ScaleMidiProcessor::process_midi(s.midi_file, s.fps, ppqn, total_notes,
                                                     s.vel0_note_off, total_ticks, cb, s.end_delay,
-                                                    s.parse_threads, s.track_dedup);
+                                                    s.parse_threads, s.track_dedup,
+                                                    s.track_dedup && s.risky_dedup);
     if (spec_prompt_used) {
         app.spec_prompt_open.store(false);
         app.spec_choice.store(-1);

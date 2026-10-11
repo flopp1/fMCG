@@ -66,9 +66,21 @@ void AppState::gui_scan_progress(uint64_t events, double elapsed_sec, double ev_
     scan_active = true;
 }
 
+void AppState::gui_scan_tracks(uint64_t done, uint64_t total) {
+    std::lock_guard<std::mutex> lock(scan_mutex);
+    scan_has_tracks = true;
+    scan_tracks = done;
+    scan_tracks_total = total;
+}
+
 // Rendered as a single log line that overwrites itself.
 std::string AppState::compose_scan_line() {
     std::ostringstream ss;
+    if (scan_has_tracks) {
+        ss << format_with_commas(scan_tracks);
+        if (scan_tracks_total) ss << "/" << format_with_commas(scan_tracks_total);
+        ss << (scan_tracks_total == 1 ? " track, " : " tracks, ");
+    }
     ss << format_with_commas(scan_events) << " events, ";
     if (scan_evps > 0) ss << format_with_commas((uint64_t)scan_evps) << " ev/s, ";
     ss << std::fixed << std::setprecision(1) << scan_elapsed << "s elapsed";

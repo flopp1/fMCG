@@ -47,6 +47,7 @@ struct GuiSettings {
     int         ffmpeg_threads = 0;   // encoder (x264) threads, 0 = auto; key name kept for saved settings
     int         parse_threads = 0;    // 0 = all cores (bounded to hw_concurrency); 1 = sequential parse
     bool        track_dedup = false;  // skip repeated content (track replay / layered dedup)
+    bool        risky_dedup = false;  // risky fast dedup (layered); deliberately NOT saved across restarts
     std::string text_color_aabbggrr = "&H00FFFFFF";
     std::string bg_color_aabbggrr = "&H00000000";
     bool        outline_enabled = false;     // pattern: text outline (in-built renderer)
@@ -187,11 +188,15 @@ struct AppState {
     double                    scan_evps = 0.0;
     double                    scan_frac = -1.0;   // stream fraction 0..1, <0 unknown
     bool                      scan_active = false;
+    bool                      scan_has_tracks = false;   // the running scan reports tracks
+    uint64_t                  scan_tracks = 0;           // tracks finished so far
+    uint64_t                  scan_tracks_total = 0;     // 0 = unknown
 
     // ---- methods ---------------------------------------------------------------
     void gui_log(const char* msg, bool is_error);
     void gui_progress(const char* pass_name, int percent);
     void gui_scan_progress(uint64_t events, double elapsed_sec, double ev_per_s, double frac);
+    void gui_scan_tracks(uint64_t done, uint64_t total);
     std::string compose_scan_line();     // caller holds scan_mutex
     void finish_op();                    // end-of-operation bookkeeping
     float display_progress();            // smooth progress fraction for the bar

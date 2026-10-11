@@ -171,7 +171,15 @@ No content heuristics. See DESIGN.md.
    `cell_align`): each stat's cell = widest of its block_spec candidates (probe frames with every digit
    replaced by 0..9, measured in the font); `TextRenderer::layout(PieceLines, cell widths, align)`.
    Verified by the user in the GUI; test/cpp/test_layout.cpp.
-8. Risky fast dedup (added 2026-10-11, rule revised by the user the same day): a SEPARATE opt-in
+8. DONE (session 3): risky fast dedup. `Discovery::cut_payload` (fmcg_layered.cpp, `after_member`):
+   first member immediately repeated = tile; if (parent's declared unc size - header) % tile == 0 the
+   parent's last kid run is set to that multiplicity and the layer stops decoding; logged as
+   "WARNING: risky fast dedup ASSUMED ..." + a final reminder. Plumbed as `risky_dedup` through
+   process_streaming / process_midi / scan_layered; probe arg 7 (`assumed=` in its output); GUI
+   checkbox beside Dedup (GuiSettings::risky_dedup, deliberately not persisted). Tests:
+   `gen.RISKY` (exact / wrong-by-design / no-divide) in test_dialects.RiskyDedup; the regular suites
+   never enable it. Original request:
+   Risky fast dedup (added 2026-10-11, rule revised by the user the same day): a SEPARATE opt-in
    checkbox beside "Dedup". Rule: within a layer's payload, skip any leading header member(s) and take
    the FIRST REPEATED tile (the first member that occurs twice in a row). If the remaining payload size
    (layer size minus the header bytes before that tile) is an exact multiple of that tile's size, assume
@@ -215,5 +223,11 @@ No content heuristics. See DESIGN.md.
   Iosevka, Cambria); all families of a collection listed; FontVariant::face_index carried to the
   renderer; per-user font dir no longer scanned twice (duplicate styles).
   Goals 5/7/9 done (user-verified in the GUI; Windows + Linux suites green). ASS generation removed.
-  Goal 10 (static libarchive on Windows) added.
+  Goal 10 (static libarchive on Windows) added. Live track count on the progress line (sequential /
+  parallel "done/total" / two-pass; `ProgressCallbacks::on_tracks`; not the layered walk).
+  Goal 8 done. Risky fast dedup on the full corpus (probe arg 7 = 1): all 8 files still give the verified
+  values. It fires on Ievans (4.8 vs 5.0 s), MIDI File (1.7 vs 2.9 s, 5 layers), NoiseMidi (41.7 vs 41.6 s),
+  gymnopedie (6.3 vs 20.0 s), happy (6.4 vs 13.2 s), paprikas (0.4 vs 1.9 s); it never fires on
+  "Just 1 note" or BSOD, whose big layers alternate/cycle members and never repeat one back to back.
+  Next: goal 10.
 See OPEN_QUESTIONS.md "Corpus status" for the per-file table; update it every session.

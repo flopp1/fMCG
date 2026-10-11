@@ -1471,10 +1471,20 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
     // tracks are mostly unique (e.g. a 4.24B-event file saving 1.7%).
     std::unordered_set<uint64_t> seen_len;
 
+    clock::time_point tracks_reported{};
+    auto report_tracks = [&](bool force) {
+        if (!cb.on_tracks) return;
+        const clock::time_point now = clock::now();
+        if (!force && now - tracks_reported < std::chrono::milliseconds(100)) return;
+        tracks_reported = now;
+        cb.on_tracks(td.ntracks, 0);
+    };
+
     while (true) {
         if (cb.cancel_flag && cb.cancel_flag->load(std::memory_order_relaxed)) {
             emit(cb, "  Cancelled.\n"); throw ScanCancelled{};
         }
+        report_tracks(false);
         int64_t tag;
         if (mt_split) {          // 12-byte MThd: finish the tag whose 'M','T' became the division
             mt_split = false;
@@ -1667,6 +1677,7 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
 
     // Final progress ping so elapsed/ev-per-s cover the whole scan.
     ping();
+    report_tracks(true);
     td.total_events_seen = ev_count + dedup_replayed_events;
     if (dedup_store && !dedup_records_mine.empty())
         dedup_merge_records(dedup_records_mine, td);
@@ -1998,6 +2009,15 @@ static bool scan_frames_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off,
         cb.on_scan_progress(ev_total + ev_count, el,
                             el > 0.0 ? (double)(ev_total + ev_count) / el : 0.0, frac);
     };
+    uint64_t tracks_done = 0;
+    clock::time_point tracks_reported{};
+    auto report_tracks = [&](bool force) {
+        if (!cb.on_tracks) return;
+        const clock::time_point now = clock::now();
+        if (!force && now - tracks_reported < std::chrono::milliseconds(100)) return;
+        tracks_reported = now;
+        cb.on_tracks(tracks_done, 0);
+    };
 
     auto rd32 = [&]() -> int64_t {
         int a = bs.get(), b = bs.get(), c = bs.get(), d = bs.get();
@@ -2062,6 +2082,7 @@ static bool scan_frames_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off,
         if (cb.cancel_flag && cb.cancel_flag->load(std::memory_order_relaxed)) {
             emit(cb, "  Cancelled.\n"); throw ScanCancelled{};
         }
+        report_tracks(false);
         int64_t tag;
         if (mt_pending) {
             mt_pending = false;
@@ -2221,9 +2242,11 @@ static bool scan_frames_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off,
         size_t consumed = bs.consumed();
         bs.set_limit((size_t)-1);
         if (consumed < (size_t)len) bs.skip((size_t)len - consumed);
+        ++tracks_done;
     }
 
     ping();
+    report_tracks(true);
     fb.total_events_seen = ev_total + ev_count;   // identical metric to the live pings
     return true;
 }
@@ -2674,6 +2697,13 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
     for (auto& a : worker_at) a.store(0, std::memory_order_relaxed);
     std::vector<std::atomic<uint64_t>> worker_ev(ngroups);
     for (auto& a : worker_ev) a.store(0, std::memory_order_relaxed);
+    std::vector<std::atomic<uint64_t>> worker_tracks(ngroups);   // tracks finished per group
+    for (auto& a : worker_tracks) a.store(0, std::memory_order_relaxed);
+    auto tracks_finished = [&]() {
+        uint64_t t = 0;
+        for (const auto& a : worker_tracks) t += a.load(std::memory_order_relaxed);
+        return t;
+    };
 
     // Live progress reporter: on_scan_progress is normally driven by the scan
     // thread's per-1M-event pings, but the parallel workers never run it and
@@ -2694,6 +2724,7 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
         reporter_starts[g] = spans[ranges[g].first].off;
     if (cb.on_scan_progress) {
         reporter = std::thread([&]() {
+            unsigned reports = 0;
             while (!parsers_done.load(std::memory_order_relaxed)) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 if (parsers_done.load(std::memory_order_relaxed)) break;
@@ -2712,6 +2743,7 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
                     if (frac > 1.0) frac = 1.0;
                 }
                 cb.on_scan_progress(ev, el, evps, frac);
+                if (cb.on_tracks && (++reports & 1) == 0) cb.on_tracks(tracks_finished(), spans.size());
             }
         });
     }
@@ -2741,8 +2773,11 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
         const size_t b = ranges[g].first, e = ranges[g].second;
         if (b == e) continue;
         workers.emplace_back([&, g, b, e]() {
-            auto on_track = [&](uint64_t off) {
+            uint64_t started = 0;   // a track starts => the previous one in this group finished
+            auto on_track = [&, g](uint64_t off) {
                 worker_at[g].store(off, std::memory_order_relaxed);
+                if (started) worker_tracks[g].store(started, std::memory_order_relaxed);
+                ++started;
             };
             try {
                 partial_events[g] = parse_track_range(
@@ -2758,6 +2793,7 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
             }
             worker_at[g].store(spans[e - 1].off + spans[e - 1].len,
                                std::memory_order_relaxed);
+            worker_tracks[g].store(e - b, std::memory_order_relaxed);
         });
     }
     for (auto& t : workers) t.join();
@@ -2773,6 +2809,7 @@ static int scan_parallel(DataSrc& src, bool vel0_as_note_off, TickData& td,
         const double el = std::chrono::duration<double>(rclock::now() - reporter_t0).count();
         cb.on_scan_progress(ev, el, el > 0.0 ? (double)ev / el : 0.0, n > 0 ? 1.0 : -1.0);
     }
+    if (cb.on_tracks) cb.on_tracks(tracks_finished(), spans.size());
 
     if (cancelled.load()) { emit(cb, "  Cancelled.\n"); return -1; }
     if (spec_abort) return -2;
@@ -2867,7 +2904,7 @@ std::vector<FrameStats> process_streaming(
     const std::string& filename, double fps, uint16_t& out_division,
     uint64_t& out_total_notes, bool vel0_as_note_off, uint64_t& out_total_ticks,
     const ProgressCallbacks& cb, double end_delay, int parse_threads,
-    bool track_dedup)
+    bool track_dedup, bool risky_dedup)
 {
     using clock = std::chrono::steady_clock;
     out_total_notes = 0;
@@ -2925,7 +2962,7 @@ std::vector<FrameStats> process_streaming(
                 src.reset();
                 int lr = 0;
                 try {
-                    lr = scan_layered(filename, vel0_as_note_off, td, tempo_raw, division, cb);
+                    lr = scan_layered(filename, vel0_as_note_off, td, tempo_raw, division, cb, risky_dedup);
                 } catch (const ScanCancelled&) {
                     emit(cb, "  Cancelled.\n");
                     return {};
@@ -3015,7 +3052,7 @@ std::vector<FrameStats> process_streaming(
         if (!two_pass) {
             t_sweep = clock::now();
             out_division = division;
-            emit(cb, "  " + std::to_string(td.ntracks) + " tracks\n");
+            emit(cb, "  " + format_with_commas(td.ntracks) + (td.ntracks == 1 ? " track\n" : " tracks\n"));
             if (td.desync_tracks > 0)
                 emit(cb, "Warning: " + std::to_string(td.desync_tracks)
                          + " track(s) consumed a different number of bytes than declared (possible parser desync).\n", true);

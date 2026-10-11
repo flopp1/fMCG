@@ -76,3 +76,49 @@ def _add(kind):
 
 for _k in gen.GENS:
     _add(_k)
+
+
+class RiskyDedup(unittest.TestCase):
+    """The opt-in risky fast dedup (goal 8) on constructions where its assumption is
+    right, wrong by design, or must not fire. Without the option every case is exact."""
+
+    def _run(self, kind):
+        tmp = tempfile.mkdtemp(prefix="fmcg_risky_")
+        for seed in range(T.seeds()):
+            blob, desc, expect = gen.RISKY[kind](random.Random(f"{kind}-{seed}"))
+            want = oracle.stats_of_file(blob)
+            p = os.path.join(tmp, f"{kind}_{seed}.mid.xz")
+            with open(p, "wb") as f:
+                f.write(blob)
+            safe, safe_line = T.run_probe(p, 1, timeout=60)
+            risky, risky_line = T.run_probe(p, 1, timeout=60, risky=1)
+            with self.subTest(kind=kind, seed=seed):
+                self.assertIsNotNone(safe, f"probe failed: {safe_line} ({desc})")
+                self.assertIsNotNone(risky, f"risky probe failed: {risky_line} ({desc})")
+                keys = [k for k in T.keys_for(safe) if k in want]
+                self.assertEqual({k: (want[k], safe[k]) for k in keys if safe[k] != want[k]}, {},
+                                 f"option off must be exact; {desc}")
+                self.assertEqual(safe["assumed"], 0)
+                diff = {k: (want[k], risky[k]) for k in keys if risky[k] != want[k]}
+                if expect == "exact":
+                    self.assertEqual(risky["assumed"], 1, f"assumption should fire; {desc}")
+                    self.assertEqual(diff, {}, f"(want, got); {desc}")
+                elif expect == "wrong":
+                    self.assertEqual(risky["assumed"], 1, f"assumption should fire; {desc}")
+                    self.assertNotEqual(diff, {}, f"wrong-by-design case came out exact; {desc}")
+                else:
+                    self.assertEqual(risky["assumed"], 0, f"assumption must not fire; {desc}")
+                    self.assertEqual(diff, {}, f"(want, got); {desc}")
+                os.remove(p)
+        try:
+            os.rmdir(tmp)
+        except OSError:
+            pass
+
+
+def _add_risky(kind):
+    setattr(RiskyDedup, f"test_{kind}", lambda self: self._run(kind))
+
+
+for _k in gen.RISKY:
+    _add_risky(_k)

@@ -781,6 +781,21 @@ static void draw_global_section() {
     ImGui::Checkbox("Dedup", &g_ui.s.track_dedup);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Skip re-processing repeated content.\nPlain MIDI: byte-identical tracks are parsed once and replayed.\nCompressed/layered files: only unique members are decoded and parsed,\nduplicates are counted by multiplicity, and uniform spam grids fold\nanalytically. Off by default -- enable for dedup-style constructions." );
+    ImGui::SameLine();
+    if (!g_ui.s.track_dedup) ImGui::BeginDisabled();
+    ImGui::Checkbox("Risky fast dedup", &g_ui.s.risky_dedup);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Layered (xz-in-xz) files only, needs Dedup.\n"
+                          "In each layer, once the first tile repeats, assume the REST of the layer is\n"
+                          "that tile repeated whenever the remaining size is an exact multiple of the\n"
+                          "tile's size, and skip decoding it. Much faster on huge single-tile layers.\n"
+                          "WRONG (silently) if that part of the layer is made of different tiles whose\n"
+                          "sizes happen to add up -- only use it on files where that cannot happen.\n"
+                          "The log lists every assumption applied. Not saved: off at every start.");
+    if (!g_ui.s.track_dedup) ImGui::EndDisabled();
+    if (g_ui.s.track_dedup && g_ui.s.risky_dedup)
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f),
+                           "Risky: counts are wrong if a layer's rest is other tiles of matching size.");
 
     ImGui::Text("Encoder threads");
     ImGui::SameLine(120);

@@ -139,12 +139,13 @@ def keys_for(*results):
     return TWOPASS_KEYS if any(r and r.get("twopass") for r in results) else KEYS
 
 
-def run_probe(path, dedup, close_held=0, timeout=3600, fps=60):
-    """Returns (dict of ints incl. 'lossy', raw line) or (None, line) on FAIL/timeout."""
+def run_probe(path, dedup, close_held=0, timeout=3600, fps=60, risky=0):
+    """Returns (dict of ints incl. 'lossy' / 'assumed', raw line) or (None, line) on FAIL/timeout.
+    risky=1 enables the opt-in risky fast dedup (never used by the regular suites)."""
     try:
         # spec=1: a standard scan that breaks the tick spec restarts in two-pass
         # mode instead of allocating multi-GB dense tick arrays.
-        r = subprocess.run([probe(), path, str(fps), str(dedup), "0", str(close_held), "1"],
+        r = subprocess.run([probe(), path, str(fps), str(dedup), "0", str(close_held), "1", str(risky)],
                            capture_output=True, text=True, timeout=timeout)
         line = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "FAIL"
     except subprocess.TimeoutExpired:
