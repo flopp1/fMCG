@@ -1,5 +1,6 @@
 #include "fmcg_path.h"
 #include <fstream>
+#include <cctype>
 #include <cstring>
 #include <cstdlib>
 #include <filesystem>
@@ -65,6 +66,11 @@ bool validate_midi(const std::string& path, std::string& err) {
     if (std::memcmp(sig, "MThd", 4) == 0) return true;
     // Accept compressed archives (7z, xz, rar) — validated by libarchive during decompression
     if (is_compressed_file(path)) return true;
+    // CJCMCG preprocessed files have no signature: accepted by name and fully
+    // validated by the engine's reader (src/fmcg_cjcmcg.cpp).
+    std::string low = path;
+    for (char& c : low) c = (char)std::tolower((unsigned char)c);
+    if (low.size() >= 7 && low.compare(low.size() - 7, 7, ".cjcmcg") == 0) return true;
     err = "not a valid MIDI file (missing MThd header)";
     return false;
 }

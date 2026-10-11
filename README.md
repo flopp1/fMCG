@@ -9,6 +9,7 @@ Thanks to Nitsua for the idea of zero copy mmap + other scanner micro optimisati
 ## Features
 
 - **Single-pass streaming engine** — the file is walked exactly once (mmap for plain files, chunked libarchive streaming for compressed archives). Memory scales with song *duration*, never with event count.
+- **CJCMCG preprocessed files** — `.cjcmcg` files (plain or compressed) are read directly; see *CJCMCG preprocessed files* below.
 - **Compressed input** — `.7z`, `.xz`, `.rar`, `.gz`, `.bz2`, `.zst`, `.lz4` and any nesting of these (e.g. `.rar.xz`, `7z inside 7z`) are decompressed on the fly via libarchive; the decompressed image is never materialized on disk or RAM. Decode is pipelined with parsing on a separate thread, and nesting is unwrapped recursively to arbitrary depth.
 - **Dear ImGui GUI** — process, preview the video live, and render it — all in-process. The preview shows exactly the frames that get encoded.
 - **Built-in renderer** — text is shaped with HarfBuzz (kerning, OpenType features) and drawn by fMCG itself; videos are encoded in-process to **MP4 (H.264, x264)** or **MOV (QuickTime Animation, lossless, optional transparent background)**. No FFmpeg needed.
@@ -61,6 +62,22 @@ python -I test/run_tests.py --level full    # + layered corpus (needs the test c
 ```
 
 The runner needs only Python 3 (standard library) and the same g++/libarchive toolchain as the build; it compiles the headless probe and the C++ tests into `build/test/` itself. `make test LEVEL=quick|corpus|full` does the same on Linux/macOS.
+
+## CJCMCG preprocessed files (`.cjcmcg`)
+
+fMCG also reads the preprocessed files saved by **CJCMCG** (another note counter), plain or inside any supported archive (`song.cjcmcg`, `song.cjcmcg.xz`, a `.7z` holding a `.cjcmcg`, ...). Pick one like a MIDI and press **Process**; every overlay token then works as for a MIDI:
+
+| Available from a `.cjcmcg` | Not in the file |
+|---|---|
+| notes (`{nc}`, `{nc-total}`, `{nc-rem}`), NPS and peak NPS (fMCG's exact 1 s window), polyphony and peak, tempo / `{bpm}`, time tokens, ticks, `{ppqn}` | CC (`{cc*}` stay 0), lyrics (ignored: not an fMCG stat) |
+
+A `.cjcmcg` keeps only per-tick note-on / note-off **counts** (no pitches, velocities, channels or tracks), so:
+
+- velocity-0 note-ons count as notes (CJCMCG counted every note-on event); **Vel-0 as Note-Off** and **Close held notes** cannot be applied;
+- polyphony is note-ons minus note-offs, never below zero (a note-off with nothing held is ignored, like fMCG does for a key that is not held);
+- the song ends at the last note / tempo / lyric tick (the file has no End-of-Track events).
+
+For a MIDI without velocity-0 note-ons, a `.cjcmcg` made from it gives the same stats as the MIDI itself. CJCMCG's writer stores a placeholder tempo record at tick 0 (its internal value for 120 BPM, which would otherwise read as ~6 BPM); fMCG recognises it and uses the standard 120 BPM default.
 
 ## Output formats
 

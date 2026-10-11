@@ -5,6 +5,7 @@
 #include "fmcg_midi.h"
 
 #include <atomic>
+#include <functional>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -77,6 +78,7 @@ struct TickData {
     size_t desync_tracks = 0;
     uint64_t total_events_seen = 0;   // every event walked (ons+offs+CC+meta), matches live counter
     bool dedup_enabled = false;       // dedup fast path active for this scan
+    bool not_midi = false;            // the scanned stream does not start with MThd
     TrackDataDedup dedup;             // optional per-scan track-content cache
 
     void ensure(uint64_t t) {
@@ -123,6 +125,7 @@ struct TickData {
         runs.clear();
         max_tick = 0; total_ons = 0; ntracks = 0; desync_tracks = 0;
         total_events_seen = 0; total_cc = 0;
+        not_midi = false;
         dedup.reset();
     }
 };
@@ -132,6 +135,19 @@ struct TickData {
 //         0 = not applicable (not an xz layer chain): caller runs the standard scan,
 //        -1 = error (message already emitted).
 // Throws ScanCancelled on cancel.
+// CJCMCG preprocessed files (fmcg_cjcmcg.cpp). `read` pulls bytes like
+// DataSrc::read (short reads allowed, 0 = end); total_bytes = file size for
+// progress / sanity checks (0 = unknown, e.g. inside an archive). Fills td
+// (sparse cells), tempo_raw and the division like a MIDI scan.
+// Returns 1 = done; 0 = not a .cjcmcg while `sniffing` (nothing emitted,
+// reason in *why); -1 = invalid file (error emitted). Throws ScanCancelled.
+using ByteReader = std::function<size_t(void*, size_t)>;
+int scan_cjcmcg(const ByteReader& read, uint64_t total_bytes, TickData& td,
+                std::vector<TempoChange>& tempo_raw, uint16_t& out_division,
+                const ProgressCallbacks& cb, bool sniffing, bool vel0_as_note_off,
+                std::string* why = nullptr);
+bool has_cjcmcg_name(const std::string& filename);   // "*.cjcmcg" or "*.cjcmcg.<compression>"
+
 // risky: the opt-in "risky fast dedup" assumption (see process_streaming).
 int scan_layered(const std::string& filename, bool vel0_as_note_off, TickData& td,
                  std::vector<TempoChange>& tempo_raw, uint16_t& out_division,

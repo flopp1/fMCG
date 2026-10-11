@@ -1406,7 +1406,7 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
     };
 
     if (rd32() != 0x4D546864) {
-        emit(cb, "Error: not a MIDI file (missing MThd header).\n", true);
+        td.not_midi = true;   // process_streaming tries .cjcmcg, then reports
         return false;
     }
     int64_t hlen = rd32();
@@ -2910,6 +2910,7 @@ std::vector<FrameStats> process_streaming(
     out_total_notes = 0;
     out_total_ticks = 0;
     const bool compressed = is_compressed_file(filename);
+    const bool cj_name = has_cjcmcg_name(filename);   // CJCMCG preprocessed file (by name)
     emit(cb, "Reading and parsing \"" + filename + "\"" + (compressed ? " (compressed)" : "") + "...\n");
 
     try {
@@ -2934,6 +2935,7 @@ std::vector<FrameStats> process_streaming(
         emit(cb, "  Single sequential pass (" + std::string(compressed ? "libarchive" : "mmap") + " stream)...\n");
         clock::time_point t_scan = clock::now();
         bool two_pass = false;
+        bool is_cjcmcg = false;        // input was a CJCMCG preprocessed file
         uint64_t dec_bytes = 0;
         bool dec_err = false;
         double bound_cpu_s = 0.0;      // scan-thread CPU time (bound attribution)
@@ -2954,8 +2956,23 @@ std::vector<FrameStats> process_streaming(
                 return {};
             }
             const double cpu0 = thread_cpu_seconds();
-            bool layered_done = false;
-            if (track_dedup && compressed) {
+            bool layered_done = false;   // td filled by a non-MIDI-walk reader (layered / .cjcmcg)
+            DataSrc* cj_src = src.get();
+            const ByteReader cj_read = [&cj_src](void* d, size_t n) { return cj_src->read(d, n); };
+            if (cj_name) {
+                int cr = 0;
+                try {
+                    cr = scan_cjcmcg(cj_read, compressed ? 0 : src->total_bytes(), td, tempo_raw, division,
+                                     cb, /*sniffing=*/false, vel0_as_note_off);
+                } catch (const ScanCancelled&) {
+                    emit(cb, "  Cancelled.\n");
+                    return {};
+                }
+                if (cr < 0) return {};
+                layered_done = true;
+                is_cjcmcg = true;
+            }
+            if (!layered_done && track_dedup && compressed) {
                 // The layered walk reads the RAW file and does all decoding
                 // itself (it must see every compressed member boundary), so
                 // the pipelined decoder is not used for it.
@@ -3014,8 +3031,27 @@ std::vector<FrameStats> process_streaming(
                     // fire a second time; ACCUMULATE otherwise, whose guard
                     // may throw SpecAbort for the same low-memory restart.
                     if (!scan_any(*src, vel0_as_note_off, td, tempo_raw, division, cb,
-                                  two_pass ? ScanMode::TEMPO_ONLY : ScanMode::ACCUMULATE))
-                        return {};
+                                  two_pass ? ScanMode::TEMPO_ONLY : ScanMode::ACCUMULATE)) {
+                        if (!td.not_midi) return {};
+                        // Not a MIDI stream: it may be a CJCMCG preprocessed file
+                        // (e.g. an archive holding song.cjcmcg). Accepted only if
+                        // its whole structure parses to the end of the stream.
+                        src = open_src();
+                        cj_src = src.get();
+                        std::string why;
+                        const int cr = src->ok()
+                            ? scan_cjcmcg(cj_read, compressed ? 0 : src->total_bytes(), td, tempo_raw,
+                                          division, cb, /*sniffing=*/true, vel0_as_note_off, &why)
+                            : 0;
+                        if (cr != 1) {
+                            emit(cb, "Error: not a MIDI file (missing MThd header)"
+                                     + (why.empty() ? std::string() : " and not a CJCMCG .cjcmcg file (" + why + ")")
+                                     + ".\n", true);
+                            return {};
+                        }
+                        layered_done = true;
+                        is_cjcmcg = true;
+                    }
                 }
             } catch (const SpecAbort&) {
                 // Sequential path's spec prompt: same low-memory restart.
@@ -3052,7 +3088,8 @@ std::vector<FrameStats> process_streaming(
         if (!two_pass) {
             t_sweep = clock::now();
             out_division = division;
-            emit(cb, "  " + format_with_commas(td.ntracks) + (td.ntracks == 1 ? " track\n" : " tracks\n"));
+            if (!is_cjcmcg)   // a .cjcmcg has no track structure
+                emit(cb, "  " + format_with_commas(td.ntracks) + (td.ntracks == 1 ? " track\n" : " tracks\n"));
             if (td.desync_tracks > 0)
                 emit(cb, "Warning: " + std::to_string(td.desync_tracks)
                          + " track(s) consumed a different number of bytes than declared (possible parser desync).\n", true);

@@ -30,7 +30,8 @@ Pipeline today:
 |---|---|
 | `src/fmcg_engine.{h,cpp}` | engine (~3.2k lines): data sources, byte streams, MIDI event parser (`parse_track_body`), standard scan, parallel scan, two-pass fallback, tick->frame sweep, `process_streaming` entry |
 | `src/fmcg_layered.cpp` | **layered dedup** (~1.4k lines): xz grammar discovery + memoized byte-level transducer (see DESIGN.md) |
-| `src/fmcg_engine_internal.h` | engine-private shared types (`TickData`, `TrackSummary`, `scan_layered`) |
+| `src/fmcg_engine_internal.h` | engine-private shared types (`TickData`, `TrackSummary`, `scan_layered`, `scan_cjcmcg`) |
+| `src/fmcg_cjcmcg.cpp` | reader for CJCMCG `.cjcmcg` preprocessed files -> `TickData::sparse` + tempo list (then the normal sweep). Used by name (`*.cjcmcg*`) or when a stream is not MIDI (`TickData::not_midi` -> sniff; accepted only if it parses exactly to EOF). Format: `C:\Users\ethen\Downloads\CJCMCG_File_Format_Spec.md` (user-supplied); CJCMCG's synthetic first tempo record (5e9/resol) = 120 BPM default |
 | `src/fmcg_midi.{h,cpp}` | `FrameStats`, `ProgressCallbacks`, format detection, mmap reader |
 | `src/fmcg_format.{h,cpp}` | template tokens, comma/pad/BPM options, `FrameTextSource` (per-frame text, pieces, block spec) |
 | `src/fmcg_video.{h,cpp}` | encoders (x264 H.264, qtrle) + ISO-BMFF MP4/MOV writer + `render_video` (the Render button's loop) |
@@ -43,12 +44,12 @@ Pipeline today:
 | `gui/preview.cpp` | in-app live preview |
 | `gui/settings_store.*`, `gui/app_state.*` | persisted settings, shared cross-thread state |
 | `test/run_tests.py` | **single test entry point** (stdlib unittest; builds everything with g++) |
-| `test/suites/` | `test_dialects.py` (oracle property tests), `test_cpp.py` (C++ tests), `test_corpus.py` (plain differential, shrunk + full layered corpus) |
+| `test/suites/` | `test_dialects.py` (oracle property tests), `test_cpp.py` (C++ tests), `test_corpus.py` (plain differential, shrunk + full layered corpus), `test_cjcmcg.py` (MIDI vs its .cjcmcg: identical stats; edge cases) |
 | `test/fmcgtest/` | shared helpers: build, probe runner, paths, levels |
 | `test/fmcg_probe.cpp` | headless CLI over the engine (used by all automated tests) |
 | `test/dialects/` | generators (`gen.py`), brute-force oracle (`oracle.py`), table CLI (`run.py`) |
 | `test/cpp/` | C++ engine tests (newopts, twopass, parallel, dedup, burst_window, burst_fuzz, harness) + benchmarks (bench_throughput, test_tickspace) + test_text / test_layout / test_video / test_render (renderer, placement/cells/fit, encoders with bit-exact qtrle round trips + optional FFmpeg cross-decode, end to end) |
-| `test/tools/` | `shrink_layered.py` (rebuild a layered file with <= K repeats per run), `layered_inspect.py` / `layered_stream_cut.py` (sparse structure dumps of layered files, never full expansion), legacy CSV reference tools |
+| `test/tools/` | `cjcmcg_write.py` (port of CJCMCG's MIDI -> .cjcmcg writer, for tests), `shrink_layered.py` (rebuild a layered file with <= K repeats per run), `layered_inspect.py` / `layered_stream_cut.py` (sparse structure dumps of layered files, never full expansion), legacy CSV reference tools |
 | `test/data/`, `test/expected/` | small fixture MIDIs; verified full-corpus expected values |
 | `build.bat` / `bootstrap.bat` / `release.bat` | Windows build (w64devkit g++); `release.bat` also builds the Linux package through WSL via `release_linux.sh` and checks the exe imports only system DLLs. `.bat` files must stay CRLF (`.gitattributes`): LF breaks cmd's label lookup |
 | `build_deps.sh` | static libarchive + codecs for Windows (called by bootstrap.bat) |
@@ -60,7 +61,7 @@ Pipeline today:
 `build.bat` -> `fMCG_gui.exe`. Headless probe:
 ```
 L=vendor/libarchive/lib
-g++ -std=c++17 -O2 -DLIBARCHIVE_STATIC -I. -Isrc -Ivendor/libarchive src/fmcg_{midi,format,util,path,engine,layered}.cpp \
+g++ -std=c++17 -O2 -DLIBARCHIVE_STATIC -I. -Isrc -Ivendor/libarchive src/fmcg_{midi,format,util,path,engine,layered,cjcmcg}.cpp \
     test/fmcg_probe.cpp -o build/probe.exe $L/libarchive.a $L/libzstd.a $L/liblzma.a $L/liblz4.a \
     $L/libbz2.a $L/libzs.a -lbcrypt -lpthread -Wl,--stack,0x10000000
 ```
@@ -238,4 +239,5 @@ No content heuristics. See DESIGN.md.
   gymnopedie (6.3 vs 20.0 s), happy (6.4 vs 13.2 s), paprikas (0.4 vs 1.9 s); it never fires on
   "Just 1 note" or BSOD, whose big layers alternate/cycle members and never repeat one back to back.
   Goal 10 done (static libarchive; single-exe Windows release). All goals 1-10 done.
+  CJCMCG .cjcmcg input added (fmcg_cjcmcg.cpp; README section; test_cjcmcg.py).
 See OPEN_QUESTIONS.md "Corpus status" for the per-file table; update it every session.

@@ -39,7 +39,7 @@ def seeds():
 
 
 CORE = ["src/fmcg_midi.cpp", "src/fmcg_format.cpp", "src/fmcg_util.cpp", "src/fmcg_path.cpp",
-        "src/fmcg_engine.cpp", "src/fmcg_layered.cpp"]
+        "src/fmcg_engine.cpp", "src/fmcg_layered.cpp", "src/fmcg_cjcmcg.cpp"]
 CORE_FULL = CORE + ["src/fmcg_fonts.cpp"]
 # In-built renderer: HarfBuzz is compiled from the vendored amalgamation on
 # Windows and comes from the system (pkg-config) elsewhere.

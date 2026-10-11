@@ -119,7 +119,7 @@ ALL_CFLAGS := $(CXXFLAGS) $(GLFW_CFLAGS) $(ARCH_CFLAGS) $(RENDER_CFLAGS) $(IMGUI
 ALL_LIBS   := $(GLFW_LIBS) $(ARCH_LIBS) $(RENDER_LIBS) $(GL_LDLIBS) -lpthread
 
 CORE_SOURCES := src/fmcg_path.cpp src/fmcg_util.cpp src/fmcg_midi.cpp \
-                src/fmcg_engine.cpp src/fmcg_layered.cpp src/fmcg_format.cpp src/fmcg_fonts.cpp \
+                src/fmcg_engine.cpp src/fmcg_layered.cpp src/fmcg_cjcmcg.cpp src/fmcg_format.cpp src/fmcg_fonts.cpp \
                 src/fmcg_text.cpp src/fmcg_video.cpp
 CORE_OBJECTS := $(CORE_SOURCES:.cpp=.o)
 GUI_SOURCES  := gui/app_state.cpp gui/dialogs.cpp gui/jobs.cpp gui/preview.cpp gui/main.cpp \
