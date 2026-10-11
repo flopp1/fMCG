@@ -331,6 +331,70 @@ static void draw_typography_options() {
     ImGui::TreePop();
 }
 
+// Layout editor with real horizontal + vertical scrollbars. ImGui's multiline
+// input has none horizontally: it jumps sideways by a quarter of its width to
+// follow the cursor and snaps back when it loses focus. Instead the input is
+// sized to its text (never scrolls itself) inside a child window that scrolls
+// both ways; the child follows the text cursor while typing.
+static int layout_cursor_cb(ImGuiInputTextCallbackData* d) {
+    *(int*)d->UserData = d->CursorPos;
+    return 0;
+}
+
+static void draw_layout_editor() {
+    const ImGuiStyle& st = ImGui::GetStyle();
+    const char* text = g_ui.layout_buf;
+    const float line_h = ImGui::GetTextLineHeight();
+    float max_w = 0.0f;
+    int lines = 1;
+    for (const char* p = text;;) {
+        const char* e = std::strchr(p, '\n');
+        max_w = std::max(max_w, ImGui::CalcTextSize(p, e ? e : p + std::strlen(p)).x);
+        if (!e) break;
+        ++lines;
+        p = e + 1;
+    }
+    const float slack = ImGui::CalcTextSize("MM").x;   // room for the next typed characters
+
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, st.Colors[ImGuiCol_FrameBg]);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::BeginChild("##layout_area", ImVec2(-1, 120), ImGuiChildFlags_Borders,
+                      ImGuiWindowFlags_HorizontalScrollbar);
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const ImVec2 size(std::max(avail.x, max_w + 2.0f * st.FramePadding.x + slack),
+                      std::max(avail.y, lines * line_h + 2.0f * st.FramePadding.y + line_h));
+    static int cursor = -1, last_cursor = -1;
+    static int follow_frames = 0;   // re-apply for a few frames: the box grows a frame after the text
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);   // the child draws the border
+    ImGui::InputTextMultiline("##layout", g_ui.layout_buf, sizeof(g_ui.layout_buf), size,
+                              ImGuiInputTextFlags_CallbackAlways | ImGuiInputTextFlags_NoHorizontalScroll,
+                              layout_cursor_cb, &cursor);
+    ImGui::PopStyleVar();
+    if (ImGui::IsItemActive() && cursor >= 0 && cursor != last_cursor) follow_frames = 3;
+    if (ImGui::IsItemActive() && cursor >= 0 && follow_frames > 0) {
+        --follow_frames;
+        // Scroll the child so the cursor (moved by typing / arrow keys) stays visible.
+        const char* line_start = text;
+        int line = 0;
+        for (const char* p = text; p < text + cursor && *p; ++p)
+            if (*p == '\n') { ++line; line_start = p + 1; }
+        const float cx = st.FramePadding.x + ImGui::CalcTextSize(line_start, text + cursor).x;
+        const float cy = st.FramePadding.y + line * line_h;
+        const float vw = ImGui::GetWindowWidth() - (ImGui::GetScrollMaxY() > 0 ? st.ScrollbarSize : 0.0f);
+        const float vh = ImGui::GetWindowHeight() - (ImGui::GetScrollMaxX() > 0 ? st.ScrollbarSize : 0.0f);
+        const float margin = slack;
+        if (cx - margin < ImGui::GetScrollX()) ImGui::SetScrollX(std::max(0.0f, cx - margin));
+        else if (cx + margin > ImGui::GetScrollX() + vw) ImGui::SetScrollX(cx + margin - vw);
+        if (cy < ImGui::GetScrollY()) ImGui::SetScrollY(cy);
+        else if (cy + line_h + st.FramePadding.y > ImGui::GetScrollY() + vh)
+            ImGui::SetScrollY(cy + line_h + st.FramePadding.y - vh);
+    }
+    last_cursor = ImGui::IsItemActive() ? cursor : -1;
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+}
+
 // Pattern section: the overlay look, saved with the selected pattern (right column).
 static void draw_pattern_section() {
     // --- Pattern section: everything here is saved under the selected pattern
@@ -519,7 +583,7 @@ static void draw_pattern_section() {
 
     // Layout: one line per overlay row (pattern-saved).
     ImGui::Text("Layout (one line per overlay row; {nc}, {time-milli}, {bpm}, ...)");
-    ImGui::InputTextMultiline("##layout", g_ui.layout_buf, sizeof(g_ui.layout_buf), ImVec2(-1, 120));
+    draw_layout_editor();
     if (ImGui::Button("Stats list"))
         ImGui::OpenPopup("Valid layout stats");
     if (ImGui::IsItemHovered())
