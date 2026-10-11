@@ -177,13 +177,6 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
     else if (cfg.ass_alignment == 8) { pos_x = cfg.width / 2;   pos_y = 30; }             // Top Center
     else if (cfg.ass_alignment == 2) { pos_x = cfg.width / 2;   pos_y = cfg.height - 30; } // Bottom Center
 
-    double total_duration = frames.empty() ? 0.0 : frames.back().timestamp_sec;
-    // {time-max} / {sec-max} / {tick-rem} describe the MIDI SONG horizon, not
-    // the end-delay-extended video: subtract the tail the engine appended.
-    // {time} itself keeps counting past it and ends at the extended time.
-    double midi_duration = total_duration - cfg.end_delay;
-    if (midi_duration < 0.0) midi_duration = 0.0;
-    const double max_time_for_totals = midi_duration;
     // Per-frame clamping for custom positions: the text block must stay fully
     // on screen (bottom-right included). Block extents vary as counters grow
     // (e.g. "999 -> 1,000" gains a digit), so measure each frame's rendered
@@ -200,61 +193,104 @@ void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>
         if (pos_y > max_y) pos_y = max_y;
     };
 
-    // Start-delay lead-in: one Dialogue per frame with all-zero stats and
-    // negative current-time fields counting up to 0 at the song's first frame.
-    if (cfg.start_delay > 0.0 && !frames.empty()) {
-        FrameStats zero_fs;                       // all counters zero
-        zero_fs.bpm = frames.front().bpm;         // show the starting BPM, not 0
-        const double frame_dur = 1.0 / cfg.fps;
-        const long long n_delay = static_cast<long long>(std::ceil(cfg.start_delay * cfg.fps));
-        for (long long k = 0; k < n_delay; ++k) {
-            double t_start = k * frame_dur;
-            double t_end = (k + 1) * frame_dur;
-            if (t_end > cfg.start_delay) t_end = cfg.start_delay;
-            zero_fs.timestamp_sec = t_start - cfg.start_delay;   // negative song time
-            // Negative song ticks, counting up to 0: linear back-extrapolation
-            // at the initial tempo from the song's first frame (safe even when
-            // the first tempo change sits after tick 0).
-            const double us0 = 60000000.0 / (frames.front().bpm > 0.0 ? frames.front().bpm : 120.0);
-            zero_fs.tick = frames.front().tick
-                + (int64_t)std::llround(zero_fs.timestamp_sec
-                    * (double)ppqn * 1e6 / us0);
-            zero_fs.frame_index = (size_t)k;
-            std::string text_block;
-            std::vector<std::string> rendered;
-            for (size_t i = 0; i < template_lines.size(); ++i) {
-                std::string row = ProcessTemplateLine(template_lines[i], zero_fs, total_notes, 0, max_time_for_totals, ppqn, cfg.commas, cfg.pad, cfg.bpm, 0);
-                rendered.push_back(row);
-                text_block += row;
-                if (i + 1 < template_lines.size()) text_block += "\\N";
-            }
-            clamp_pos(rendered);
-            ass << "Dialogue: 0," << to_ass_time(t_start) << "," << to_ass_time(t_end)
-                << ",Default,,0,0,0,,{\\pos(" << pos_x << "," << pos_y << ")}" << text_block << "\n";
-        }
-    }
-
-    // Song frames (the engine already extends `frames` with the end-delay
-    // tail: resting stats, counting time, last-tempo ticks), offset by the
-    // start delay.
-    const double frame_dur = 1.0 / cfg.fps;
-    for (size_t fi = 0; fi < frames.size(); ++fi) {
-        const auto& f = frames[fi];
+    // Text per video frame comes from the shared FrameTextSource (the same
+    // source the preview and the in-built renderer use); only the ASS
+    // timing and \pos placement are specific to this writer.
+    FrameTextSource src;
+    src.frames = &frames;
+    src.template_lines = template_lines;
+    src.total_notes = total_notes;
+    src.total_cc = total_cc;
+    src.total_ticks = total_ticks;
+    src.ppqn = ppqn;
+    src.fps = cfg.fps;
+    src.start_delay = cfg.start_delay;
+    src.end_delay = cfg.end_delay;
+    src.commas = cfg.commas;
+    src.pad = cfg.pad;
+    src.bpm = cfg.bpm;
+    auto emit_frame = [&](size_t k, double t_start, double t_end) {
+        const std::vector<std::string> rendered = src.lines(k);
         std::string text_block;
-        std::vector<std::string> rendered;
-        for (size_t i = 0; i < template_lines.size(); ++i) {
-            std::string row = ProcessTemplateLine(template_lines[i], f, total_notes, total_cc, max_time_for_totals, ppqn, cfg.commas, cfg.pad, cfg.bpm, total_ticks);
-            rendered.push_back(row);
-            text_block += row;
-            if (i + 1 < template_lines.size()) text_block += "\\N";
+        for (size_t i = 0; i < rendered.size(); ++i) {
+            text_block += rendered[i];
+            if (i + 1 < rendered.size()) text_block += "\\N";
         }
         clamp_pos(rendered);
-
-        double t_start = f.timestamp_sec + cfg.start_delay;
-        double t_end = (fi + 1 < frames.size()) ? frames[fi + 1].timestamp_sec + cfg.start_delay
-                                                 : t_start + frame_dur;
         ass << "Dialogue: 0," << to_ass_time(t_start) << "," << to_ass_time(t_end)
             << ",Default,,0,0,0,,{\\pos(" << pos_x << "," << pos_y << ")}" << text_block << "\n";
+    };
+
+    // Start-delay lead-in frames, then the song frames (the engine already
+    // extends `frames` with the end-delay tail), offset by the start delay.
+    const double frame_dur = 1.0 / cfg.fps;
+    const size_t n_delay = src.lead_in_frames();
+    for (size_t k = 0; k < n_delay; ++k) {
+        double t_start = (double)k * frame_dur;
+        double t_end = (double)(k + 1) * frame_dur;
+        if (t_end > cfg.start_delay) t_end = cfg.start_delay;
+        emit_frame(k, t_start, t_end);
+    }
+    for (size_t fi = 0; fi < frames.size(); ++fi) {
+        double t_start = frames[fi].timestamp_sec + cfg.start_delay;
+        double t_end = (fi + 1 < frames.size()) ? frames[fi + 1].timestamp_sec + cfg.start_delay
+                                                 : t_start + frame_dur;
+        emit_frame(n_delay + fi, t_start, t_end);
     }
     ass.close();
+}
+
+
+// ---- FrameTextSource ---------------------------------------------------------
+
+size_t FrameTextSource::lead_in_frames() const {
+    if (!(start_delay > 0.0) || !frames || frames->empty()) return 0;
+    return (size_t)static_cast<long long>(std::ceil(start_delay * fps));
+}
+
+size_t FrameTextSource::frame_count() const {
+    return lead_in_frames() + (frames ? frames->size() : 0);
+}
+
+double FrameTextSource::song_duration() const {
+    // {time-max} / {sec-max} / {tick-rem} describe the MIDI SONG horizon, not
+    // the end-delay-extended video: subtract the tail the engine appended.
+    // {time} itself keeps counting past it and ends at the extended time.
+    const double total = (!frames || frames->empty()) ? 0.0 : frames->back().timestamp_sec;
+    const double d = total - end_delay;
+    return d < 0.0 ? 0.0 : d;
+}
+
+FrameStats FrameTextSource::stats(size_t k) const {
+    const size_t n = lead_in_frames();
+    if (k >= n) {
+        if (!frames || frames->empty()) return FrameStats{};
+        const size_t i = k - n;
+        return (*frames)[i < frames->size() ? i : frames->size() - 1];
+    }
+    // Lead-in: all counters zero, negative current-time fields counting up
+    // to 0 at the song's first frame.
+    FrameStats z;
+    z.bpm = frames->front().bpm;                  // show the starting BPM, not 0
+    z.timestamp_sec = (double)k * (1.0 / fps) - start_delay;
+    // Negative song ticks, counting up to 0: linear back-extrapolation at the
+    // initial tempo from the song's first frame (safe even when the first
+    // tempo change sits after tick 0).
+    const double us0 = 60000000.0 / (frames->front().bpm > 0.0 ? frames->front().bpm : 120.0);
+    z.tick = frames->front().tick + (int64_t)std::llround(z.timestamp_sec * (double)ppqn * 1e6 / us0);
+    z.frame_index = k;
+    return z;
+}
+
+std::vector<std::string> FrameTextSource::lines(size_t k) const {
+    const bool lead_in = k < lead_in_frames();
+    const FrameStats fs = stats(k);
+    const double max_time = song_duration();
+    std::vector<std::string> out;
+    out.reserve(template_lines.size());
+    for (const std::string& t : template_lines)
+        out.push_back(lead_in
+            ? ProcessTemplateLine(t, fs, total_notes, 0, max_time, ppqn, commas, pad, bpm, 0)
+            : ProcessTemplateLine(t, fs, total_notes, total_cc, max_time, ppqn, commas, pad, bpm, total_ticks));
+    return out;
 }

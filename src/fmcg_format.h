@@ -34,6 +34,28 @@ std::string ProcessTemplateLine(const std::string& line, const FrameStats& fs,
                                 const CommaOpts& commas = {}, PadOpts pad = {},
                                 BpmOpts bpm = {}, uint64_t total_ticks = 0);
 
+// Overlay text for every VIDEO frame -- shared by the ASS writer, the preview
+// and the in-built renderer so they can never disagree. Video frame k is a
+// start-delay lead-in frame (k < lead_in_frames(): zero stats, negative
+// time/ticks, starting BPM) or song frame k - lead_in_frames() (the engine's
+// frames already include the end-delay tail).
+struct FrameTextSource {
+    const std::vector<FrameStats>* frames = nullptr;
+    std::vector<std::string> template_lines;
+    uint64_t total_notes = 0, total_cc = 0, total_ticks = 0;
+    uint16_t ppqn = 480;
+    double fps = 60.0, start_delay = 0.0, end_delay = 0.0;
+    CommaOpts commas;
+    PadOpts pad;
+    BpmOpts bpm;
+
+    size_t lead_in_frames() const;              // ceil(start_delay * fps), 0 without frames
+    size_t frame_count() const;                 // lead-in + song frames
+    double song_duration() const;               // MIDI horizon ({time-max}); tail excluded
+    FrameStats stats(size_t k) const;
+    std::vector<std::string> lines(size_t k) const;
+};
+
 struct AssConfig {
     int width = 1920;
     int height = 1080;

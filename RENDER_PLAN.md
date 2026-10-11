@@ -109,7 +109,7 @@ the FFmpeg requirement in README, `test/cpp/test_ffspawn.cpp`, `test/cpp/test_do
 - Muxer structure tests: box tree, sample counts == frames, duration == frames / fps.
 
 ## 4. Implementation order
-1. FrameText refactor (behaviour-neutral; ASS output byte-identical -> regression test).
+1. DONE: FrameText refactor (`FrameTextSource` in fmcg_format; ASS output verified byte-identical on 4 configs).
 2. Text layout + raster (stb_truetype; HarfBuzz if chosen) + golden tests.
 3. Preview switched to the raster canvas (WYSIWYG) -- shippable on its own.
 4. qtrle encoder + MOV muxer + render thread; GUI output format selector; tests.
