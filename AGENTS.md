@@ -1,6 +1,6 @@
 # AGENTS.md -- read this first (any AI agent / new contributor)
 
-Companion docs in the repo root: `DESIGN.md` (layered-dedup design), `DIALECTS.md`
+Companion docs in the repo root: `DESIGN.md` (layered-dedup design), `RENDER_PLAN.md` (goal 3 renderer plan + decisions), `DIALECTS.md`
 (test constructions), `OPEN_QUESTIONS.md` (decisions + unresolved files), `README.md`
 (user-facing build/usage). `CLAUDE.md` just imports this file.
 
@@ -141,7 +141,7 @@ No content heuristics. See DESIGN.md.
 2. DONE (session 3): layered dedup fixed and verified on all 8 files in
    `FMCG_TEST_FILES/LAYERED_COMPRESSED` (OPEN_QUESTIONS.md table); Windows + Linux builds;
    `test/` consolidated into `test/run_tests.py`. The standard (non-dedup) path stays the reference.
-3. NEXT: replace ASS+FFmpeg render with an in-built renderer (text + background drawn in-app),
+3. NEXT (plan + user decisions in RENDER_PLAN.md): replace ASS+FFmpeg render with an in-built renderer (text + background drawn in-app),
    using only a lightweight encoder + muxer.
 4. Typography options under Advanced: kerning, OpenType stylistic sets, old-style numerals, etc.
 5. Resolution limits so text never overflows the frame in preview or render (re-check after 3).
@@ -151,6 +151,20 @@ No content heuristics. See DESIGN.md.
    threads, output path) -> action buttons -> progress -> log. New layout: MIDI File input area stays
    on top; BELOW it, Global on the LEFT and Pattern on the RIGHT, side by side (e.g. two columns /
    child regions). Do NOT change any individual option inside either group -- only move the groups.
+7. Fixed-width cells (added 2026-10-11; AFTER goal 3, since the in-built renderer controls glyph
+   placement directly): let a stat occupy a fixed-width cell (e.g. width of its widest possible value,
+   or a user-set width, with alignment inside the cell) so several stats on one line no longer shift
+   left/right as digit counts and proportional glyph widths change frame to frame.
+8. Risky fast dedup (added 2026-10-11): a SEPARATE opt-in checkbox beside "Dedup". Rule: when a
+   layer's total size is an exact multiple of its FIRST tile (member) size, assume the whole layer is
+   that tile repeated (size / tile) times and skip cutting/decoding the rest of the layer. Show a clear
+   warning next to the option: only use it on files where a layer can never be an exact multiple of
+   its first tile while being made of different tiles -- otherwise the counts are silently wrong.
+   Design notes: this is the one place a silent wrong answer is accepted by the user's choice, so the
+   log must state that the assumption was applied (which layer, tile size, multiplicity). Where the
+   layer size comes from: the xz index's declared uncompressed size of the parent member (free), so
+   the payload never needs decoding past the first tile. Must stay off by default, and the test suite
+   must not depend on it (add dialect cases that show both a correct and a wrong-by-design result).
 
 ## 7. Status log
 - Session 3 (2026-10-10, Claude Code): layered dedup rewritten (fmcg_layered.cpp); all 8
