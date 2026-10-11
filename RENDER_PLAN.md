@@ -118,7 +118,10 @@ the FFmpeg requirement in README, `test/cpp/test_ffspawn.cpp`, `test/cpp/test_do
    (b35605ac) + NASM 3.02 via bootstrap.bat (SHA-256 pinned); Linux via pkg-config.
    Behaviour fix vs ASS: custom x,y really is the block's TOP-LEFT (libass anchored \pos at the
    selected corner alignment).
-3. Preview switched to the raster canvas (WYSIWYG) -- shippable on its own.
+3. DONE (needs a visual check by the user): preview shows the renderer's own frame (`draw_canvas` in
+   gui/preview.cpp: FrameRenderer at video resolution, dirty-rect GL texture upload, scaled to fit with a
+   neutral letterbox so the frame edges are visible); processed preview takes its text from
+   FrameTextSource (identical to the encoder). The ASS + FFmpeg render path is still what Render uses.
 4. qtrle encoder + MOV muxer + render thread; GUI output format selector; tests.
 5. H.264 (if chosen): x264 integration + MP4 (avcC) + bootstrap/release/README updates.
 6. Remove FFmpeg path, update README / AGENTS / THIRD_PARTY_LICENSES.

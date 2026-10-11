@@ -3,6 +3,7 @@
 #include "jobs.h"
 
 #include "imgui.h"
+#include "fmcg_text.h"
 #include <GLFW/glfw3.h>
 
 #include <sstream>
@@ -11,7 +12,97 @@
 #include <cmath>
 
 
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F   // GL 1.2; Windows' gl.h stops at 1.1
+#endif
+
 namespace fmcg_preview {
+
+// ---- WYSIWYG canvas ------------------------------------------------------------
+// The preview shows the in-built renderer's own RGBA frame (src/fmcg_text), so
+// font, metrics, placement and clamping are exactly what gets encoded. Only the
+// changed rectangle is uploaded to the GL texture each frame.
+namespace {
+struct CanvasPreview {
+    fmcg_text::FrameRenderer fr;
+    GLuint tex = 0;
+    int tex_w = 0, tex_h = 0;
+    std::string key;                       // settings the canvas was built with
+    std::vector<std::string> last_lines;
+    bool ok = false;
+    std::string err;
+};
+CanvasPreview g_cp;
+
+std::string canvas_key() {
+    std::ostringstream k;
+    k << g_app.font_family << '|' << g_app.font_variant << '|' << g_app.font_size << '|'
+      << g_app.text_colour_ass << '|' << g_app.bg_colour_ass << '|' << g_app.vid_width << 'x'
+      << g_app.vid_height << '|' << g_app.pos_mode << '|' << g_app.pos_x << ',' << g_app.pos_y << '|'
+      << g_app.ass_alignment;
+    return k.str();
+}
+
+// Renders `lines` and draws the frame scaled to fit the current content region.
+void draw_canvas(const std::vector<std::string>& lines) {
+    const std::string key = canvas_key();
+    const int W = std::max(16, g_app.vid_width), H = std::max(16, g_app.vid_height);
+    if (key != g_cp.key) {
+        g_cp.key = key;
+        g_cp.last_lines.clear();
+        fmcg_text::TextStyle st;
+        st.font_file = find_font_file_for_variant(g_app.font_family, g_app.font_variant);
+        st.size = g_app.font_size;
+        st.colour = fmcg_text::from_ass_colour(g_app.text_colour_ass);
+        fmcg_text::Placement pl;
+        pl.frame_w = W; pl.frame_h = H;
+        pl.pos_mode = g_app.pos_mode; pl.pos_x = g_app.pos_x; pl.pos_y = g_app.pos_y;
+        pl.alignment = g_app.ass_alignment;
+        const fmcg_text::RGBA bg = fmcg_text::from_ass_colour(g_app.bg_colour_ass) | 0xFFu;   // opaque video bg
+        g_cp.err.clear();
+        g_cp.ok = g_cp.fr.init(st, pl, bg, &g_cp.err);
+        if (!g_cp.tex) glGenTextures(1, &g_cp.tex);
+        glBindTexture(GL_TEXTURE_2D, g_cp.tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                     g_cp.fr.canvas().px.data());
+        g_cp.tex_w = W; g_cp.tex_h = H;
+    }
+    if (g_cp.ok && lines != g_cp.last_lines) {
+        const fmcg_text::Canvas& c = g_cp.fr.render(lines);
+        g_cp.last_lines = lines;
+        const fmcg_text::Rect d = g_cp.fr.dirty().clipped(c.w, c.h);
+        if (!d.empty()) {
+            glBindTexture(GL_TEXTURE_2D, g_cp.tex);
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, c.w);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, d.x, d.y, d.w, d.h, GL_RGBA, GL_UNSIGNED_BYTE,
+                            c.px.data() + ((size_t)d.y * c.w + d.x) * 4);
+            glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        }
+    }
+    const ImVec2 area = ImGui::GetContentRegionAvail();
+    const float s = std::min(area.x / (float)g_cp.tex_w, area.y / (float)g_cp.tex_h);
+    const ImVec2 size((float)g_cp.tex_w * s, (float)g_cp.tex_h * s);
+    const ImVec2 cur = ImGui::GetCursorPos();
+    ImGui::SetCursorPos(ImVec2(cur.x + (area.x - size.x) / 2, cur.y + (area.y - size.y) / 2));
+    ImGui::Image((ImTextureID)(intptr_t)g_cp.tex, size);
+    if (!g_cp.ok) {
+        ImGui::SetCursorPos(ImVec2(cur.x + 8, cur.y + 8));
+        ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "Font error: %s", g_cp.err.c_str());
+    }
+}
+
+std::vector<std::string> split_lines(const std::string& text) {
+    std::vector<std::string> lines;
+    std::istringstream stream(text);
+    std::string ln;
+    while (std::getline(stream, ln)) lines.push_back(ln);
+    return lines;
+}
+} // namespace
 
 std::string format_frame_text(const FrameStats& fs) {
     std::string result;
@@ -129,19 +220,9 @@ void render_pattern_only_popup() {
             ImVec2 wp0 = ImGui::GetCursorScreenPos();
             ImVec2 area0 = ImGui::GetContentRegionAvail();
             dl->AddRectFilled(wp0, ImVec2(wp0.x + area0.x, wp0.y + area0.y),
-                              ass_colour_to_imcol32(g_app.bg_colour_ass));
+                              IM_COL32(24, 24, 24, 255));   // letterbox: the frame itself carries the video background
         }
 
-        float preview_scale = (g_app.vid_width > 0) ? ImGui::GetContentRegionAvail().x / (float)g_app.vid_width : 0.0f;
-        float desired_px = (float)g_app.font_size * preview_scale;
-        if (desired_px < 4.0f) desired_px = 4.0f;
-        if (desired_px > 256.0f) desired_px = 256.0f;
-        if (!g_app.preview_font && !g_app.preview_font_reload.load() && !g_app.font_family.empty())
-            g_app.preview_font_reload = true;
-
-        // Layout fallback: the mirror is normally snapped on Preview click, but
-        // guard anyway -- an empty template list would render nothing and leave
-        // the cursor moved with no item submitted (ImGui assert).
         if (g_app.template_lines.empty()) {
             g_app.template_lines.push_back("Time: {time-milli}/{time-milli-max}");
             g_app.template_lines.push_back("Notes: {nc}/{nc-total}/{nc-rem}");
@@ -153,71 +234,7 @@ void render_pattern_only_popup() {
         FrameStats zero_fs;
         zero_fs.timestamp_sec = g_app.preview_time - g_app.start_delay;
         std::string text = format_frame_text(zero_fs);
-        std::vector<std::string> lines;
-        {
-            std::istringstream stream(text);
-            std::string ln;
-            while (std::getline(stream, ln)) lines.push_back(ln);
-        }
-
-        ImGui::PushStyleColor(ImGuiCol_Text, ass_colour_to_imgui(g_app.text_colour_ass));
-        if (g_app.preview_font) ImGui::PushFont(g_app.preview_font, desired_px);
-        float line_h = ImGui::GetTextLineHeightWithSpacing();
-        float total_text_h = line_h * (float)lines.size();
-        float area_w = ImGui::GetContentRegionAvail().x;
-        float area_h = ImGui::GetContentRegionAvail().y;
-        float margin = 30.0f * preview_scale;
-        if (margin < 4.0f) margin = 4.0f;
-
-        float max_tw = 0;
-        for (auto& ln : lines) {
-            float w = ImGui::CalcTextSize(ln.c_str()).x;
-            if (w > max_tw) max_tw = w;
-        }
-
-        int a = g_app.ass_alignment;
-        bool left  = (a == 7 || a == 1 || a == 8 || a == 2);   // L, and centers
-        bool top   = (a == 7 || a == 9 || a == 8);
-        float x_off, y_off;
-        if (g_app.pos_mode == 1) {
-            // Mirror the generator's bottom-right clamp: shift the anchor so
-            // the whole block stays visible (same 0.62em/char estimate).
-            float est_w = 0.0f;
-            for (auto& ln : lines) {
-                float w = (float)ln.size() * 0.62f * (float)g_app.font_size * preview_scale;
-                if (w > est_w) est_w = w;
-            }
-            float est_h = (float)lines.size() * 1.50f * (float)g_app.font_size * preview_scale;
-            x_off = (float)g_app.pos_x * preview_scale;
-            y_off = (float)g_app.pos_y * preview_scale;
-            if (x_off > area_w - est_w) x_off = area_w - est_w;
-            if (y_off > area_h - est_h) y_off = area_h - est_h;
-            if (x_off < 0) x_off = 0;
-            if (y_off < 0) y_off = 0;
-        } else {
-            x_off = left ? ((a == 8 || a == 2) ? area_w / 2 - max_tw / 2 : margin)
-                         : area_w - max_tw - margin;
-            y_off = top  ? margin : area_h - total_text_h - margin;
-            if (y_off < margin) y_off = margin;
-            if (x_off < margin) x_off = margin;
-        }
-        // Hard clamp: never place the cursor at/after the child's edge, or
-        // ImGui asserts on cursor-beyond-boundaries when text is empty.
-        if (x_off > area_w - 1.0f) x_off = area_w - 1.0f;
-        if (y_off > area_h - 1.0f) y_off = area_h - 1.0f;
-        if (x_off < 0.0f) x_off = 0.0f;
-        if (y_off < 0.0f) y_off = 0.0f;
-
-        ImGui::SetCursorPos(ImVec2(x_off, y_off));
-        for (size_t i = 0; i < lines.size(); ++i) {
-            if (i > 0) ImGui::SetCursorPosX(x_off);
-            ImGui::TextUnformatted(lines[i].c_str());
-        }
-        if (g_app.preview_font) ImGui::PopFont();
-        ImGui::PopStyleColor();
-        // Submit an item so the window grows over any cursor movement (the
-        // SetCursorPos + empty-text combination would otherwise assert).
-        ImGui::Dummy(ImVec2(4.0f, 4.0f));
+        draw_canvas(split_lines(text));
 
         ImGui::EndChild();
 
@@ -341,108 +358,29 @@ void render_preview_popup() {
             ImVec2 wp0 = ImGui::GetCursorScreenPos();
             ImVec2 area = ImGui::GetContentRegionAvail();
             dl->AddRectFilled(wp0, ImVec2(wp0.x + area.x, wp0.y + area.y),
-                              ass_colour_to_imcol32(g_app.bg_colour_ass));
+                              IM_COL32(24, 24, 24, 255));   // letterbox: the frame itself carries the video background
         }
 
-        // Render text
+        // Render text: the in-built renderer's frame for this video frame
+        // (same FrameTextSource as the encoder: lead-in, song and tail).
         if (!g_app.frames_data.empty() && total_len > 0) {
-            // Scale video-resolution values (ASS Fontsize / 30px margins, PlayRes
-            // = video width x height) into the preview area, which shows the
-            // full video frame scaled by preview_width / video_width.
-            float preview_scale = (g_app.vid_width > 0) ? ImGui::GetContentRegionAvail().x / (float)g_app.vid_width : 0.0f;
-            float desired_px = (float)g_app.font_size * preview_scale;
-            if (desired_px < 4.0f) desired_px = 4.0f;
-            if (desired_px > 256.0f) desired_px = 256.0f;
-            if (!g_app.preview_font && !g_app.preview_font_reload.load() && !g_app.font_family.empty())
-                g_app.preview_font_reload = true;   // picked up before the next frame
-
-            // Start-delay lead-in: stats all at zero, current-time fields run
-            // negative and count up to 0, same text the video shows there.
-            // Same child + controls as the song branch (unified layout).
-            bool in_delay = g_app.preview_time < g_app.start_delay;
-            FrameStats delay_fs;
-            const FrameStats* fs_ptr;
-            if (in_delay) {
-                delay_fs.bpm = g_app.frames_data.front().bpm;
-                delay_fs.timestamp_sec = g_app.preview_time - g_app.start_delay;
-                // Negative song ticks counting up to 0, matching the ASS
-                // delay block: linear back-extrapolation at the initial
-                // tempo from the song's first frame (safe even when the
-                // first tempo change sits after tick 0).
-                const FrameStats& front = g_app.frames_data.front();
-                const double us0 = 60000000.0 / (front.bpm > 0.0 ? front.bpm : 120.0);
-                delay_fs.tick = front.tick
-                    + (int64_t)std::llround(delay_fs.timestamp_sec
-                        * (double)g_app.ppqn * 1e6 / us0);
-                fs_ptr = &delay_fs;
-            } else {
-                // Song and end-delay tail alike: the engine's frames vector
-                // already carries tail frames (resting stats, counting time,
-                // last-tempo ticks); find_frame returns the latest one at or
-                // before the song time.
-                fs_ptr = &find_frame(g_app.preview_time - g_app.start_delay);
-            }
-            const FrameStats& fs = *fs_ptr;
-            std::string text = format_frame_text(fs);
-
-            std::vector<std::string> lines;
-            {
-                std::istringstream stream(text);
-                std::string ln;
-                while (std::getline(stream, ln)) lines.push_back(ln);
-            }
-
-            ImGui::PushStyleColor(ImGuiCol_Text, ass_colour_to_imgui(g_app.text_colour_ass));
-            if (g_app.preview_font) ImGui::PushFont(g_app.preview_font, desired_px);
-            float line_h = ImGui::GetTextLineHeightWithSpacing();
-            float total_text_h = line_h * (float)lines.size();
-            float area_w = ImGui::GetContentRegionAvail().x;
-            float area_h = ImGui::GetContentRegionAvail().y;
-            float margin = 30.0f * preview_scale;
-            if (margin < 4.0f) margin = 4.0f;
-
-            float max_tw = 0;
-            for (auto& ln : lines) {
-                float w = ImGui::CalcTextSize(ln.c_str()).x;
-                if (w > max_tw) max_tw = w;
-            }
-
-            int a = g_app.ass_alignment;
-            bool left = (a == 7 || a == 1 || a == 8 || a == 2);   // L, and centers
-            bool top  = (a == 7 || a == 9 || a == 8);
-
-            float x_off, y_off;
-            if (g_app.pos_mode == 1) {
-                // Explicit placement: (pos_x,pos_y) in video pixels anchors the
-                // text block's TOP-LEFT (matches the \pos(...,7) in the ASS).
-                // Bottom-right clamp parity with the generator (0.62em/char).
-                float est_w = 0.0f;
-                for (auto& ln : lines) {
-                    float w = (float)ln.size() * 0.62f * (float)g_app.font_size * preview_scale;
-                    if (w > est_w) est_w = w;
-                }
-                float est_h = (float)lines.size() * 1.50f * (float)g_app.font_size * preview_scale;
-                x_off = (float)g_app.pos_x * preview_scale;
-                y_off = (float)g_app.pos_y * preview_scale;
-                if (x_off > area_w - est_w) x_off = area_w - est_w;
-                if (y_off > area_h - est_h) y_off = area_h - est_h;
-                if (x_off < 0) x_off = 0;
-                if (y_off < 0) y_off = 0;
-            } else {
-                x_off = left ? ((a == 8 || a == 2) ? area_w / 2 - max_tw / 2 : margin)
-                             : area_w - max_tw - margin;
-                y_off = top  ? margin : area_h - total_text_h - margin;
-                if (y_off < margin) y_off = margin;
-                if (x_off < margin) x_off = margin;
-            }
-
-            ImGui::SetCursorPos(ImVec2(x_off, y_off));
-            for (size_t i = 0; i < lines.size(); ++i) {
-                if (i > 0) ImGui::SetCursorPosX(x_off);
-                ImGui::TextUnformatted(lines[i].c_str());
-            }
-            if (g_app.preview_font) ImGui::PopFont();
-            ImGui::PopStyleColor();
+            FrameTextSource src;
+            src.frames = &g_app.frames_data;
+            src.template_lines = g_app.template_lines;
+            src.total_notes = g_app.total_notes;
+            src.total_cc = g_app.frames_data.back().cumulative_cc;
+            src.total_ticks = g_app.total_ticks;
+            src.ppqn = g_app.ppqn;
+            src.fps = g_app.fps > 0 ? g_app.fps : 60.0;
+            src.start_delay = g_app.start_delay;
+            src.end_delay = g_app.end_delay;
+            src.commas = g_app.preview_commas;
+            src.pad = g_app.preview_pad;
+            src.bpm = g_app.preview_bpm;
+            const size_t nf = src.frame_count();
+            size_t k = (size_t)std::max(0.0, std::floor(g_app.preview_time * src.fps + 1e-9));
+            if (nf && k >= nf) k = nf - 1;
+            draw_canvas(src.lines(k));
         } else {
             const char* msg = "No preview data";
             ImVec2 ts = ImGui::CalcTextSize(msg);

@@ -12,3 +12,4 @@
 #include "src/fmcg_format.h"
 #include "src/fmcg_fonts.h"
 #include "src/fmcg_render.h"
+#include "src/fmcg_text.h"
