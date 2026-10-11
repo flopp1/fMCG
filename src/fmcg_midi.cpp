@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <algorithm>
 #include "fmcg_engine.h"
+#include "fmcg_path.h"   // fopen_utf8
 
 // ---------------------------------------------------------------------------
 // Compressed archive magic detection
@@ -33,7 +34,7 @@ bool is_compressed_magic(const uint8_t* m, size_t n) {
     return false;
 }
 static size_t read_file_header(const std::string& path, uint8_t* out, size_t n) {
-    FILE* f = fopen(path.c_str(), "rb");
+    FILE* f = fopen_utf8(path, "rb");
     if (!f) return 0;
     size_t r = fread(out, 1, n, f);
     fclose(f);
@@ -165,7 +166,7 @@ BinaryReader::BinaryReader(BinaryReader&& o) noexcept
     fd = o.fd; o.fd = -1;
 #endif
     o.mmap_ptr = nullptr;
-    o.buf = std::move(buf); o.buf_pos = 0; o.buf_len = 0;
+    buf = std::move(o.buf); o.buf_pos = 0; o.buf_len = 0;   // take the read buffer (was moved the wrong way)
 }
 
 size_t BinaryReader::read_raw(void* dst, size_t n) {

@@ -28,7 +28,10 @@ void run_process(GuiSettings s) {
     app.busy = true;
     app.done = false;
     app.progress.store(0.0f);
-    app.log_lines.clear();
+    {   // the UI thread iterates the log under this mutex every frame
+        std::lock_guard<std::mutex> lk(app.log_mutex);
+        app.log_lines.clear();
+    }
     app.result_path.clear();
     app.processed = false;
     app.cancel = false;   // clearing here too: a previous cancelled op must not abort this scan
@@ -185,7 +188,10 @@ void run_render(RenderSettings s) {
     app.cancel = false;   // a cancelled previous render must not kill this one
     app.progress.store(0.0f);
     app.render_speed.store(0.0f);
-    app.log_lines.clear();
+    {   // the UI thread iterates the log under this mutex every frame
+        std::lock_guard<std::mutex> lk(app.log_mutex);
+        app.log_lines.clear();
+    }
     app.result_path.clear();
     app.render_active = true;
 

@@ -33,13 +33,18 @@ std::string rrggbb_to_ass(const std::string& rrggbb) {
 }
 
 bool EditColour(const char* label, std::string& rrggbb) {
-    // Normalise current value into float components.
-    if (rrggbb.size() != 6) rrggbb = "FFFFFF";
-    float col[3] = {
-        (float)std::stoul(rrggbb.substr(0, 2), nullptr, 16) / 255.0f,
-        (float)std::stoul(rrggbb.substr(2, 2), nullptr, 16) / 255.0f,
-        (float)std::stoul(rrggbb.substr(4, 2), nullptr, 16) / 255.0f,
+    // Normalise current value into float components. Never throws: the value
+    // can come from a hand-edited pattern file (stoul on "GG" crashed the UI).
+    auto nib = [](char c) {
+        return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
+             : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
     };
+    bool valid = rrggbb.size() == 6;
+    for (size_t i = 0; valid && i < 6; ++i) valid = nib(rrggbb[i]) >= 0;
+    if (!valid) rrggbb = "FFFFFF";
+    float col[3];
+    for (int i = 0; i < 3; ++i)
+        col[i] = (float)(nib(rrggbb[2 * i]) * 16 + nib(rrggbb[2 * i + 1])) / 255.0f;
 
     ImGui::PushID(label);
     // The swatch itself opens the compact picker popup.

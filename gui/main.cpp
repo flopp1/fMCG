@@ -549,6 +549,7 @@ static void draw_pattern_section() {
             std::string cfg_cmd;
 #if defined(_WIN32)
             cfg_cmd = "powershell -NoProfile -Command \""
+                  "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "   // UTF-8 path on stdout
                   "Add-Type -AssemblyName System.Windows.Forms; "
                   "$f = New-Object System.Windows.Forms.OpenFileDialog; "
                   "$f.Filter = 'Text files (*.txt)|*.txt|All files (*.*)|*.*'; "
@@ -573,7 +574,7 @@ static void draw_pattern_section() {
     {
         std::string result = poll_dialog_result("layout");
         if (!result.empty()) {
-            std::ifstream lf(result.c_str());
+            std::ifstream lf(path_from_utf8(result));
             std::string content, line;
             while (std::getline(lf, line)) {
                 content += line;
@@ -935,17 +936,23 @@ static void draw_global_section() {
         if (odialog_active) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
         if (ImGui::Button("Browse##out") && !odialog_active) {
             std::string cmd;
+            // The filter follows the chosen format: a fixed MP4 filter made the
+            // dialog append ".mp4" to QuickTime (MOV) output.
+            const bool mov_out = g_ui.s.output_format == 1;
 #if defined(_WIN32)
-            cmd = "powershell -NoProfile -Command \""
+            cmd = std::string("powershell -NoProfile -Command \""
+                  "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "   // UTF-8 path on stdout
                   "Add-Type -AssemblyName System.Windows.Forms; "
-                  "$f = New-Object System.Windows.Forms.SaveFileDialog; "
-                  "$f.Filter = 'MP4 video (*.mp4)|*.mp4|All files (*.*)|*.*'; "
-                  "$f.Title = 'Select output video'; "
+                  "$f = New-Object System.Windows.Forms.SaveFileDialog; ")
+                  + (mov_out ? "$f.Filter = 'QuickTime movie (*.mov)|*.mov|All files (*.*)|*.*'; "
+                             : "$f.Filter = 'MP4 video (*.mp4)|*.mp4|All files (*.*)|*.*'; ")
+                  + "$f.Title = 'Select output video'; "
                   "if ($f.ShowDialog() -eq 'OK') { $f.FileName }\"";
 #elif defined(__APPLE__)
             cmd = "osascript -e 'tell application \"System Events\" to set f to (choose file name with prompt \"Select output video\") as alias' -e 'POSIX path of f'";
 #else
-            cmd = "zenity --file-selection --save --title='Select output video' --file-filter='MP4 video | *.mp4' 2>/dev/null || "
+            cmd = std::string("zenity --file-selection --save --title='Select output video' --file-filter='")
+                  + (mov_out ? "QuickTime movie | *.mov" : "MP4 video | *.mp4") + "' 2>/dev/null || "
                   "kdialog --getsavefilename . 'Select output video' 2>/dev/null";
 #endif
             launch_dialog(cmd, "output");
@@ -997,6 +1004,7 @@ static void draw_frame(GLFWwindow* window) {
             std::string cmd;
 #if defined(_WIN32)
             cmd = "powershell -NoProfile -Command \""
+                  "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "   // UTF-8 path on stdout
                   "Add-Type -AssemblyName System.Windows.Forms; "
                   "$f = New-Object System.Windows.Forms.OpenFileDialog; "
                   "$f.Filter = 'MIDI, CJCMCG & archives (*.mid;*.midi;*.cjcmcg;*.7z;*.xz;*.rar;*.gz;*.bz2;*.zst;*.lz4)|*.mid;*.midi;*.cjcmcg;*.7z;*.xz;*.rar;*.gz;*.bz2;*.zst;*.lz4|All files (*.*)|*.*'; "

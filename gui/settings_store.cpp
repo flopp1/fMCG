@@ -39,8 +39,8 @@ std::string settings_dir() {
     try {
         fs::path dir;
 #if defined(_WIN32)
-        char appdata[MAX_PATH] = "";
-        if (SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_APPDATA, nullptr, 0, appdata)) && appdata[0])
+        wchar_t appdata[MAX_PATH] = L"";
+        if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata)) && appdata[0])
             dir = fs::path(appdata) / "fMCG";
         else
             dir = fs::path(".") / "fMCG_settings";   // last resort: portable
@@ -58,7 +58,7 @@ std::string settings_dir() {
 #endif
         fs::create_directories(dir);
         fs::create_directories(dir / "patterns");
-        cached = dir.string();
+        cached = path_to_utf8(dir);   // UTF-8 like every fMCG path
     } catch (...) {
         cached = "";   // persistence unavailable; callers fall back to defaults
     }
@@ -168,7 +168,7 @@ bool write_file_atomic(const fs::path& target, const std::string& content) {
 std::string patterns_dir() {
     std::string base = settings_dir();
     if (base.empty()) return "";
-    return (fs::path(base) / "patterns").string();
+    return path_to_utf8(path_from_utf8(base) / "patterns");
 }
 
 const char* k_default_layout =
@@ -187,7 +187,7 @@ const char* k_default_layout =
 bool load_global_settings(GlobalSettings& out) {
     std::string dir = settings_dir();
     if (dir.empty()) return false;
-    std::ifstream f(fs::path(dir) / "settings.ini");
+    std::ifstream f(path_from_utf8(dir) / "settings.ini");
     if (!f.is_open()) return false;
     std::ostringstream ss; ss << f.rdbuf();
     KV kv = parse_ini(ss.str());
@@ -253,7 +253,7 @@ bool save_global_settings(const GlobalSettings& s) {
     ss << "x264_preset = " << s.x264_preset << "\n";
     ss << "x264_tune = " << s.x264_tune << "\n";
     ss << "keyframe_seconds = " << s.keyframe_seconds << "\n";
-    return write_file_atomic(fs::path(dir) / "settings.ini", ss.str());
+    return write_file_atomic(path_from_utf8(dir) / "settings.ini", ss.str());
 }
 
 // ---------------------------------------------------------------------------
@@ -287,7 +287,7 @@ bool pattern_exists(const std::string& name) {
     std::string pdir = patterns_dir();
     if (pdir.empty() || name.empty()) return false;
     std::error_code ec;
-    return fs::exists(fs::path(pdir) / (name + ".ini"), ec);
+    return fs::exists(path_from_utf8(pdir) / path_from_utf8(name + ".ini"), ec);
 }
 
 bool save_pattern(const std::string& name, const PatternData& p) {
@@ -337,13 +337,13 @@ bool save_pattern(const std::string& name, const PatternData& p) {
     if (bpm_dec < 0) bpm_dec = 0;
     if (bpm_dec > 6) bpm_dec = 6;
     ss << "bpm_decimals = " << bpm_dec << "\n";
-    return write_file_atomic(fs::path(pdir) / (name + ".ini"), ss.str());
+    return write_file_atomic(path_from_utf8(pdir) / path_from_utf8(name + ".ini"), ss.str());
 }
 
 bool load_pattern(const std::string& name, PatternData& out) {
     std::string pdir = patterns_dir();
     if (pdir.empty() || name.empty()) return false;
-    std::ifstream f(fs::path(pdir) / (name + ".ini"));
+    std::ifstream f(path_from_utf8(pdir) / path_from_utf8(name + ".ini"));
     if (!f.is_open()) return false;
     std::ostringstream ss; ss << f.rdbuf();
     KV kv = parse_ini(ss.str());
@@ -405,7 +405,7 @@ bool delete_pattern(const std::string& name) {
     std::string pdir = patterns_dir();
     if (pdir.empty() || name.empty()) return false;
     std::error_code ec;
-    return fs::remove(fs::path(pdir) / (name + ".ini"), ec) && !ec;
+    return fs::remove(path_from_utf8(pdir) / path_from_utf8(name + ".ini"), ec) && !ec;
 }
 
 std::vector<std::string> list_patterns() {
@@ -413,9 +413,9 @@ std::vector<std::string> list_patterns() {
     std::string pdir = patterns_dir();
     if (pdir.empty()) return out;
     std::error_code ec;
-    for (const auto& e : fs::directory_iterator(pdir, ec)) {
+    for (const auto& e : fs::directory_iterator(path_from_utf8(pdir), ec)) {
         if (!e.is_regular_file()) continue;
-        std::string fn = e.path().filename().string();
+        std::string fn = path_to_utf8(e.path().filename());
         if (fn.size() > 4 && fn.compare(fn.size() - 4, 4, ".ini") == 0)
             out.push_back(fn.substr(0, fn.size() - 4));
     }

@@ -19,16 +19,26 @@ namespace fmcg_text {
 
 // ---- small helpers -----------------------------------------------------------
 
+// Two hex digits at p -> 0..255, or -1 (never throws: colours come from
+// hand-editable pattern files).
+static int hex_byte(const char* p) {
+    auto nib = [](char c) {
+        return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
+             : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+    };
+    const int hi = nib(p[0]), lo = nib(p[1]);
+    return hi < 0 || lo < 0 ? -1 : hi * 16 + lo;
+}
+
 RGBA from_ass_colour(const std::string& ass) {
     if (ass.size() >= 8 && ass[0] == '&' && (ass[1] == 'H' || ass[1] == 'h')) {
         std::string hex = ass.substr(2);
-        unsigned aa = 0;
-        if (hex.size() >= 8) { aa = (unsigned)std::stoul(hex.substr(0, 2), nullptr, 16); hex = hex.substr(2, 6); }
-        if (hex.size() >= 6) {
-            const unsigned b = (unsigned)std::stoul(hex.substr(0, 2), nullptr, 16);
-            const unsigned g = (unsigned)std::stoul(hex.substr(2, 2), nullptr, 16);
-            const unsigned r = (unsigned)std::stoul(hex.substr(4, 2), nullptr, 16);
-            return rgba((uint8_t)r, (uint8_t)g, (uint8_t)b, (uint8_t)(255 - aa));   // ASS alpha: 00 = opaque
+        int aa = 0;
+        if (hex.size() >= 8) { aa = hex_byte(hex.data()); hex = hex.substr(2, 6); }
+        if (hex.size() >= 6 && aa >= 0) {
+            const int b = hex_byte(hex.data()), g = hex_byte(hex.data() + 2), r = hex_byte(hex.data() + 4);
+            if (b >= 0 && g >= 0 && r >= 0)
+                return rgba((uint8_t)r, (uint8_t)g, (uint8_t)b, (uint8_t)(255 - aa));   // ASS alpha: 00 = opaque
         }
     }
     return 0xFFFFFFFFu;

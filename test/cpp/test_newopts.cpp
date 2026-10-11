@@ -231,7 +231,52 @@ int main() {
         check("tracks: sequential reports 5 (total unknown)", run(1, false), "5/0");
         check("tracks: parallel reports 5 of 5", run(4, false), "5/5");
         check("tracks: two-pass reports 5", run(1, true), "5/0");
+        {   // the spec warning names the tick that crossed the limit (was always 0),
+            // and the parallel scan's stats line says so (it reported "disk-bound")
+            uint64_t at = 0;
+            std::string log;
+            ProgressCallbacks cb;
+            cb.spec_tick_limit = 50;
+            cb.on_spec_violation = [&](uint64_t t, size_t) { at = t; return 0; };
+            cb.on_log = [&](const char* m, bool) { log += m; };
+            uint16_t div = 0; uint64_t tn = 0, tt = 0;
+            fmcg_stream::process_streaming("_tracks.mid", 60.0, div, tn, true, tt, cb, 0.0, 4);
+            check("spec warning reports the crossing tick", std::to_string(at), "100");
+            check("parallel stats line", log.find("parallel parse on 4 threads") != std::string::npos ? "yes" : "no", "yes");
+        }
         std::remove("_tracks.mid");
+    }
+    {   // "Close held notes" in two-pass mode releases every held instance, like
+        // single-pass (it released one per key): two overlapping C4s never closed.
+        std::vector<uint8_t> mid = {'M','T','h','d', 0,0,0,6, 0,0, 0,1, 0x01,0xE0};
+        const uint8_t trk[] = {0x00, 0x90,0x3C,0x40, 0x00, 0x3C,0x40, 0x64, 0x90,0x3E,0x40, 0x00, 0xFF,0x2F,0x00};
+        const uint8_t hdr[] = {'M','T','r','k', 0,0,0,(uint8_t)sizeof trk};
+        mid.insert(mid.end(), hdr, hdr + sizeof hdr);
+        mid.insert(mid.end(), trk, trk + sizeof trk);
+        std::ofstream mf("_held.mid", std::ios::binary);
+        mf.write((const char*)mid.data(), (std::streamsize)mid.size());
+        mf.close();
+        auto final_poly = [](bool two_pass) {
+            ProgressCallbacks cb;
+            if (two_pass) {
+                cb.spec_tick_limit = 50;
+                cb.on_spec_violation = [](uint64_t, size_t) { return 1; };
+            }
+            uint16_t div = 0; uint64_t tn = 0, tt = 0;
+            auto fr = fmcg_stream::process_streaming("_held.mid", 60.0, div, tn, true, tt, cb, 0.0, 1);
+            return fr.empty() ? std::string("FAIL") : std::to_string(fr.back().polyphony);
+        };
+        fmcg_stream::set_close_held_notes(true);
+        check("close held: single-pass ends at 0", final_poly(false), "0");
+        check("close held: two-pass ends at 0", final_poly(true), "0");
+        fmcg_stream::set_close_held_notes(false);
+        check("held, no closure: single-pass keeps 3", final_poly(false), "3");
+        std::remove("_held.mid");
+    }
+    {   // malformed colours (hand-edited pattern files) must not throw
+        auto hex = [](uint32_t v) { char b[16]; std::snprintf(b, sizeof b, "0x%08X", v); return std::string(b); };
+        check("ass colour malformed -> white", hex(fmcg_text::from_ass_colour("&H00GG0000")), "0xFFFFFFFF");
+        check("ass colour malformed alpha -> white", hex(fmcg_text::from_ass_colour("&HZZ000000")), "0xFFFFFFFF");
     }
     printf("\n%s (%d failures)\n", fails ? "FAILURES" : "ALL OK", fails);
     return fails ? 1 : 0;

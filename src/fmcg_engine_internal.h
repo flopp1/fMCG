@@ -22,13 +22,13 @@ struct TrackSummary {
     uint64_t hash = 0;           // 64-bit hash over the track's bytes
     uint64_t ons = 0, cc = 0;
     uint64_t max_tick = 0;       // tick of the track's final event
-    uint32_t end_refcount = 0;   // notes still held at the track's final tick
+    uint64_t end_refcount = 0;   // notes still held at the track's final tick
     uint64_t events = 0;         // events walked for this track
     bool desync = false;         // source parse stopped before the chunk end
     // Per-tick (ons, net delta) exactly as the pending-register flush would
     // commit them -- ons drive nps/cumulative counts, delta drives polyphony.
-    std::vector<std::pair<uint64_t, std::pair<uint32_t, int32_t>>> cells;
-    std::vector<std::pair<uint64_t, uint32_t>> ccs;     // (tick, cc count)
+    std::vector<std::pair<uint64_t, std::pair<uint64_t, int64_t>>> cells;   // 64-bit: one tick can hold > 2^32 events
+    std::vector<std::pair<uint64_t, uint64_t>> ccs;     // (tick, cc count)
     std::vector<std::pair<uint64_t, uint32_t>> tempos;  // (tick, us_per_quarter)
 };
 
@@ -92,7 +92,7 @@ struct TickData {
     void note_on(uint64_t t) { ensure(t); cells[t].ons++; cells[t].delta++; total_ons++; }
     void delta_at(uint64_t t, int64_t d) { ensure(t); cells[t].delta += d; }
     // CC accumulation (always counted; the {cc} stats read it).
-    std::vector<uint32_t> dense_cc;      // per-tick control-change counts
+    std::vector<uint64_t> dense_cc;      // per-tick control-change counts (64-bit like every stat)
     uint64_t total_cc = 0;
     // Arithmetic tick runs (O(1) memory): every tick start, start+step, ...,
     // start+(count-1)*step receives (ons, delta, cc). Runs may overlap each
@@ -115,12 +115,12 @@ struct TickData {
     // Current footprint of the dense arrays (bytes).
     size_t memory_bytes() const {
         return cells.size() * sizeof(TickCell)
-             + dense_cc.size() * sizeof(uint32_t)
+             + dense_cc.size() * sizeof(uint64_t)
              + sparse.size() * sizeof(SparseCell);
     }
     void reset() {
         std::vector<TickCell>().swap(cells);
-        std::vector<uint32_t>().swap(dense_cc);
+        std::vector<uint64_t>().swap(dense_cc);
         std::vector<SparseCell>().swap(sparse);
         runs.clear();
         max_tick = 0; total_ons = 0; ntracks = 0; desync_tracks = 0;
