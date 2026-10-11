@@ -155,12 +155,6 @@ struct AppState {
     double                    preview_start_time{0.0};
     double                    preview_start_pos{0.0};
 
-    // Preview font (same TTF family as the rendered video, drawn at a size
-    // scaled to match: preview_px = font_size * preview_width / video_width)
-    ImFont*                   preview_font{nullptr};
-    std::string               preview_baked_family;
-    std::atomic<bool>         preview_font_reload{false};
-
     // Preview mirror of the options the last Process ran with.
     CommaOpts                 preview_commas;
     PadOpts                   preview_pad;

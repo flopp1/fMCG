@@ -117,17 +117,6 @@ std::string format_frame_text(const FrameStats& fs) {
     return result;
 }
 
-void process_preview_font_reload() {
-    if (!g_app.preview_font_reload.exchange(false)) return;
-    if (g_app.font_family.empty()) return;
-    std::string key = g_app.font_family + "|" + g_app.font_variant;
-    std::string file = find_font_file_for_variant(g_app.font_family, g_app.font_variant);
-    if (file.empty()) return;
-    ImGuiIO& io = ImGui::GetIO();
-    g_app.preview_font = io.Fonts->AddFontFromFileTTF(file.c_str(), 36.0f);
-    if (g_app.preview_font)
-        g_app.preview_baked_family = key;
-}
 
 
 

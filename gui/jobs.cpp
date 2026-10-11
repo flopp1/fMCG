@@ -159,7 +159,6 @@ void run_process(GuiSettings s) {
     app.outline_width = s.outline_width;
     app.outline_colour_ass = s.outline_color_aabbggrr;
     app.typo = s.typo;
-    app.preview_font_reload = true;   // preview font must match the (possibly new) family
 
     app.gui_log("Processing complete. Ready for preview/render.", false);
     app.processed = true;

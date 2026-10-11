@@ -196,5 +196,8 @@ No content heuristics. See DESIGN.md.
   integer NPS window; tempo-meta window-straddle bug fixed in the standard parser; Windows + Linux
   builds and suites green. BSOD solved (93,715,050,000,000; 16 min, decode-bound). Goal 3 done
   (in-built renderer; FFmpeg removed). Goal 6 done + encoder settings in the GUI. Goal 4 done.
+  Font discovery fixed: TTC table offsets are file-absolute (every .ttc family was unreadable, e.g.
+  Iosevka, Cambria); all families of a collection listed; FontVariant::face_index carried to the
+  renderer; per-user font dir no longer scanned twice (duplicate styles).
   Next: goals 5/7/8/9 as the user prioritises.
 See OPEN_QUESTIONS.md "Corpus status" for the per-file table; update it every session.

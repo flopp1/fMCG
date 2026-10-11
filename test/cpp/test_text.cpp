@@ -3,10 +3,12 @@
 // else a common system font; prints SKIP and passes when none exists.
 // With FMCG_TEXT_DUMP=<dir> it writes sample frames as .ppm for inspection.
 #include "src/fmcg_text.h"
+#include "src/fmcg_fonts.h"
 
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <algorithm>
 #include <random>
 #include <string>
@@ -56,7 +58,7 @@ static Rect ink(const Canvas& c, RGBA bg) {
     return {x1, y1, x2 - x1 + 1, y2 - y1 + 1};
 }
 
-int main() {
+int main(int argc, char** argv) {
     const std::string font = find_font();
     if (font.empty()) { std::printf("SKIP: no TrueType font found (set FMCG_TEST_FONT)\n"); return 0; }
     std::printf("font: %s\n", font.c_str());
@@ -254,6 +256,53 @@ int main() {
             check("onum: old-style numerals use different digit glyphs than lnum", lnum_differs);
             std::printf("  font default digits %s old-style\n", differs ? "are not" : "are already");
         }
+    }
+
+    // 11. TrueType collections: table offsets inside a .ttc are FILE-absolute.
+    // Build a two-face collection from the test font (both faces share the
+    // original tables) and check discovery + rendering read the right bytes.
+    {
+        std::vector<uint8_t> ttf;
+        if (FILE* f = std::fopen(st.font_file.c_str(), "rb")) {
+            uint8_t b[65536];
+            size_t n;
+            while ((n = std::fread(b, 1, sizeof b, f)) > 0) ttf.insert(ttf.end(), b, b + n);
+            std::fclose(f);
+        }
+        const unsigned nt = ttf.size() > 12 ? (ttf[4] << 8 | ttf[5]) : 0;
+        const size_t hdr = 12 + 16 * (size_t)nt;              // one face's sfnt header
+        const size_t face0 = 20, face1 = face0 + hdr, data = face1 + hdr;
+        std::vector<uint8_t> ttc(data, 0);
+        auto be32 = [&](size_t at, uint32_t v) { ttc[at] = v >> 24; ttc[at + 1] = v >> 16; ttc[at + 2] = v >> 8; ttc[at + 3] = (uint8_t)v; };
+        std::memcpy(ttc.data(), "ttcf", 4);
+        be32(4, 0x00010000u);
+        be32(8, 2);
+        be32(12, (uint32_t)face0);
+        be32(16, (uint32_t)face1);
+        for (size_t face : {face0, face1}) {
+            std::memcpy(ttc.data() + face, ttf.data(), hdr);
+            for (unsigned t = 0; t < nt; ++t) {      // table offset -> absolute in the .ttc
+                const size_t rec = face + 12 + 16 * (size_t)t + 8;
+                const uint32_t off = (uint32_t)ttc[rec] << 24 | ttc[rec + 1] << 16 | ttc[rec + 2] << 8 | ttc[rec + 3];
+                be32(rec, (uint32_t)(off + data));
+            }
+        }
+        ttc.insert(ttc.end(), ttf.begin(), ttf.end());
+        const std::string path = std::string(argc > 1 ? argv[1] : ".") + "/_test_collection.ttc";
+        if (FILE* f = std::fopen(path.c_str(), "wb")) { std::fwrite(ttc.data(), 1, ttc.size(), f); std::fclose(f); }
+        const std::string fam = read_font_family(st.font_file);
+        const std::vector<std::string> fams = read_font_families(path);
+        std::printf("  family '%s'; collection families: %zu\n", fam.c_str(), fams.size());
+        check("ttc: family read from a collection face", !fam.empty() && fams.size() == 1 && fams[0] == fam);
+        TextStyle s2 = st;
+        s2.font_file = path;
+        s2.face_index = 1;
+        TextRenderer a, b;
+        a.load(st);
+        const bool ok = b.load(s2);
+        check("ttc: face 1 of the collection renders like the source font",
+              ok && std::fabs(a.layout({"Notes 1,234"}).width - b.layout({"Notes 1,234"}).width) < 1e-9);
+        std::remove(path.c_str());
     }
 
     std::printf("\n%s (%d failures)\n", fails ? "FAILURES" : "ALL OK", fails);

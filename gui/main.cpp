@@ -172,7 +172,9 @@ static void draw_typography_options() {
     const std::string fkey = g_ui.s.font_family + "|" + g_ui.s.font_variant;
     if (fkey != feats_for) {
         feats_for = fkey;
-        feats = fmcg_text::font_features(find_font_file_for_variant(g_ui.s.font_family, g_ui.s.font_variant));
+        int face = 0;
+        const std::string file = find_font_file_for_variant(g_ui.s.font_family, g_ui.s.font_variant, &face);
+        feats = fmcg_text::font_features(file, face);
     }
     auto has = [&](const std::string& tag) {
         for (const auto& f : feats)
@@ -188,7 +190,12 @@ static void draw_typography_options() {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Standard ligatures such as fi / fl ('liga'). On by default.");
     ImGui::SameLine();
     ImGui::Checkbox("Slashed zero##ty", &t.slashed_zero);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Zero with a slash or dot, to tell it from O ('zero').");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The font's slashed zero, to tell it from O ('zero').\n"
+                          "Fonts whose zero is already slashed or dotted may show no change.\n"
+                          "Many fonts keep other zero styles in stylistic sets or character\n"
+                          "variants instead (e.g. Victor Mono ss02..ss05, Iosevka cv10=1..30\n"
+                          "via More features).");
     if (t.slashed_zero && !has("zero")) missing.push_back("slashed zero");
 
     ImGui::Text("Numerals");
@@ -284,8 +291,23 @@ static void draw_typography_options() {
         ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f), "Not in this font (no effect): %s", m.c_str());
     }
     {
+        // Registered (lowercase) tags only -- uppercase ones are font-private --
+        // with numbered runs collapsed: "cv01..cv99".
         std::string tags;
-        for (const auto& f : feats) tags += (tags.empty() ? "" : " ") + f.tag;
+        for (size_t i = 0; i < feats.size(); ++i) {
+            const std::string& tg = feats[i].tag;
+            if (tg.empty() || (tg[0] >= 'A' && tg[0] <= 'Z')) continue;
+            size_t j = i;
+            auto numbered = [](const std::string& a) { return a.size() == 4 && isdigit((unsigned char)a[2]) && isdigit((unsigned char)a[3]); };
+            if (numbered(tg))
+                while (j + 1 < feats.size() && numbered(feats[j + 1].tag) && feats[j + 1].tag.compare(0, 2, tg, 0, 2) == 0 &&
+                       std::atoi(feats[j + 1].tag.c_str() + 2) == std::atoi(feats[j].tag.c_str() + 2) + 1)
+                    ++j;
+            tags += (tags.empty() ? "" : " ") + tg;
+            if (j > i + 1) tags += ".." + feats[j].tag;
+            else if (j == i + 1) tags += " " + feats[j].tag;
+            i = j;
+        }
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
         ImGui::TextWrapped("Font features: %s", tags.empty() ? "(none found)" : tags.c_str());
         ImGui::PopStyleColor();
@@ -892,7 +914,6 @@ static void draw_global_section() {
 // callback: on Windows, border-drag/resize enters a modal loop that never
 // returns to glfwPollEvents, and GLFW repaints through this callback there.
 static void draw_frame(GLFWwindow* window) {
-    process_preview_font_reload();   // font/atlas changes must happen outside the frame
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
@@ -1069,7 +1090,6 @@ static void draw_frame(GLFWwindow* window) {
                 g_app.vid_height = g_ui.s.height;
                 g_app.start_delay = g_ui.s.start_delay;
                 g_app.end_delay = g_ui.s.end_delay;
-                g_app.preview_font_reload = true;
             }
             g_app.show_preview = true;
             // Auto-play on open (pattern-only or full preview alike).

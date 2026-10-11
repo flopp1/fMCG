@@ -193,7 +193,7 @@ The window shows the MIDI file picker on top; below it the **Global settings** (
 - **Text / Background colour** — click the swatch to open a compact picker with R/G/B sliders and a live preview; the hex value updates in real time.
 - **Resolution / FPS / Font** — output video size, frame rate, and overlay font family + size.
 - **Advanced typography** (Pattern column, collapsible; saved with the pattern) — OpenType options applied by the HarfBuzz shaper:
-  - **Kerning** / **Ligatures** (on by default) and **Slashed zero**.
+  - **Kerning** / **Ligatures** (on by default) and **Slashed zero** (the font's `zero` feature; fonts whose zero is already slashed may show no change, and many keep other zero styles in stylistic sets or character variants, e.g. Victor Mono `ss02`..`ss05`, Iosevka `cv10=1`..`30`).
   - **Numerals**: font default, *Lining* or *Old-style*; and font default, *Proportional* or *Tabular* width. Tabular digits all have the same width, so counters stop shifting sideways as digits change.
   - **Stylistic sets**: the sets the selected font offers (`ss01`..`ss20`), with the font's own names when it provides them.
   - **More features**: any other OpenType features, space/comma separated (`cv01 salt -calt smcp`, `tag=2` for an alternate); applied last, so they override the options above. Invalid entries are shown in red and ignored.

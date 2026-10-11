@@ -101,7 +101,7 @@ float AppState::display_progress() {
 
 fmcg_text::TextStyle app_text_style() {
     fmcg_text::TextStyle st;
-    st.font_file = find_font_file_for_variant(g_app.font_family, g_app.font_variant);
+    st.font_file = find_font_file_for_variant(g_app.font_family, g_app.font_variant, &st.face_index);
     st.size = g_app.font_size;
     st.colour = fmcg_text::from_ass_colour(g_app.text_colour_ass);
     st.outline = g_app.outline_enabled && g_app.outline_width > 0.0;
