@@ -8,15 +8,16 @@ REM
 REM Third-party dependencies live in vendor\, laid out by bootstrap.bat:
 REM   vendor\imgui\           Dear ImGui git submodule (sources + backends\)
 REM   vendor\GLFW\GLFW\       GLFW headers          + libglfw3.a (static)
-REM   vendor\libarchive\      headers + libarchive.dll.a + bin\libarchive.dll
+REM   vendor\libarchive\      headers + lib\ static libarchive, zstd, lzma, lz4,
+REM                           bz2, zs (zlib) -- built from source by bootstrap.bat
+REM   vendor\harfbuzz\        HarfBuzz source (one TU)  vendor\x264\  libx264.a
 REM
 REM Run bootstrap.bat first on a fresh clone; it fetches the imgui submodule
-REM and downloads the rest.
-REM Output: fMCG_gui.exe (needs libarchive.dll next to it at runtime).
+REM and downloads/builds the rest.
+REM Output: fMCG_gui.exe -- self-contained (only Windows system DLLs).
 REM
-REM "build.bat debug" adds -DFMCG_DEBUG=1: ffmpeg's stderr log is kept in
-REM <name>_fMCG_progress.txt next to the output for diagnosis. Release builds
-REM (default) discard it -- end users never see progress artifacts.
+REM "build.bat debug" adds -DFMCG_DEBUG=1 and keeps a console window for
+REM tracing.
 REM
 REM Incremental builds: each source recompiles only when it or anything it
 REM includes (tracked with g++ -MD dependency files in lib\) is newer than
@@ -38,7 +39,7 @@ if /i "%1"=="debug" (
     set EXTRA_CFLAGS=-DFMCG_DEBUG=1
     set CONSOLE_FLAG=
     set MODE=debug
-    echo [debug build] ffmpeg stderr log + console window enabled.
+    echo [debug build] console window enabled.
 )
 
 if not exist vendor\imgui\imgui.h (
@@ -50,8 +51,9 @@ if not exist vendor\GLFW\GLFW\glfw3.h (
     echo ERROR: vendor\GLFW not found. Run bootstrap.bat first.
     exit /b 1
 )
-if not exist vendor\libarchive\lib\libarchive.dll.a (
-    echo ERROR: vendor\libarchive not found. Run bootstrap.bat first.
+if not exist vendor\libarchive\lib\libarchive.a (
+    echo ERROR: static vendor\libarchive not found. Run bootstrap.bat first
+    echo        ^(it now builds libarchive from source instead of using a DLL^).
     exit /b 1
 )
 if not exist vendor\harfbuzz\src\harfbuzz.cc (
@@ -155,7 +157,7 @@ if not exist fMCG_gui.exe (
     set NEED_LINK=1
     goto do_link
 )
-for %%o in (lib\gui\app_state.o lib\gui\dialogs.o lib\gui\jobs.o lib\gui\preview.o lib\gui\main.o lib\gui\colour_edit.o lib\gui\settings_store.o lib\src\fmcg_path.o lib\src\fmcg_util.o lib\src\fmcg_midi.o lib\src\fmcg_engine.o lib\src\fmcg_layered.o lib\src\fmcg_format.o lib\src\fmcg_fonts.o lib\src\fmcg_text.o lib\src\fmcg_video.o lib\harfbuzz.o lib\libimgui.a) do (
+for %%o in (lib\gui\app_state.o lib\gui\dialogs.o lib\gui\jobs.o lib\gui\preview.o lib\gui\main.o lib\gui\colour_edit.o lib\gui\settings_store.o lib\src\fmcg_path.o lib\src\fmcg_util.o lib\src\fmcg_midi.o lib\src\fmcg_engine.o lib\src\fmcg_layered.o lib\src\fmcg_format.o lib\src\fmcg_fonts.o lib\src\fmcg_text.o lib\src\fmcg_video.o lib\harfbuzz.o lib\libimgui.a vendor\libarchive\lib\libarchive.a) do (
     for /f %%c in ('echo F ^| xcopy /D /L /Y "%%o" "fMCG_gui.exe" 2^>nul ^| findstr /C:"1 File"') do set NEED_LINK=1
 )
 if "!NEED_LINK!"=="0" (
@@ -163,7 +165,7 @@ if "!NEED_LINK!"=="0" (
     goto link_done
 )
 :do_link
-g++ -std=c++17 -O3 -o fMCG_gui.exe lib\gui\app_state.o lib\gui\dialogs.o lib\gui\jobs.o lib\gui\preview.o lib\gui\main.o lib\gui\colour_edit.o lib\gui\settings_store.o lib\src\fmcg_path.o lib\src\fmcg_util.o lib\src\fmcg_midi.o lib\src\fmcg_engine.o lib\src\fmcg_layered.o lib\src\fmcg_format.o lib\src\fmcg_fonts.o lib\src\fmcg_text.o lib\src\fmcg_video.o lib\harfbuzz.o -Ivendor\imgui -Ivendor\imgui\backends -Ivendor\GLFW -I. -Isrc -Igui -Ivendor\libarchive -Lvendor\GLFW -Lvendor\libarchive\lib lib\libimgui.a vendor\libarchive\lib\libarchive.dll.a vendor\x264\lib\libx264.a -lglfw3 -lbcrypt -lopengl32 -lgdi32 -luser32 -lkernel32 -lpthread -Wl,--stack,0x1000000 %CONSOLE_FLAG%
+g++ -std=c++17 -O3 -o fMCG_gui.exe lib\gui\app_state.o lib\gui\dialogs.o lib\gui\jobs.o lib\gui\preview.o lib\gui\main.o lib\gui\colour_edit.o lib\gui\settings_store.o lib\src\fmcg_path.o lib\src\fmcg_util.o lib\src\fmcg_midi.o lib\src\fmcg_engine.o lib\src\fmcg_layered.o lib\src\fmcg_format.o lib\src\fmcg_fonts.o lib\src\fmcg_text.o lib\src\fmcg_video.o lib\harfbuzz.o -Ivendor\imgui -Ivendor\imgui\backends -Ivendor\GLFW -I. -Isrc -Igui -Ivendor\libarchive -Lvendor\GLFW -Lvendor\libarchive\lib lib\libimgui.a vendor\libarchive\lib\libarchive.a vendor\libarchive\lib\libzstd.a vendor\libarchive\lib\liblzma.a vendor\libarchive\lib\liblz4.a vendor\libarchive\lib\libbz2.a vendor\libarchive\lib\libzs.a vendor\x264\lib\libx264.a -lglfw3 -lbcrypt -lopengl32 -lgdi32 -luser32 -lkernel32 -lpthread -Wl,--stack,0x1000000 %CONSOLE_FLAG%
 if errorlevel 1 (
     echo GUI build FAILED.
     exit /b 1
@@ -171,17 +173,18 @@ if errorlevel 1 (
 echo   OK: fMCG_gui.exe
 :link_done
 
-copy /y vendor\libarchive\bin\libarchive.dll libarchive.dll >nul
+REM Older builds copied libarchive.dll here; the exe no longer uses it.
+if exist libarchive.dll del /q libarchive.dll
 
 echo.
-echo Build complete. Run fMCG_gui.exe ^(libarchive.dll is alongside it^).
-goto :eof
+echo Build complete. Run fMCG_gui.exe ^(self-contained, no DLLs to ship^).
+exit /b 0
 
 :compile_core
 call :uptodate "lib\src\%~1.o" "lib\src\%~1.d"
 if "!UT!"=="1" goto :eof
 echo   compiling src\%~1.cpp
-g++ -std=c++17 -O3 %EXTRA_CFLAGS% -c src\%~1.cpp -I. -Isrc -Ivendor\libarchive -Ivendor\harfbuzz\src -Ivendor\x264\include -o lib\src\%~1.o -MD -MF lib\src\%~1.d
+g++ -std=c++17 -O3 %EXTRA_CFLAGS% -DLIBARCHIVE_STATIC -c src\%~1.cpp -I. -Isrc -Ivendor\libarchive -Ivendor\harfbuzz\src -Ivendor\x264\include -o lib\src\%~1.o -MD -MF lib\src\%~1.d
 if errorlevel 1 (
     echo   compile FAILED: src\%~1.cpp
     set FAILED=1

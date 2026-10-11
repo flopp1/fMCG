@@ -50,19 +50,24 @@ Pipeline today:
 | `test/cpp/` | C++ engine tests (newopts, twopass, parallel, dedup, burst_window, burst_fuzz, harness) + benchmarks (bench_throughput, test_tickspace) + test_text / test_layout / test_video / test_render (renderer, placement/cells/fit, encoders with bit-exact qtrle round trips + optional FFmpeg cross-decode, end to end) |
 | `test/tools/` | `shrink_layered.py` (rebuild a layered file with <= K repeats per run), `layered_inspect.py` / `layered_stream_cut.py` (sparse structure dumps of layered files, never full expansion), legacy CSV reference tools |
 | `test/data/`, `test/expected/` | small fixture MIDIs; verified full-corpus expected values |
-| `build.bat` / `bootstrap.bat` / `release.bat` | Windows build (w64devkit g++); `release.bat` also builds the Linux package through WSL via `release_linux.sh` |
+| `build.bat` / `bootstrap.bat` / `release.bat` | Windows build (w64devkit g++); `release.bat` also builds the Linux package through WSL via `release_linux.sh` and checks the exe imports only system DLLs. `.bat` files must stay CRLF (`.gitattributes`): LF breaks cmd's label lookup |
+| `build_deps.sh` | static libarchive + codecs for Windows (called by bootstrap.bat) |
 | `Makefile` | Linux/macOS build (pkg-config glfw3 + libarchive) |
-| `vendor/` | imgui submodule, GLFW, libarchive, HarfBuzz 14.5.0 source, x264 static lib (populated by `bootstrap.bat`, SHA-256 pinned; gitignored). `build_cache/` holds the downloads + NASM/x264 build trees |
+| `vendor/` | imgui submodule, GLFW, static libarchive + codecs, HarfBuzz 14.5.0 source, x264 static lib (populated by `bootstrap.bat`, SHA-256 pinned; gitignored). `build_cache/` holds the downloads + NASM/x264/deps build trees |
 
 ## 3. Building
 **Windows (this machine):** w64devkit g++ 16 at `C:\Users\ethen\Downloads\w64devkit\bin`.
 `build.bat` -> `fMCG_gui.exe`. Headless probe:
 ```
-g++ -std=c++17 -O2 -I. -Isrc -Ivendor/libarchive src/fmcg_{midi,format,util,path,engine,layered}.cpp \
-    test/fmcg_probe.cpp -o build/probe.exe vendor/libarchive/lib/libarchive.dll.a -lpthread \
-    -Wl,--stack,0x10000000
-cp vendor/libarchive/bin/libarchive.dll build/
+L=vendor/libarchive/lib
+g++ -std=c++17 -O2 -DLIBARCHIVE_STATIC -I. -Isrc -Ivendor/libarchive src/fmcg_{midi,format,util,path,engine,layered}.cpp \
+    test/fmcg_probe.cpp -o build/probe.exe $L/libarchive.a $L/libzstd.a $L/liblzma.a $L/liblz4.a \
+    $L/libbz2.a $L/libzs.a -lbcrypt -lpthread -Wl,--stack,0x10000000
 ```
+libarchive is STATIC on Windows (goal 10): `bootstrap.bat` builds libarchive 3.8.9 + zlib 1.3.2 (static lib is
+`libzs.a`), bzip2 1.0.8, xz 5.8.4, zstd 1.5.7, lz4 1.10.0 from SHA-256-pinned sources with `build_deps.sh`
+(w64devkit cmake + sh) into `vendor/libarchive/{*.h,lib/*.a,licenses/}`; every compile that includes
+archive.h needs `-DLIBARCHIVE_STATIC`. build_deps.sh fails if libarchive's config.h lacks any codec.
 (256 MB stack: the layered walker recurses deeply.) Renderer code also needs `-Ivendor/harfbuzz/src -Ivendor/x264/include`,
 `vendor/harfbuzz/src/harfbuzz.cc` (one TU, ~45 s to compile; cached as lib\harfbuzz.o / build/test/obj) and `vendor/x264/lib/libx264.a`.
 Linux: `pkg-config --cflags --libs harfbuzz x264` (apt: libharfbuzz-dev libx264-dev).
@@ -204,7 +209,10 @@ No content heuristics. See DESIGN.md.
    (`fmcg_text::Placement`, `TextRenderer::place`); extend Placement with a block anchor rather than
    overloading `alignment`. Keep clamping so the whole block stays on screen (goal 5).
 
-10. Static libarchive on Windows (added 2026-10-11): build libarchive from source (plus the compression
+10. DONE (session 3): static libarchive on Windows; fMCG_gui.exe imports only system DLLs.
+   test/cpp/test_archive_formats.cpp writes a fixture with libarchive's writer as gzip/bzip2/xz/zstd/lz4
+   and 7z (lzma1/lzma2/bzip2/deflate/ppmd/zstd) and checks the engine reads identical counts (Windows +
+   Linux). Original request: build libarchive from source (plus the compression
    libraries it needs for the supported inputs: zlib, bzip2, xz/liblzma, zstd, lz4, and 7z/rar support
    from libarchive itself) as static libraries with the w64devkit toolchain, SHA-256-pinned in
    `bootstrap.bat` like HarfBuzz/x264, and link them into `fMCG_gui.exe` so the Windows release is a single
@@ -229,5 +237,5 @@ No content heuristics. See DESIGN.md.
   values. It fires on Ievans (4.8 vs 5.0 s), MIDI File (1.7 vs 2.9 s, 5 layers), NoiseMidi (41.7 vs 41.6 s),
   gymnopedie (6.3 vs 20.0 s), happy (6.4 vs 13.2 s), paprikas (0.4 vs 1.9 s); it never fires on
   "Just 1 note" or BSOD, whose big layers alternate/cycle members and never repeat one back to back.
-  Next: goal 10.
+  Goal 10 done (static libarchive; single-exe Windows release). All goals 1-10 done.
 See OPEN_QUESTIONS.md "Corpus status" for the per-file table; update it every session.

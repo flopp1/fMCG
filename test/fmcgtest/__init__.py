@@ -12,7 +12,7 @@ Environment:
 import concurrent.futures
 import os
 import re
-import shutil
+import hashlib
 import subprocess
 import sys
 import threading
@@ -52,9 +52,12 @@ def _pkg(args):
 
 
 if IS_WIN:
-    CFLAGS = ["-Ivendor/libarchive", "-Ivendor/harfbuzz/src", "-Ivendor/x264/include"]
-    LIBS = ["vendor/libarchive/lib/libarchive.dll.a", "vendor/x264/lib/libx264.a", "-lpthread",
-            "-Wl,--stack,0x10000000"]
+    # libarchive and its codecs are static (bootstrap.bat -> build_deps.sh): no DLL.
+    CFLAGS = ["-DLIBARCHIVE_STATIC", "-Ivendor/libarchive", "-Ivendor/harfbuzz/src", "-Ivendor/x264/include"]
+    LIBS = ["vendor/libarchive/lib/libarchive.a", "vendor/libarchive/lib/libzstd.a",
+            "vendor/libarchive/lib/liblzma.a", "vendor/libarchive/lib/liblz4.a",
+            "vendor/libarchive/lib/libbz2.a", "vendor/libarchive/lib/libzs.a", "-lbcrypt",
+            "vendor/x264/lib/libx264.a", "-lpthread", "-Wl,--stack,0x10000000"]
 else:
     CFLAGS = _pkg(["--cflags"])
     LIBS = ["-larchive"] + _pkg(["--libs"]) + ["-lpthread"]
@@ -82,7 +85,10 @@ def _obj_stale(obj, dep):
 def _compile(src, flags):
     """Compile one source to a cached object (per flag set); returns the object path."""
     tag = "_".join(f.strip("-").replace("=", "") for f in flags) or "default"
-    obj_dir = os.path.join(BUILD, "obj", sys.platform, tag)   # per platform: WSL shares this checkout
+    # per platform (WSL shares this checkout) and per shared CFLAGS (a changed
+    # define must not reuse objects compiled without it)
+    cf = hashlib.sha1(" ".join(CFLAGS).encode()).hexdigest()[:8]
+    obj_dir = os.path.join(BUILD, "obj", sys.platform, cf, tag)
     stem = os.path.splitext(src.replace("/", "_").replace("\\", "_"))[0]
     obj = os.path.join(obj_dir, stem + ".o")
     dep = os.path.join(obj_dir, stem + ".d")
@@ -113,10 +119,6 @@ def build(name, sources, extra_flags=()):
         objs = list(ex.map(lambda s: _compile(s, tuple(extra_flags)), sources))
     if not os.path.exists(out) or os.path.getmtime(out) < max(os.path.getmtime(o) for o in objs):
         cmd = ["g++", "-o", out] + objs + LIBS
-        if IS_WIN:
-            dll = os.path.join(BUILD, "libarchive.dll")
-            if not os.path.exists(dll):
-                shutil.copy(os.path.join(ROOT, "vendor", "libarchive", "bin", "libarchive.dll"), dll)
         r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
         if r.returncode != 0:
             raise RuntimeError(f"link of {name} failed:\n{r.stderr[-4000:]}")

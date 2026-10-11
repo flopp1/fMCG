@@ -63,6 +63,9 @@ class Cpp(unittest.TestCase):
     def test_text(self):
         run(self, "test_text", sources=T.CORE_FULL + T.TEXT)
 
+    def test_archive_formats(self):
+        run(self, "test_archive_formats", [T.BUILD, "test/data/tempo2.mid"], sources=T.CORE)
+
     def test_layout(self):
         run(self, "test_layout", sources=T.CORE_FULL + T.TEXT)
 

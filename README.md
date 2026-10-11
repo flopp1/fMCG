@@ -22,8 +22,8 @@ Thanks to Nitsua for the idea of zero copy mmap + other scanner micro optimisati
 ### Windows
 
 1. Install a MinGW-w64 toolchain ([w64devkit](https://github.com/skeeto/w64devkit/releases)) and [Git for Windows](https://git-scm.com/download/win).
-2. Run `bootstrap.bat` once — it fetches the Dear ImGui submodule and downloads the pinned GLFW 3.4 and libarchive 3.8.9 packages into `vendor/`.
-3. Run `build.bat`. This produces `fMCG_gui.exe` and copies `libarchive.dll` next to it.
+2. Run `bootstrap.bat` once — it fetches the Dear ImGui submodule, downloads GLFW 3.4, and downloads the **sources** of HarfBuzz, x264, libarchive 3.8.9 and its codecs (zlib, bzip2, xz, zstd, lz4), each pinned by SHA-256, then builds x264 and libarchive + codecs as static libraries into `vendor/` (a few minutes, once; needs w64devkit's `sh`, `make` and `cmake`).
+3. Run `build.bat`. This produces a self-contained `fMCG_gui.exe` (it imports only Windows system DLLs).
 
 Both scripts are idempotent; re-run `build.bat` after changing sources.
 
@@ -99,18 +99,14 @@ Notes:
 
 ## Distributing Windows binaries
 
-A built `fMCG_gui.exe` links libarchive **dynamically** and needs `libarchive.dll` sitting in the same folder (the build copies it there; `bootstrap.bat` fetches it into `vendor\libarchive\bin\`). Without it the exe starts but fails the moment it touches a MIDI file.
+A built `fMCG_gui.exe` is **self-contained**: libarchive and its compression codecs, HarfBuzz, x264, GLFW and Dear ImGui are all linked statically, and the exe imports only Windows system DLLs (kernel32, user32, gdi32, opengl32, shell32, bcrypt, msvcrt). Copy the exe anywhere and it runs; `release.bat` checks this before packaging.
 
-**You may redistribute `libarchive.dll` with your build.** It is [BSD-3-Clause](https://opensource.org/license/bsd-3-clause) licensed, which explicitly permits redistribution in binary form, in commercial and non-commercial products alike. The only obligations are:
+Everything linked in is under a licence that permits redistribution in binary form, provided the licence notices travel with it:
 
-- include the BSD-3 copyright/licence notice for libarchive (and its embedded components) in your distribution — e.g. a `THIRD_PARTY_LICENSES.txt` shipped alongside the exe;
-- do not use the authors' names to promote derived products (the non-endorsement clause).
+- libarchive (BSD-2-Clause, with a few per-file notes: UC Regents BSD-3, public domain, and BLAKE2 under CC0 / OpenSSL / Apache 2.0), zlib (zlib licence), bzip2 (BSD-style), liblzma (0BSD), Zstandard (BSD-3-Clause), LZ4 (BSD-2-Clause), HarfBuzz (Old MIT), stb_truetype (public domain / MIT), Dear ImGui (MIT), GLFW (zlib licence);
+- x264 is GPL-2.0-or-later, compatible with fMCG's GPL-3.0; `THIRD_PARTY_LICENSES.txt` records the exact x264 source commit.
 
-The same applies to everything else bundled in this DLL: zlib (zlib licence), bzip2 (BSD-style), xz/LZMA (public domain / 0BSD), zstd (BSD), LZ4 (BSD/MIT), libxml2 (MIT) and libiconv (LGPL — dynamically linked inside the DLL, which LGPL permits). ImGui itself is MIT and GLFW's static import is zlib-style; neither adds obligations beyond the licence notice.
-
-So a shareable release is just: `fMCG_gui.exe` + `libarchive.dll` + a licence notice file. HarfBuzz and x264 are linked statically into the exe; x264 is GPL-2.0-or-later, compatible with fMCG's GPL-3.0, and `THIRD_PARTY_LICENSES.txt` records the exact x264 source commit.
-
-`THIRD_PARTY_LICENSES.txt` in the repo root is the ready-made notices file covering everything shipped in the binary and the DLL.
+So a shareable release is just `fMCG_gui.exe` plus the licence files. `THIRD_PARTY_LICENSES.txt` in the repo root is the ready-made notices file, with every library's upstream licence text verbatim for the exact versions built.
 
 **Making a release** — one command builds and packages both platforms:
 
@@ -120,7 +116,7 @@ release.bat v1.2       :: -> dist\fMCG-v1.2-windows\, dist\fMCG-v1.2-linux\ ... 
 debug build            :: build.bat debug (Windows) or make debug (Linux/macOS)
 ```
 
-The script builds the Windows exe first, assembles `fMCG_gui.exe`, `libarchive.dll`, `LICENSE`, `THIRD_PARTY_LICENSES.txt` and `README.md`, verifies nothing is missing and zips it via PowerShell. It then builds the Linux binary through **WSL** (`release_linux.sh`, in a temporary Linux-side copy of the sources) and packages it with the same licence files and README as a `.tar.gz`.
+The script builds the Windows exe first, assembles `fMCG_gui.exe`, `LICENSE`, `THIRD_PARTY_LICENSES.txt` and `README.md`, verifies nothing is missing and that the exe imports only Windows system DLLs, and zips it via PowerShell. It then builds the Linux binary through **WSL** (`release_linux.sh`, in a temporary Linux-side copy of the sources) and packages it with the same licence files and README as a `.tar.gz`.
 
 **Requirement for the Linux package: WSL** with a Linux distribution and its build packages:
 
@@ -227,12 +223,13 @@ Inside: `settings.ini` (global settings) and `patterns/<name>.ini` (one file per
 
 ```text
 src/         core library modules (fmcg_path, fmcg_util, fmcg_midi, fmcg_engine,
-             fmcg_format, fmcg_fonts, fmcg_render) -- one .h/.cpp pair each
+             fmcg_format, fmcg_fonts, fmcg_text, fmcg_video) -- one .h/.cpp pair each
 gui/         Dear ImGui application (app_state, dialogs, jobs, preview,
              main, colour_edit, settings_store)
 fMCG_core.h  umbrella header: includes every src/ module, nothing else
 test/        self-contained test suites + fixture tooling
-vendor/      third-party deps fetched by bootstrap.bat (imgui submodule, GLFW, libarchive)
+vendor/      third-party deps prepared by bootstrap.bat (imgui submodule, GLFW, HarfBuzz source,
+             static x264 / libarchive + codecs built from pinned sources by build_deps.sh)
 ```
 
 ## Implementation notes
