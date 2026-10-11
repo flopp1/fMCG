@@ -172,6 +172,15 @@ No content heuristics. See DESIGN.md.
    size = the parent member's declared uncompressed size from its xz index (free). Off by default; the
    suite must not depend on it (add dialect cases showing both a correct and a wrong-by-design result).
 
+9. Separate frame-corner anchoring from block anchoring (added 2026-10-11): custom x,y must not force
+   the block's TOP-LEFT to be the anchor. Two independent settings: (a) which point of the FRAME the
+   position is measured from / which corner preset to use, and (b) which point of the TEXT BLOCK sits on
+   that position (top-left, top-centre, top-right, centre-left, centre, ..., bottom-right) -- e.g. a
+   custom position anchored by the block's bottom-right. Lines inside the block then align with the
+   block anchor's horizontal side. Today (renderer step 2) custom x,y is always the block's top-left
+   (`fmcg_text::Placement`, `TextRenderer::place`); extend Placement with a block anchor rather than
+   overloading `alignment`. Keep clamping so the whole block stays on screen (goal 5).
+
 ## 7. Status log
 - Session 3 (2026-10-10, Claude Code): layered dedup rewritten (fmcg_layered.cpp); all 8
   layered files verified (OPEN_QUESTIONS.md table); test/ restructured into run_tests.py; inclusive
