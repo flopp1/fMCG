@@ -225,30 +225,76 @@ bool TextRenderer::load(const TextStyle& style, std::string* err) {
     return true;
 }
 
-Layout TextRenderer::layout(const std::vector<std::string>& lines) const {
+// Shapes `s` onto line `sl` starting at pen `pen` (letter spacing between
+// clusters, never inside one -- ligatures, combining marks -- and never after
+// the last); returns the pen after the text.
+static double shape_run(const TextRenderer::Impl& d, hb_buffer_t* buf, const std::string& s, ShapedLine& sl,
+                        double pen) {
+    hb_buffer_reset(buf);
+    hb_buffer_add_utf8(buf, s.c_str(), (int)s.size(), 0, (int)s.size());
+    hb_buffer_guess_segment_properties(buf);
+    hb_shape(d.font, buf, d.features.empty() ? nullptr : d.features.data(), (unsigned)d.features.size());
+    unsigned n = 0;
+    const hb_glyph_info_t* gi = hb_buffer_get_glyph_infos(buf, &n);
+    const hb_glyph_position_t* gp = hb_buffer_get_glyph_positions(buf, &n);
+    const double ls = d.style.letter_spacing;
+    sl.glyphs.reserve(sl.glyphs.size() + n);
+    for (unsigned i = 0; i < n; ++i) {
+        if (ls != 0 && i > 0 && gi[i].cluster != gi[i - 1].cluster) pen += ls;
+        sl.glyphs.push_back({gi[i].codepoint, pen + gp[i].x_offset * d.scale, -gp[i].y_offset * d.scale});
+        pen += gp[i].x_advance * d.scale;
+    }
+    return pen;
+}
+
+static Layout empty_layout(const TextRenderer::Impl& d) {
     Layout L;
-    L.line_height = d->style.size * (d->style.line_spacing > 0 ? d->style.line_spacing : 1.0);
-    L.em = d->style.size;
-    L.ascent = d->ascent;
+    L.line_height = d.style.size * (d.style.line_spacing > 0 ? d.style.line_spacing : 1.0);
+    L.em = d.style.size;
+    L.ascent = d.ascent;
+    return L;
+}
+
+Layout TextRenderer::layout(const std::vector<std::string>& lines) const {
+    Layout L = empty_layout(*d);
     hb_buffer_t* buf = hb_buffer_create();
     for (const std::string& s : lines) {
         ShapedLine sl;
-        hb_buffer_reset(buf);
-        hb_buffer_add_utf8(buf, s.c_str(), (int)s.size(), 0, (int)s.size());
-        hb_buffer_guess_segment_properties(buf);
-        hb_shape(d->font, buf, d->features.empty() ? nullptr : d->features.data(), (unsigned)d->features.size());
-        unsigned n = 0;
-        const hb_glyph_info_t* gi = hb_buffer_get_glyph_infos(buf, &n);
-        const hb_glyph_position_t* gp = hb_buffer_get_glyph_positions(buf, &n);
+        sl.advance = shape_run(*d, buf, s, sl, 0.0);
+        L.width = std::max(L.width, sl.advance);
+        L.lines.push_back(std::move(sl));
+    }
+    hb_buffer_destroy(buf);
+    return L;
+}
+
+Layout TextRenderer::layout(const PieceLines& lines, const std::vector<std::vector<double>>& cell_w,
+                            int cell_align) const {
+    Layout L = empty_layout(*d);
+    hb_buffer_t* buf = hb_buffer_create();
+    const double ls = d->style.letter_spacing;
+    for (size_t li = 0; li < lines.size(); ++li) {
+        ShapedLine sl;
         double pen = 0;
-        sl.glyphs.reserve(n);
-        const double ls = d->style.letter_spacing;
-        for (unsigned i = 0; i < n; ++i) {
-            // letter spacing between clusters, never inside one (ligatures,
-            // combining marks) and never after the last
-            if (ls != 0 && i > 0 && gi[i].cluster != gi[i - 1].cluster) pen += ls;
-            sl.glyphs.push_back({gi[i].codepoint, pen + gp[i].x_offset * d->scale, -gp[i].y_offset * d->scale});
-            pen += gp[i].x_advance * d->scale;
+        bool started = false;   // letter spacing also between pieces (cells count even when empty)
+        for (const TextPiece& p : lines[li]) {
+            const bool cell = p.cell >= 0 && li < cell_w.size() && (size_t)p.cell < cell_w[li].size();
+            if (p.text.empty() && !cell) continue;
+            if (started) pen += ls;
+            started = true;
+            if (!cell) {
+                pen = shape_run(*d, buf, p.text, sl, pen);
+                continue;
+            }
+            ShapedLine run;
+            const double a = shape_run(*d, buf, p.text, run, 0.0);
+            const double w = std::max(cell_w[li][p.cell], a);
+            const double off = cell_align == 2 ? w - a : cell_align == 1 ? (w - a) / 2.0 : 0.0;
+            for (ShapedGlyph g : run.glyphs) {
+                g.x += pen + off;
+                sl.glyphs.push_back(g);
+            }
+            pen += w;
         }
         sl.advance = pen;
         L.width = std::max(L.width, pen);
@@ -258,31 +304,52 @@ Layout TextRenderer::layout(const std::vector<std::string>& lines) const {
     return L;
 }
 
+double TextRenderer::advance(const std::string& text) const {
+    hb_buffer_t* buf = hb_buffer_create();
+    ShapedLine sl;
+    const double a = shape_run(*d, buf, text, sl, 0.0);
+    hb_buffer_destroy(buf);
+    return a;
+}
+
 static bool align_right(int a) { return a == 3 || a == 6 || a == 9; }
 static bool align_center(int a) { return a == 2 || a == 5 || a == 8; }
 static bool align_bottom(int a) { return a == 1 || a == 2 || a == 3; }
+static bool align_middle(int a) { return a == 4 || a == 5 || a == 6; }
 
 void TextRenderer::place(const Layout& L, const Placement& p, double& x0, double& y0) const {
     const double w = L.width, h = L.height();
     if (p.pos_mode == 1) {
-        // Custom: (pos_x, pos_y) is the block's top-left; keep the whole block on screen.
-        x0 = std::min((double)p.pos_x, p.frame_w - w);
-        y0 = std::min((double)p.pos_y, p.frame_h - h);
-        x0 = std::max(0.0, x0);
-        y0 = std::max(0.0, y0);
-        return;
+        // Reference point on the frame, then the block's anchor point on it.
+        const int fa = p.frame_anchor, ba = p.block_anchor;
+        const double X = align_right(fa) ? p.frame_w - p.pos_x
+                       : align_center(fa) ? p.frame_w / 2.0 + p.pos_x : (double)p.pos_x;
+        const double Y = align_bottom(fa) ? p.frame_h - p.pos_y
+                       : align_middle(fa) ? p.frame_h / 2.0 + p.pos_y : (double)p.pos_y;
+        x0 = X - (align_right(ba) ? w : align_center(ba) ? w / 2.0 : 0.0);
+        y0 = Y - (align_bottom(ba) ? h : align_middle(ba) ? h / 2.0 : 0.0);
+    } else {
+        const double ax = align_right(p.alignment) ? p.frame_w - p.margin
+                        : align_center(p.alignment) ? p.frame_w / 2.0 : (double)p.margin;
+        const double ay = align_bottom(p.alignment) ? p.frame_h - p.margin : (double)p.margin;
+        x0 = align_right(p.alignment) ? ax - w : align_center(p.alignment) ? ax - w / 2.0 : ax;
+        y0 = align_bottom(p.alignment) ? ay - h : ay;
     }
-    const double ax = align_right(p.alignment) ? p.frame_w - p.margin
-                    : align_center(p.alignment) ? p.frame_w / 2.0 : (double)p.margin;
-    const double ay = align_bottom(p.alignment) ? p.frame_h - p.margin : (double)p.margin;
-    x0 = align_right(p.alignment) ? ax - w : align_center(p.alignment) ? ax - w / 2.0 : ax;
-    y0 = align_bottom(p.alignment) ? ay - h : ay;
+    // Keep the whole block (and its outline) on screen whenever it fits; a
+    // block larger than the frame starts at the top-left edge. The 1 px edge
+    // covers glyph bitmaps, which round outward beyond the em box.
+    const double pad = 1.0 + (d->style.outline ? std::ceil(d->style.outline_width + 0.5) : 0.0);
+    x0 = std::max(pad, std::min(x0, p.frame_w - w - pad));
+    y0 = std::max(pad, std::min(y0, p.frame_h - h - pad));
+    if (w + 2 * pad > p.frame_w) x0 = pad;
+    if (h + 2 * pad > p.frame_h) y0 = pad;
 }
 
 double TextRenderer::line_offset(const Layout& L, size_t i, const Placement& p) const {
-    if (p.pos_mode == 1 || i >= L.lines.size()) return 0.0;
+    if (i >= L.lines.size()) return 0.0;
+    const int a = p.pos_mode == 1 ? p.block_anchor : p.alignment;
     const double slack = L.width - L.lines[i].advance;
-    return align_right(p.alignment) ? slack : align_center(p.alignment) ? slack / 2.0 : 0.0;
+    return align_right(a) ? slack : align_center(a) ? slack / 2.0 : 0.0;
 }
 
 // Visits every glyph's integer pen origin + cached bitmap.
@@ -348,18 +415,114 @@ bool FrameRenderer::init(const TextStyle& style, const Placement& placement, RGB
     canvas_.fill(bg_);
     last_ = {};
     dirty_ = {0, 0, canvas_.w, canvas_.h};
+    cell_w_.clear();
+    scale_ = 1.0;
+    block_w_ = block_h_ = 0;
     return text_.load(style, err);
 }
 
-const Canvas& FrameRenderer::render(const std::vector<std::string>& lines) {
+bool FrameRenderer::init(const TextStyle& style, const Placement& placement, RGBA background,
+                         const TextBlockSpec& spec, std::string* err) {
+    if (!init(style, placement, background, err)) return false;
+    // Cell widths (widest candidate per stat) and the largest block the
+    // video can show, at the current font size.
+    std::vector<std::vector<double>> widths;
+    auto measure = [&]() {
+        widths.assign(spec.pieces.size(), {});
+        for (size_t li = 0; li < spec.pieces.size() && li < spec.extremes.size(); ++li)
+            for (const auto& cands : spec.extremes[li]) {
+                double w = 0;
+                for (const std::string& c : cands) w = std::max(w, text_.advance(c));
+                widths[li].push_back(w);
+            }
+        Layout L;
+        if (place_.cells) {          // exact: literals + fixed cells
+            PieceLines empty = spec.pieces;
+            for (auto& line : empty)
+                for (auto& p : line)
+                    if (p.cell >= 0) p.text.clear();
+            L = text_.layout(empty, widths, place_.cell_align);
+        } else {                     // each stat at its widest candidate
+            std::vector<std::string> worst;
+            for (size_t li = 0; li < spec.pieces.size(); ++li) {
+                std::string s;
+                for (const TextPiece& p : spec.pieces[li]) {
+                    if (p.cell < 0 || li >= spec.extremes.size() || (size_t)p.cell >= spec.extremes[li].size()) {
+                        s += p.text;
+                        continue;
+                    }
+                    const auto& cands = spec.extremes[li][p.cell];
+                    std::string best = p.text;
+                    double bw = text_.advance(best);
+                    for (const std::string& c : cands) {
+                        const double w = text_.advance(c);
+                        if (w > bw) { bw = w; best = c; }
+                    }
+                    s += best;
+                }
+                worst.push_back(s);
+            }
+            L = text_.layout(worst);
+        }
+        block_w_ = L.width;
+        block_h_ = L.height();
+    };
+    measure();
+    if (place_.fit && block_w_ > 0 && block_h_ > 0) {
+        // Available area: the frame, minus the corner margin in preset mode.
+        double aw = place_.frame_w, ah = place_.frame_h;
+        if (place_.pos_mode == 0) {
+            aw -= 2.0 * place_.margin;
+            ah -= 2.0 * place_.margin;
+            if (aw <= 0) aw = place_.frame_w;
+            if (ah <= 0) ah = place_.frame_h;
+        }
+        const double pad = 2.0 + (style.outline ? 2.0 * (style.outline_width + 1.0) : 0.0);
+        const double s = std::min({1.0, (aw - pad) / block_w_, (ah - pad) / block_h_});
+        if (s < 1.0) {
+            // One scale for the whole video (metrics are linear in the size);
+            // 2% headroom for glyph ink beyond the advance box.
+            scale_ = std::max(0.01, s * 0.98);
+            TextStyle st = style;
+            st.size *= scale_;
+            st.letter_spacing *= scale_;
+            st.outline_width *= scale_;
+            if (!text_.load(st, err)) return false;
+            measure();
+        }
+    }
+    if (place_.cells) cell_w_ = widths;
+    return true;
+}
+
+const Canvas& FrameRenderer::draw(const Layout& L) {
     canvas_.fill_rect(last_, bg_);
-    const Layout L = text_.layout(lines);
     double x0 = 0, y0 = 0;
     text_.place(L, place_, x0, y0);
     const Rect now = text_.draw(canvas_, L, place_, x0, y0);
     dirty_ = last_.united(now);
     last_ = now;
     return canvas_;
+}
+
+const Canvas& FrameRenderer::render(const std::vector<std::string>& lines) {
+    return draw(text_.layout(lines));
+}
+
+Layout FrameRenderer::layout_pieces(const PieceLines& pieces) const {
+    if (place_.cells && !cell_w_.empty()) return text_.layout(pieces, cell_w_, place_.cell_align);
+    std::vector<std::string> lines;   // without cells: whole-line shaping (kerning across stats)
+    lines.reserve(pieces.size());
+    for (const auto& line : pieces) {
+        std::string s;
+        for (const TextPiece& p : line) s += p.text;
+        lines.push_back(std::move(s));
+    }
+    return text_.layout(lines);
+}
+
+const Canvas& FrameRenderer::render_pieces(const PieceLines& pieces) {
+    return draw(layout_pieces(pieces));
 }
 
 // ---- typography options ------------------------------------------------------------

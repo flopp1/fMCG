@@ -24,6 +24,10 @@ struct PatternData {
     int         pos_mode = 0;         // 0 = corners, 1 = explicit x/y
     int         pos_x = 30;
     int         pos_y = 30;
+    int         frame_anchor = 0;     // custom position: frame point x,y is measured from (GUI 3x3 index, 0 = top-left)
+    int         block_anchor = 0;     // custom position: block point placed there (GUI 3x3 index)
+    bool        cells = false;        // fixed-width stat cells
+    int         cell_align = 2;       // 0 left, 1 centre, 2 right
     std::string font_family = "Arial";
     std::string font_variant;         // subfamily/style ("" = family default)
     int         font_size = 36;
@@ -40,6 +44,8 @@ struct PatternData {
     bool operator==(const PatternData& o) const {
         return layout_text == o.layout_text && alignment == o.alignment &&
                pos_mode == o.pos_mode && pos_x == o.pos_x && pos_y == o.pos_y &&
+               frame_anchor == o.frame_anchor && block_anchor == o.block_anchor &&
+               cells == o.cells && cell_align == o.cell_align &&
                font_family == o.font_family && font_variant == o.font_variant &&
                font_size == o.font_size &&
                text_color_aabbggrr == o.text_color_aabbggrr &&

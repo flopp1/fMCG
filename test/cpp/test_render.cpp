@@ -93,12 +93,12 @@ int main(int argc, char** argv) {
             fmcg_text::FrameRenderer ref;
             fmcg_text::Placement p2 = pl;
             p2.frame_w = W; p2.frame_h = H;
-            ref.init(st, p2, b);
+            ref.init(st, p2, b, src.block_spec());
             std::vector<uint8_t> img((size_t)W * H * bpp, 0);
             bool exact = s.ok;
             for (size_t k = 0; k < total && exact; ++k) {
                 exact = qtrle_decode(file.data() + s.off[k], s.size[k], img, bpp, W, H);
-                const fmcg_text::Canvas& c = ref.render(src.lines(k));
+                const fmcg_text::Canvas& c = ref.render_pieces(src.pieces(k));
                 for (int y = 0; y < H && exact; ++y)
                     for (int x = 0; x < W && exact; ++x) {
                         const uint8_t* p = c.row(y) + x * 4;

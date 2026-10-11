@@ -92,6 +92,10 @@ static PatternData current_pattern_from_ui() {
     p.pos_mode = g_ui.s.pos_mode;
     p.pos_x = g_ui.s.pos_x;
     p.pos_y = g_ui.s.pos_y;
+    p.frame_anchor = g_ui.s.frame_anchor;
+    p.block_anchor = g_ui.s.block_anchor;
+    p.cells = g_ui.s.cells;
+    p.cell_align = g_ui.s.cell_align;
     p.font_family = g_ui.s.font_family;
     p.font_variant = g_ui.s.font_variant;
     p.font_size = g_ui.s.font_size;
@@ -116,6 +120,10 @@ static void apply_pattern_to_ui(const PatternData& p) {
     g_ui.s.pos_mode = p.pos_mode;
     g_ui.s.pos_x = p.pos_x;
     g_ui.s.pos_y = p.pos_y;
+    g_ui.s.frame_anchor = p.frame_anchor;
+    g_ui.s.block_anchor = p.block_anchor;
+    g_ui.s.cells = p.cells;
+    g_ui.s.cell_align = p.cell_align;
     g_ui.s.font_size = p.font_size;
     g_ui.s.text_color_aabbggrr = p.text_color_aabbggrr;
     g_ui.s.bg_color_aabbggrr = p.bg_color_aabbggrr;
@@ -493,7 +501,7 @@ static void draw_pattern_section() {
     ImGui::SameLine(120);
     ImGui::SetNextItemWidth(120);
     ImGui::InputInt("##fsize", &g_ui.s.font_size, 1, 10);
-    if (g_ui.s.font_size < 1) g_ui.s.font_size = 1;
+    g_ui.s.font_size = std::max(1, std::min(2000, g_ui.s.font_size));
 
     draw_typography_options();
 
@@ -619,6 +627,21 @@ static void draw_pattern_section() {
     ImGui::SameLine();
     ImGui::Checkbox("CC##c", &g_ui.s.commas.cc);
     ImGui::Checkbox("Leading zeros (pad each stat to its own maximum)", &g_ui.s.pad.enabled);
+    ImGui::Checkbox("Fixed-width stats", &g_ui.s.cells);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Each stat gets a cell as wide as its widest value in this video\n"
+                          "(measured in the chosen font), so text after it and the line's\n"
+                          "width stay put while digits change.");
+    ImGui::SameLine();
+    if (!g_ui.s.cells) ImGui::BeginDisabled();
+    ImGui::Text("align");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(100);
+    static const char* k_cell_align[] = {"Left", "Center", "Right"};
+    ImGui::Combo("##cellalign", &g_ui.s.cell_align, k_cell_align, 3);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Where a value sits inside its cell (Right lines numbers up by their last digit).");
+    if (!g_ui.s.cells) ImGui::EndDisabled();
 
     ImGui::Text("BPM decimals:");
     ImGui::SameLine();
@@ -641,34 +664,45 @@ static void draw_pattern_section() {
             g_ui.s.alignment = g_ui.alignment_idx;
         }
     } else {
-        // Valid ranges for the text-block anchor (top-left), shown so the
-        // user knows the boundaries. The exact bottom-right bound depends
-        // on the rendered text size (rows and digits per frame), so the
-        // generator clamps per-frame; here we only keep the anchor itself
-        // inside the frame and document that.
-        int max_x = g_ui.s.width, max_y = g_ui.s.height;
+        // Custom position: x,y measured from a point of the frame, and the
+        // block's own anchor point placed there (fmcg_text::Placement).
+        static const char* k_anchor_items[] = {"Top Left", "Top Center", "Top Right",
+                                               "Middle Left", "Center", "Middle Right",
+                                               "Bottom Left", "Bottom Center", "Bottom Right"};
+        ImGui::Text("Measured from");
+        ImGui::SameLine(130);
+        ImGui::SetNextItemWidth(150);
+        ImGui::Combo("##fanchor", &g_ui.s.frame_anchor, k_anchor_items, 9);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The point of the FRAME that x,y count from.\n"
+                              "From an edge, x,y count inward (from the right edge +x moves left,\n"
+                              "from the bottom +y moves up); from a centre line, +x is right, +y down.\n"
+                              "Keeps the counter in place when the resolution changes.");
+        ImGui::SameLine();
+        ImGui::Text("Block anchor");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(150);
+        ImGui::Combo("##banchor", &g_ui.s.block_anchor, k_anchor_items, 9);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The point of the TEXT BLOCK that sits at the position.\n"
+                              "Lines align to its side (left, centre or right).");
+        // Ranges: 0..size from an edge, -size/2..size/2 from a centre line.
+        const bool cx = g_ui.s.frame_anchor % 3 == 1, cy = g_ui.s.frame_anchor / 3 == 1;
+        const int min_x = cx ? -g_ui.s.width / 2 : 0, max_x = cx ? g_ui.s.width / 2 : g_ui.s.width;
+        const int min_y = cy ? -g_ui.s.height / 2 : 0, max_y = cy ? g_ui.s.height / 2 : g_ui.s.height;
         ImGui::Text("x");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(90);
         int xin = g_ui.s.pos_x;
-        if (ImGui::InputInt("##posx", &xin, 0, 0)) {
-            if (xin < 0) xin = 0;
-            if (xin > max_x) xin = max_x;
-            g_ui.s.pos_x = xin;
-        }
+        if (ImGui::InputInt("##posx", &xin, 0, 0)) g_ui.s.pos_x = std::max(min_x, std::min(max_x, xin));
         ImGui::SameLine();
         ImGui::Text("y");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(90);
         int yin = g_ui.s.pos_y;
-        if (ImGui::InputInt("##posy", &yin, 0, 0)) {
-            if (yin < 0) yin = 0;
-            if (yin > max_y) yin = max_y;
-            g_ui.s.pos_y = yin;
-        }
+        if (ImGui::InputInt("##posy", &yin, 0, 0)) g_ui.s.pos_y = std::max(min_y, std::min(max_y, yin));
         ImGui::SameLine();
-        ImGui::TextDisabled("(top-left of text block)");
-        ImGui::TextDisabled("x: 0..%d  y: 0..%d  (block is auto-shifted left/up to stay fully visible)", max_x, max_y);
+        ImGui::TextDisabled("x: %d..%d  y: %d..%d  (the block always stays fully on screen)", min_x, max_x, min_y, max_y);
     }
 }
 
@@ -712,8 +746,13 @@ static void draw_global_section() {
     ImGui::SameLine();
     ImGui::SetNextItemWidth(100);
     if (ImGui::InputInt("##h", &g_ui.s.height, 0, 0)) { mark_globals_dirty(); }
-    if (g_ui.s.width < 16) g_ui.s.width = 16;
-    if (g_ui.s.height < 16) g_ui.s.height = 16;
+    // Encoder limits: 16..16384 px; H.264 (4:2:0) also needs even sizes.
+    g_ui.s.width = std::max(16, std::min(16384, g_ui.s.width));
+    g_ui.s.height = std::max(16, std::min(16384, g_ui.s.height));
+    if (g_ui.s.output_format == 0 && ((g_ui.s.width | g_ui.s.height) & 1)) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "MP4 needs an even width and height");
+    }
 
     ImGui::Text("FPS");
     ImGui::SameLine(120);
@@ -1084,6 +1123,10 @@ static void draw_frame(GLFWwindow* window) {
                 g_app.pos_mode = g_ui.s.pos_mode;
                 g_app.pos_x = g_ui.s.pos_x;
                 g_app.pos_y = g_ui.s.pos_y;
+                g_app.frame_anchor = g_ui.s.frame_anchor;
+                g_app.block_anchor = g_ui.s.block_anchor;
+                g_app.cells = g_ui.s.cells;
+                g_app.cell_align = g_ui.s.cell_align;
                 g_app.alignment = g_ui.s.alignment;
                 g_app.ass_alignment = gui_alignment_to_ass(g_ui.s.alignment);
                 g_app.vid_width = g_ui.s.width;

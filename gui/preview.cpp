@@ -42,11 +42,20 @@ std::string canvas_key() {
       << g_app.ass_alignment << '|' << g_app.outline_enabled << ',' << g_app.outline_width << ','
       << g_app.outline_colour_ass << '|' << g_app.typo.letter_spacing << ',' << g_app.typo.line_spacing;
     for (const std::string& f : g_app.typo.features()) k << ',' << f;
+    // placement + everything the block spec (cell widths, fit) depends on
+    k << '|' << g_app.frame_anchor << ',' << g_app.block_anchor << ',' << g_app.cells << ',' << g_app.cell_align
+      << '|' << g_app.frames_data.size() << ',' << g_app.total_notes << ',' << g_app.total_ticks << ','
+      << g_app.ppqn << ',' << g_app.fps << ',' << g_app.start_delay << ',' << g_app.end_delay << '|'
+      << g_app.preview_commas.notes << g_app.preview_commas.polyphony << g_app.preview_commas.nps
+      << g_app.preview_commas.cc << g_app.preview_commas.ticks << g_app.preview_pad.enabled << g_app.preview_bpm.decimals;
+    if (!g_app.frames_data.empty()) k << ',' << g_app.frames_data.back().timestamp_sec << ',' << g_app.frames_data.back().cumulative_cc;
+    for (const std::string& t : g_app.template_lines) k << '|' << t;
     return k.str();
 }
 
-// Renders `lines` and draws the frame scaled to fit the current content region.
-void draw_canvas(const std::vector<std::string>& lines) {
+// Renders `pieces` (a frame of `src`) and draws the frame scaled to fit the
+// current content region.
+void draw_canvas(const fmcg_text::PieceLines& pieces, const FrameTextSource& src) {
     const std::string key = canvas_key();
     const int W = std::max(16, g_app.vid_width), H = std::max(16, g_app.vid_height);
     if (key != g_cp.key) {
@@ -57,7 +66,7 @@ void draw_canvas(const std::vector<std::string>& lines) {
         pl.frame_w = W; pl.frame_h = H;
         const fmcg_text::RGBA bg = fmcg_text::from_ass_colour(g_app.bg_colour_ass) | 0xFFu;   // opaque video bg
         g_cp.err.clear();
-        g_cp.ok = g_cp.fr.init(st, pl, bg, &g_cp.err);
+        g_cp.ok = g_cp.fr.init(st, pl, bg, src.block_spec(), &g_cp.err);
         if (!g_cp.tex) glGenTextures(1, &g_cp.tex);
         glBindTexture(GL_TEXTURE_2D, g_cp.tex);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -68,8 +77,14 @@ void draw_canvas(const std::vector<std::string>& lines) {
                      g_cp.fr.canvas().px.data());
         g_cp.tex_w = W; g_cp.tex_h = H;
     }
+    std::vector<std::string> lines;   // change detection
+    for (const auto& line : pieces) {
+        std::string s;
+        for (const auto& pc : line) s += pc.text;
+        lines.push_back(std::move(s));
+    }
     if (g_cp.ok && lines != g_cp.last_lines) {
-        const fmcg_text::Canvas& c = g_cp.fr.render(lines);
+        const fmcg_text::Canvas& c = g_cp.fr.render_pieces(pieces);
         g_cp.last_lines = lines;
         const fmcg_text::Rect d = g_cp.fr.dirty().clipped(c.w, c.h);
         if (!d.empty()) {
@@ -89,33 +104,16 @@ void draw_canvas(const std::vector<std::string>& lines) {
     if (!g_cp.ok) {
         ImGui::SetCursorPos(ImVec2(cur.x + 8, cur.y + 8));
         ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "Font error: %s", g_cp.err.c_str());
+    } else if (g_cp.fr.scale() < 1.0) {
+        ImGui::SetCursorPos(ImVec2(cur.x + 8, cur.y + area.y - ImGui::GetTextLineHeightWithSpacing()));
+        ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f),
+                           "Text scaled to %.0f%% (%d -> %.1f px) so the largest counter fits the %dx%d frame",
+                           g_cp.fr.scale() * 100.0, g_app.font_size, g_cp.fr.font_size(), g_cp.tex_w, g_cp.tex_h);
     }
 }
 
-std::vector<std::string> split_lines(const std::string& text) {
-    std::vector<std::string> lines;
-    std::istringstream stream(text);
-    std::string ln;
-    while (std::getline(stream, ln)) lines.push_back(ln);
-    return lines;
-}
 } // namespace
 
-std::string format_frame_text(const FrameStats& fs) {
-    std::string result;
-    // {time-max} must show the MIDI song horizon, not the end-delay-extended
-    // video length (total_duration already spans the tail the engine appended).
-    double max_time = g_app.total_duration - g_app.end_delay;
-    if (max_time < 0.0) max_time = 0.0;
-    uint64_t total_cc = g_app.frames_data.empty() ? 0 : g_app.frames_data.back().cumulative_cc;
-    for (size_t i = 0; i < g_app.template_lines.size(); ++i) {
-        result += ProcessTemplateLine(g_app.template_lines[i], fs, g_app.total_notes, total_cc,
-                                      max_time, g_app.ppqn, g_app.preview_commas, g_app.preview_pad,
-                                      g_app.preview_bpm, g_app.total_ticks);
-        if (i + 1 < g_app.template_lines.size()) result += '\n';
-    }
-    return result;
-}
 
 
 
@@ -219,8 +217,8 @@ void render_pattern_only_popup() {
 
         FrameStats zero_fs;
         zero_fs.timestamp_sec = g_app.preview_time - g_app.start_delay;
-        std::string text = format_frame_text(zero_fs);
-        draw_canvas(split_lines(text));
+        const FrameTextSource src = app_text_source();
+        draw_canvas(src.pieces_for(zero_fs, false), src);
 
         ImGui::EndChild();
 
@@ -354,7 +352,7 @@ void render_preview_popup() {
             const size_t nf = src.frame_count();
             size_t k = (size_t)std::max(0.0, std::floor(g_app.preview_time * src.fps + 1e-9));
             if (nf && k >= nf) k = nf - 1;
-            draw_canvas(src.lines(k));
+            draw_canvas(src.pieces(k), src);
         } else {
             const char* msg = "No preview data";
             ImVec2 ts = ImGui::CalcTextSize(msg);

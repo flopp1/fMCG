@@ -38,6 +38,10 @@ struct GuiSettings {
     int         pos_mode = 0;
     int         pos_x = 30;
     int         pos_y = 30;
+    int         frame_anchor = 0;     // custom position: frame point x,y is measured from (GUI 3x3 index, 0 = top-left)
+    int         block_anchor = 0;     // custom position: block point placed there (GUI 3x3 index)
+    bool        cells = false;        // fixed-width stat cells
+    int         cell_align = 2;       // 0 left, 1 centre, 2 right
     bool        vel0_note_off = true;
     bool        close_held_notes = false;   // release notes still held at a track's end (off = MIDI-spec ons - offs)
     int         ffmpeg_threads = 0;   // encoder (x264) threads, 0 = auto; key name kept for saved settings
@@ -151,6 +155,10 @@ struct AppState {
     int                       pos_mode{0};        // 0 = corners, 1 = explicit x/y
     int                       pos_x{30};
     int                       pos_y{30};
+    int                       frame_anchor{0};    // GUI 3x3 indices (see GuiSettings)
+    int                       block_anchor{0};
+    bool                      cells{false};
+    int                       cell_align{2};
     int                       alignment{1};       // corner dropdown (GUI index)
     double                    preview_start_time{0.0};
     double                    preview_start_pos{0.0};
@@ -234,6 +242,8 @@ extern AppState g_app;   // single global instance (defined in app_state.cpp)
 // GUI corner dropdown index -> ASS \an numpad alignment
 // (0 TL,1 TR,2 BL,3 BR,4 Top Center,5 Bottom Center -> 7,9,1,3,8,2)
 int gui_alignment_to_ass(int idx);
+// 3x3 anchor index in reading order (0 = top-left .. 8 = bottom-right) -> numpad 7 8 9 / 4 5 6 / 1 2 3.
+int gui_anchor_to_numpad(int idx);
 
 // In-built renderer inputs built from the processed/preview state in g_app
 // (shared by the preview and the render job so both draw identical frames).

@@ -78,13 +78,40 @@ bool valid_feature(const std::string& f);
 struct FontFeature { std::string tag, name; };
 std::vector<FontFeature> font_features(const std::string& font_file, int face_index = 0);
 
-// Where the text block goes (same meaning as the GUI settings).
+// Where the text block goes and how its lines are laid out (same meaning as
+// the GUI settings). Anchors use the numpad convention: 7 8 9 = top
+// left/centre/right, 4 5 6 = middle, 1 2 3 = bottom.
 struct Placement {
     int frame_w = 1920, frame_h = 1080;
-    int pos_mode = 0;               // 0 = corner/centre alignment, 1 = custom (top-left of the block)
-    int alignment = 7;              // ASS numpad alignment: 7 8 9 / 1 2 3 (corners + top/bottom centre)
-    int pos_x = 30, pos_y = 30;     // pos_mode 1
+    int pos_mode = 0;               // 0 = corner preset (alignment + margin), 1 = custom position
+    int alignment = 7;              // pos_mode 0: ASS numpad alignment (corners + top/bottom centre)
     int margin = 30;                // pos_mode 0 margin, as libass MarginL/R/V
+    // pos_mode 1: (pos_x, pos_y) is measured from `frame_anchor` -- inward from
+    // an edge (left/top: +x right/+y down; right/bottom: +x left/+y up), or
+    // from the centre line (+x right/+y down) -- and the block's `block_anchor`
+    // point is put there. Lines align to the block anchor's side.
+    int pos_x = 30, pos_y = 30;
+    int frame_anchor = 7;
+    int block_anchor = 7;
+    // Fixed-width stat cells: each stat takes the width of its widest value in
+    // the video (TextBlockSpec), aligned inside it -- lines stop shifting.
+    bool cells = false;
+    int cell_align = 2;             // 0 left, 1 centre, 2 right
+    // Scale the font down (once, for the whole video) if the largest block the
+    // video shows would not fit the frame (minus margins). Needs a TextBlockSpec.
+    bool fit = true;
+};
+
+// One run of a line: literal text (cell -1) or a stat value (cell = index of
+// the stat on its line).
+struct TextPiece { std::string text; int cell = -1; };
+using PieceLines = std::vector<std::vector<TextPiece>>;
+// What a whole video will show: the template's pieces (stat text = any value)
+// and, per line and cell, candidate strings whose widest rendering bounds
+// every value that stat takes (FrameTextSource::block_spec()).
+struct TextBlockSpec {
+    PieceLines pieces;
+    std::vector<std::vector<std::vector<std::string>>> extremes;
 };
 
 struct ShapedGlyph { uint32_t id; double x, y; };   // pen position in px, relative to the line origin
@@ -114,7 +141,12 @@ public:
     const TextStyle& style() const;
 
     Layout layout(const std::vector<std::string>& lines) const;
-    // Top-left of the block for this layout (pos_mode 1 clamps the block on screen).
+    // Pieces shaped one by one; a piece with cell c >= 0 occupies
+    // cell_w[line][c] (if given and wider than the text), aligned inside it.
+    Layout layout(const PieceLines& lines, const std::vector<std::vector<double>>& cell_w, int cell_align) const;
+    double advance(const std::string& text) const;   // shaped width of one line (px)
+    // Top-left of the block for this layout, clamped so the block (incl. outline)
+    // stays on screen whenever it fits.
     void place(const Layout& L, const Placement& p, double& x0, double& y0) const;
     // Line i's horizontal offset inside the block (right/centre alignments).
     double line_offset(const Layout& L, size_t i, const Placement& p) const;
@@ -135,17 +167,31 @@ class FrameRenderer {
 public:
     bool init(const TextStyle& style, const Placement& placement, RGBA background,
               std::string* err = nullptr);
+    // With the video's TextBlockSpec: fixed-width cells (placement.cells) and
+    // fitting the largest block into the frame (placement.fit).
+    bool init(const TextStyle& style, const Placement& placement, RGBA background,
+              const TextBlockSpec& spec, std::string* err = nullptr);
     const Canvas& render(const std::vector<std::string>& lines);
+    const Canvas& render_pieces(const PieceLines& pieces);
+    Layout layout_pieces(const PieceLines& pieces) const;   // the layout render_pieces draws
+    const Placement& placement() const { return place_; }
     const Canvas& canvas() const { return canvas_; }
     Rect dirty() const { return dirty_; }
     TextRenderer& text() { return text_; }
+    double scale() const { return scale_; }          // font scale applied by fitting (1 = none)
+    double font_size() const { return text_.loaded() ? text_.style().size : 0.0; }
+    double block_width() const { return block_w_; }  // largest block (px, after fitting), 0 without spec
+    double block_height() const { return block_h_; }
 
 private:
+    const Canvas& draw(const Layout& L);
     TextRenderer text_;
     Placement place_;
     RGBA bg_ = 0x000000FFu;
     Canvas canvas_;
     Rect last_{}, dirty_{};
+    std::vector<std::vector<double>> cell_w_;
+    double scale_ = 1.0, block_w_ = 0, block_h_ = 0;
 };
 
 } // namespace fmcg_text

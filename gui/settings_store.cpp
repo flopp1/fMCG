@@ -300,6 +300,10 @@ bool save_pattern(const std::string& name, const PatternData& p) {
     ss << "pos_mode = " << p.pos_mode << "\n";
     ss << "pos_x = " << p.pos_x << "\n";
     ss << "pos_y = " << p.pos_y << "\n";
+    ss << "frame_anchor = " << p.frame_anchor << "\n";
+    ss << "block_anchor = " << p.block_anchor << "\n";
+    ss << "cells = " << (p.cells ? 1 : 0) << "\n";
+    ss << "cell_align = " << p.cell_align << "\n";
     ss << "font_family = " << p.font_family << "\n";
     ss << "font_variant = " << p.font_variant << "\n";
     ss << "font_size = " << p.font_size << "\n";
@@ -348,6 +352,13 @@ bool load_pattern(const std::string& name, PatternData& out) {
     out.pos_mode             = get_int(kv, "pos_mode", 0);
     out.pos_x                = get_int(kv, "pos_x", 30);
     out.pos_y                = get_int(kv, "pos_y", 30);
+    out.frame_anchor         = get_int(kv, "frame_anchor", 0);
+    if (out.frame_anchor < 0 || out.frame_anchor > 8) out.frame_anchor = 0;
+    out.block_anchor         = get_int(kv, "block_anchor", 0);
+    if (out.block_anchor < 0 || out.block_anchor > 8) out.block_anchor = 0;
+    out.cells                = get_bool(kv, "cells", false);
+    out.cell_align           = get_int(kv, "cell_align", 2);
+    if (out.cell_align < 0 || out.cell_align > 2) out.cell_align = 2;
     out.font_family          = get_str(kv, "font_family", "Arial");
     out.font_variant         = get_str(kv, "font_variant");
     out.font_size            = get_int(kv, "font_size", 36);

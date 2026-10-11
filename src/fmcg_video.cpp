@@ -513,20 +513,22 @@ std::unique_ptr<Writer> create_writer(const std::string& path, const Options& op
 int render_video(const std::string& path, const Options& opt, const FrameTextSource& text,
                  const fmcg_text::TextStyle& style, const fmcg_text::Placement& placement,
                  fmcg_text::RGBA background, const std::atomic<bool>* cancel,
-                 const std::function<void(size_t, size_t)>& progress, std::string* err) {
+                 const std::function<void(size_t, size_t)>& progress, std::string* err,
+                 double* text_scale) {
     const size_t total = text.frame_count();
     if (total == 0) { if (err) *err = "nothing to render"; return -1; }
     fmcg_text::FrameRenderer fr;
     std::string e;
     fmcg_text::Placement pl = placement;
     pl.frame_w = opt.width; pl.frame_h = opt.height;
-    if (!fr.init(style, pl, background, &e)) { if (err) *err = e; return -1; }
+    if (!fr.init(style, pl, background, text.block_spec(), &e)) { if (err) *err = e; return -1; }
+    if (text_scale) *text_scale = fr.scale();
     auto writer = create_writer(path, opt, &e);
     if (!writer) { if (err) *err = e; return -1; }
     auto last = std::chrono::steady_clock::now();
     for (size_t k = 0; k < total; ++k) {
         if (cancel && cancel->load(std::memory_order_relaxed)) { writer->abort(); return -2; }
-        fr.render(text.lines(k));
+        fr.render_pieces(text.pieces(k));
         const Rect dirty = (k == 0) ? Rect{0, 0, opt.width, opt.height} : fr.dirty();
         if (!writer->add_frame(fr.canvas(), dirty)) {
             if (err) *err = writer->error();

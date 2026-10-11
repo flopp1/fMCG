@@ -144,6 +144,10 @@ void run_process(GuiSettings s) {
     app.pos_mode = s.pos_mode;
     app.pos_x = s.pos_x;
     app.pos_y = s.pos_y;
+    app.frame_anchor = s.frame_anchor;
+    app.block_anchor = s.block_anchor;
+    app.cells = s.cells;
+    app.cell_align = s.cell_align;
     app.alignment = s.alignment;
 
     app.frames_data = std::move(frames);
@@ -207,13 +211,21 @@ void run_render(RenderSettings s) {
     vo.tune = s.x264_tune;
     vo.keyframe_seconds = s.keyframe_seconds;
     const auto t0 = std::chrono::steady_clock::now();
+    double text_scale = 1.0;
     const int rc = fmcg_video::render_video(s.output_video, vo, app_text_source(), app_text_style(),
         app_placement(), bg, &app.cancel,
         [&](size_t done, size_t total) {
             app.progress.store((float)((double)done / (double)total));
             const double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
             if (el > 0) app.render_speed.store((float)((double)done / s.fps / el));   // x realtime
-        }, &err);
+        }, &err, &text_scale);
+    if (text_scale < 1.0) {
+        char msg[200];
+        std::snprintf(msg, sizeof msg, "Note: the largest counter text did not fit the %dx%d frame; "
+                      "font scaled to %.0f%% (%.1f px) for the whole video.",
+                      s.width, s.height, text_scale * 100.0, app.font_size * text_scale);
+        app.gui_log(msg, false);
+    }
     app.render_wallclock.store(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
     if (rc == -2) {
         app.gui_log("Rendering cancelled.", false);

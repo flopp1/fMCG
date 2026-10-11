@@ -11,6 +11,11 @@ UiState  g_ui;
 // Alignment + font-variant helpers
 // ---------------------------------------------------------------------------
 
+int gui_anchor_to_numpad(int idx) {
+    static const int k[9] = {7, 8, 9, 4, 5, 6, 1, 2, 3};
+    return (idx >= 0 && idx < 9) ? k[idx] : 7;
+}
+
 int gui_alignment_to_ass(int idx) {
     switch (idx) {
         case 0: return 7;    // Top Left
@@ -118,6 +123,10 @@ fmcg_text::Placement app_placement() {
     pl.pos_mode = g_app.pos_mode;
     pl.pos_x = g_app.pos_x;
     pl.pos_y = g_app.pos_y;
+    pl.frame_anchor = gui_anchor_to_numpad(g_app.frame_anchor);
+    pl.block_anchor = gui_anchor_to_numpad(g_app.block_anchor);
+    pl.cells = g_app.cells;
+    pl.cell_align = g_app.cell_align;
     pl.alignment = g_app.ass_alignment;
     return pl;
 }

@@ -60,9 +60,13 @@ std::unique_ptr<Writer> create_writer(const std::string& path, const Options& op
 // style/placement/background and encodes it to `path`. `progress(done, total)`
 // is called at most every ~100 ms. On cancel or error the partial file is
 // deleted. Returns 0 = ok, -2 = cancelled, -1 = error (err filled).
+// The text block is laid out from text.block_spec(): fixed-width cells
+// (placement.cells) and, with placement.fit, one font scale for the whole
+// video so its largest block fits the frame; *text_scale receives that scale.
 int render_video(const std::string& path, const Options& opt, const FrameTextSource& text,
                  const fmcg_text::TextStyle& style, const fmcg_text::Placement& placement,
                  fmcg_text::RGBA background, const std::atomic<bool>* cancel,
-                 const std::function<void(size_t done, size_t total)>& progress, std::string* err);
+                 const std::function<void(size_t done, size_t total)>& progress, std::string* err,
+                 double* text_scale = nullptr);
 
 } // namespace fmcg_video

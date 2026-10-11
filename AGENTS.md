@@ -199,5 +199,7 @@ No content heuristics. See DESIGN.md.
   Font discovery fixed: TTC table offsets are file-absolute (every .ttc family was unreadable, e.g.
   Iosevka, Cambria); all families of a collection listed; FontVariant::face_index carried to the
   renderer; per-user font dir no longer scanned twice (duplicate styles).
-  Next: goals 5/7/8/9 as the user prioritises.
+  Goals 5/7/9 implemented (session 3, end): FrameTextSource::pieces()/block_spec(), Placement frame/block
+  anchors, cells, fit; test/cpp/test_layout.cpp. Pending: Linux build+suite run, README docs for them,
+  GUI check of anchor combos. Next after that: goal 8.
 See OPEN_QUESTIONS.md "Corpus status" for the per-file table; update it every session.

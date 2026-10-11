@@ -1,6 +1,7 @@
 // fmcg_format.h -- per-frame template rendering and ASS subtitle generation.
 #pragma once
 #include "fmcg_midi.h"
+#include "fmcg_text.h"   // TextPiece / TextBlockSpec (plain structs; no renderer dependency)
 
 #include <string>
 #include <vector>
@@ -28,6 +29,20 @@ struct BpmOpts {
     int decimals = 2;
 };
 
+// A layout template line split into literal text and stat tokens ({nc} ->
+// token "nc"). Unknown {names} stay literal text.
+struct TemplateSegment { std::string text; bool token = false; };
+std::vector<TemplateSegment> parse_template_line(const std::string& line);
+
+// One formatted line as pieces: literal text (cell -1) and stat values
+// (cell = index of the stat on its line, 0, 1, ...). Concatenated, it is
+// exactly ProcessTemplateLine's result.
+std::vector<fmcg_text::TextPiece> format_template_line(const std::string& line, const FrameStats& fs,
+                                                       uint64_t total_notes, uint64_t total_cc_events,
+                                                       double max_time_sec, uint16_t ppqn,
+                                                       const CommaOpts& commas = {}, PadOpts pad = {},
+                                                       BpmOpts bpm = {}, uint64_t total_ticks = 0);
+
 std::string ProcessTemplateLine(const std::string& line, const FrameStats& fs,
                                 uint64_t total_notes, uint64_t total_cc_events,
                                 double max_time_sec, uint16_t ppqn,
@@ -54,6 +69,14 @@ struct FrameTextSource {
     double song_duration() const;               // MIDI horizon ({time-max}); tail excluded
     FrameStats stats(size_t k) const;
     std::vector<std::string> lines(size_t k) const;
+    // The same text as pieces (literals + stat cells), for fixed-width cells.
+    fmcg_text::PieceLines pieces(size_t k) const;
+    // Pieces for arbitrary stats (pattern-only preview without a processed file).
+    fmcg_text::PieceLines pieces_for(const FrameStats& fs, bool lead_in) const;
+    // Template pieces + per-stat candidate strings that bound every value each
+    // stat takes in this video: what the renderer needs for fixed-width cells
+    // and for fitting the largest block into the frame.
+    fmcg_text::TextBlockSpec block_spec() const;
 };
 
 struct AssConfig {
