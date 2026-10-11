@@ -136,8 +136,8 @@ public:
     class ArchiveFeeder : public Feeder {
     public:
         struct archive* a = nullptr;
-        std::vector<uint8_t> staging;   // libarchive's block buffer is invalidated
-        size_t s_lo = 0;                // by the next call, so blocks are copied
+        const uint8_t* blk_p = nullptr;   // current libarchive output block: served in
+        size_t blk_n = 0, s_lo = 0;       // place, valid until the next data_block call
         bool saw_error = false;
 
         explicit ArchiveFeeder(const std::string& path) : path_(path) {
@@ -152,8 +152,14 @@ public:
             uint8_t* d = (uint8_t*)dst;
             size_t out = 0;
             while (out < n) {
-                if (s_lo == staging.size()) {
+                if (s_lo == blk_n) {
                     const void* buf; size_t bsz; la_int64_t off;
+                    if (!a && pf) {                    // last resort: the file's bytes verbatim
+                        const size_t r = std::fread(d + out, 1, n - out, pf);
+                        if (r == 0) break;
+                        out += r;
+                        continue;
+                    }
                     if (saw_error && raw_mode) break;  // raw decoder poisoned: fail-stop
                     int r = a ? archive_read_data_block(a, &buf, &bsz, &off) : ARCHIVE_FATAL;
                     if (r == ARCHIVE_EOF) break;
@@ -167,12 +173,12 @@ public:
                         saw_error = true; break;
                     }
                     if (bsz == 0) continue;   // zero-size OK blocks occur mid-stream (7z)
-                    const uint8_t* p = (const uint8_t*)buf;
-                    staging.assign(p, p + bsz);
+                    blk_p = (const uint8_t*)buf;   // libarchive's buffer, valid until the next call
+                    blk_n = bsz;
                     s_lo = 0;
                 }
-                size_t take = std::min(staging.size() - s_lo, n - out);
-                std::memcpy(d + out, staging.data() + s_lo, take);
+                size_t take = std::min(blk_n - s_lo, n - out);
+                std::memcpy(d + out, blk_p + s_lo, take);
                 s_lo += take;
                 out += take;
             }
@@ -196,7 +202,7 @@ public:
 
         void open_container() {
             if (a) { archive_read_free(a); a = nullptr; }
-            staging.clear(); s_lo = 0;
+            blk_p = nullptr; blk_n = 0; s_lo = 0;
             a = archive_read_new();
             archive_read_support_filter_all(a);
             archive_read_support_format_all(a);
@@ -211,7 +217,6 @@ public:
                 }
                 if (archive_entry_filetype(entry) != AE_IFDIR) break;
             }
-            staging.reserve(1 << 20);
         }
         // Re-open serving only the filter's decoded output (no container
         // parsing): the raw reader's "data" entry yields exactly the decoded
@@ -220,7 +225,7 @@ public:
         // correct passthrough for a plain container reached via recursion.
         void open_raw() {
             if (a) { archive_read_free(a); a = nullptr; }
-            staging.clear(); s_lo = 0;
+            blk_p = nullptr; blk_n = 0; s_lo = 0;
             raw_mode = true;
             a = archive_read_new();
             archive_read_support_filter_all(a);
@@ -244,8 +249,8 @@ public:
     public:
         std::unique_ptr<Feeder> inner;
         struct archive* a = nullptr;
-        std::vector<uint8_t> staging;
-        size_t s_lo = 0;
+        const uint8_t* blk_p = nullptr;   // current libarchive output block (not owned)
+        size_t blk_n = 0, s_lo = 0;
         bool saw_error = false;
         bool saw_eof = false;        // decoder reached a real stream terminator
         size_t prefix_n = 0;         // peeked header bytes prepended to buf
@@ -318,6 +323,7 @@ public:
         // decoded history, rewind the inner feeder, re-open the decoder.
         void reset() override {
             if (a) { archive_read_free(a); a = nullptr; }
+            blk_p = nullptr; blk_n = 0; s_lo = 0;
             buf.resize(prefix_n);
             lpos = 0;
             inner_eof = false;
@@ -332,19 +338,19 @@ public:
             uint8_t* d = (uint8_t*)dst;
             size_t out = 0;
             while (out < n) {
-                if (s_lo == staging.size()) {
+                if (s_lo == blk_n) {
                     const void* buf; size_t bsz; la_int64_t off;
                     if (saw_error || !a) break;   // decoder poisoned: never re-read (UB in xz)
                     int r = archive_read_data_block(a, &buf, &bsz, &off);
                     if (r == ARCHIVE_EOF) { saw_eof = true; break; }
                     if (r != ARCHIVE_OK) { saw_error = true; break; }
                     if (bsz == 0) continue;
-                    const uint8_t* p = (const uint8_t*)buf;
-                    staging.assign(p, p + bsz);
+                    blk_p = (const uint8_t*)buf;   // libarchive's buffer, valid until the next call
+                    blk_n = bsz;
                     s_lo = 0;
                 }
-                size_t take = std::min(staging.size() - s_lo, n - out);
-                std::memcpy(d + out, staging.data() + s_lo, take);
+                size_t take = std::min(blk_n - s_lo, n - out);
+                std::memcpy(d + out, blk_p + s_lo, take);
                 s_lo += take;
                 out += take;
             }
@@ -486,9 +492,11 @@ class PipelinedSrc : public DataSrc {
     std::mutex mu;
     std::condition_variable cv_data, cv_slot;
     std::deque<std::vector<uint8_t>> q;
+    std::vector<std::vector<uint8_t>> spare;   // drained blocks, reused by the producer
     size_t q_bytes = 0;
     size_t b_lo = 0;                 // consume offset into q.front()
     static constexpr size_t Q_CAP = 4u << 20;   // decoded bytes in flight
+    static constexpr size_t kBlock = 256u << 10; // producer block size
     bool done = false;               // producer finished (clean EOF or error)
     bool piped = false;              // producer thread actually running
     bool closed = false;             // consumer abandoned the stream
@@ -505,13 +513,17 @@ class PipelinedSrc : public DataSrc {
         std::unique_lock<std::mutex> lk(mu);
         try {
             while (true) {
+                // Decode straight into a queue block (recycled: no allocation
+                // or extra copy per block), outside the lock.
+                std::vector<uint8_t> blk;
+                if (!spare.empty()) { blk = std::move(spare.back()); spare.pop_back(); }
                 lk.unlock();
-                if (tls_io_scratch.empty()) tls_io_scratch.resize(1 << 16);
-                uint8_t* blk = tls_io_scratch.data();
-                size_t n = arc.read(blk, tls_io_scratch.size());   // decode outside the lock
+                blk.resize(kBlock);
+                const size_t n = arc.read(blk.data(), blk.size());
                 lk.lock();
                 if (n == 0) { done = true; cv_data.notify_all(); return; }
-                q.emplace_back(blk, blk + n);
+                blk.resize(n);
+                q.push_back(std::move(blk));
                 q_bytes += n;
                 decoded += n;
                 cv_data.notify_one();
@@ -579,7 +591,10 @@ public:
             size_t take = std::min(blk.size() - b_lo, n - out);
             std::memcpy(d + out, blk.data() + b_lo, take);
             out += take; b_lo += take; q_bytes -= take;
-            if (b_lo == blk.size()) { q.pop_front(); b_lo = 0; cv_slot.notify_one(); }
+            if (b_lo == blk.size()) {
+                spare.push_back(std::move(q.front()));
+                q.pop_front(); b_lo = 0; cv_slot.notify_one();
+            }
         }
         return out;
     }
@@ -1738,6 +1753,13 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
     const size_t W = (size_t)std::round(fps);
 
     std::vector<FrameStats> out;
+    {   // Pre-size: song length from the tempo map + the tail (no regrowth copies).
+        const TempoChange& last = tm.back();
+        const double song_s = last.time_sec + (double)(td.max_tick - std::min(td.max_tick, last.tick))
+                              * (double)last.us_per_quarter / ((double)ppqn * 1e6);
+        const double est = (song_s + std::max(0.0, end_delay)) * fps + 2.0;
+        if (est > 0 && est < 2e8) out.reserve((size_t)est);
+    }
     uint64_t cum = 0;
     uint64_t cum_cc = 0;
     int64_t poly = 0, peak_poly = 0;
@@ -2479,7 +2501,9 @@ static uint64_t parse_track_range(const uint8_t* img, const std::vector<TrackSpa
             if (c == 1) { spec_abort = true; return false; }
             return true;
         }
-        while ((c = spec_choice.load(std::memory_order_acquire)) < 0) std::this_thread::yield();
+        // The answer waits on a modal dialog (seconds): sleep, don't spin a core.
+        while ((c = spec_choice.load(std::memory_order_acquire)) < 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
         if (c == 2) { cancelled.store(true, std::memory_order_relaxed); return false; }
         if (c == 1) { spec_abort = true; return false; }
         return true;
@@ -2884,7 +2908,7 @@ std::vector<FrameStats> process_streaming(
     const std::string& filename, double fps, uint16_t& out_division,
     uint64_t& out_total_notes, bool vel0_as_note_off, uint64_t& out_total_ticks,
     const ProgressCallbacks& cb, double end_delay, int parse_threads,
-    bool track_dedup, bool risky_dedup)
+    bool track_dedup, bool layered_dedup, bool risky_dedup)
 {
     using clock = std::chrono::steady_clock;
     out_total_notes = 0;
@@ -2952,14 +2976,15 @@ std::vector<FrameStats> process_streaming(
                 layered_done = true;
                 is_cjcmcg = true;
             }
-            if (!layered_done && track_dedup && compressed) {
+            if (!layered_done && layered_dedup && compressed) {
                 // The layered walk reads the RAW file and does all decoding
                 // itself (it must see every compressed member boundary), so
                 // the pipelined decoder is not used for it.
                 src.reset();
                 int lr = 0;
                 try {
-                    lr = scan_layered(filename, vel0_as_note_off, td, tempo_raw, division, cb, risky_dedup);
+                    lr = scan_layered(filename, vel0_as_note_off, td, tempo_raw, division, cb,
+                                      risky_dedup);
                 } catch (const ScanCancelled&) {
                     emit(cb, "  Cancelled.\n");
                     return {};

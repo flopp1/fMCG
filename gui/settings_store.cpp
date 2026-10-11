@@ -187,7 +187,12 @@ bool load_global_settings(GlobalSettings& out) {
     std::ifstream f(path_from_utf8(dir) / "settings.ini");
     if (!f.is_open()) return false;
     std::ostringstream ss; ss << f.rdbuf();
-    KV kv = parse_ini(ss.str());
+    globals_from_ini(ss.str(), out);
+    return true;
+}
+
+void globals_from_ini(const std::string& text, GlobalSettings& out) {
+    KV kv = parse_ini(text);
     out.midi_dir     = get_str(kv, "midi_dir");
     out.output_dir   = get_str(kv, "output_dir");
     out.width        = get_int(kv, "width", 1920);
@@ -199,7 +204,11 @@ bool load_global_settings(GlobalSettings& out) {
     out.end_delay    = get_dbl(kv, "end_delay", 0.0);
     out.ffmpeg_threads = get_int(kv, "ffmpeg_threads", 0);
     out.parse_threads  = get_int(kv, "parse_threads", 0);
-    out.track_dedup    = get_bool(kv, "track_dedup", false);
+    // dedup_mode replaced the single "track_dedup" checkbox, which ran the
+    // layered walk on compressed files (and track dedup on plain ones):
+    // an old track_dedup = 1 becomes layered dedup.
+    out.dedup_mode     = get_int(kv, "dedup_mode", get_bool(kv, "track_dedup", false) ? 2 : 0);
+    if (out.dedup_mode < 0 || out.dedup_mode > 2) out.dedup_mode = 0;
     out.output_format  = get_int(kv, "output_format", 0);
     if (out.output_format < 0 || out.output_format > 1) out.output_format = 0;
     out.transparent_bg = get_bool(kv, "transparent_bg", false);
@@ -224,12 +233,15 @@ bool load_global_settings(GlobalSettings& out) {
     if (out.end_delay   < 0) out.end_delay   = 0.0;
     if (out.ffmpeg_threads < 0) out.ffmpeg_threads = 0;
     if (out.parse_threads  < 0) out.parse_threads  = 0;
-    return true;
 }
 
 bool save_global_settings(const GlobalSettings& s) {
     std::string dir = settings_dir();
     if (dir.empty()) return false;
+    return write_file_atomic(path_from_utf8(dir) / "settings.ini", globals_to_ini(s));
+}
+
+std::string globals_to_ini(const GlobalSettings& s) {
     std::ostringstream ss;
     ss << "# fMCG global settings (auto-saved)\n";
     ss << "midi_dir = " << s.midi_dir << "\n";
@@ -243,14 +255,14 @@ bool save_global_settings(const GlobalSettings& s) {
     ss << "end_delay = " << s.end_delay << "\n";
     ss << "ffmpeg_threads = " << s.ffmpeg_threads << "\n";
     ss << "parse_threads = " << s.parse_threads << "\n";
-    ss << "track_dedup = " << (s.track_dedup ? 1 : 0) << "\n";
+    ss << "dedup_mode = " << s.dedup_mode << "\n";
     ss << "output_format = " << s.output_format << "\n";
     ss << "transparent_bg = " << (s.transparent_bg ? 1 : 0) << "\n";
     ss << "x264_crf = " << s.x264_crf << "\n";
     ss << "x264_preset = " << s.x264_preset << "\n";
     ss << "x264_tune = " << s.x264_tune << "\n";
     ss << "keyframe_seconds = " << s.keyframe_seconds << "\n";
-    return write_file_atomic(path_from_utf8(dir) / "settings.ini", ss.str());
+    return ss.str();
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +302,10 @@ bool pattern_exists(const std::string& name) {
 bool save_pattern(const std::string& name, const PatternData& p) {
     std::string pdir = patterns_dir();
     if (pdir.empty() || name.empty()) return false;
+    return write_file_atomic(path_from_utf8(pdir) / path_from_utf8(name + ".ini"), pattern_to_ini(name, p));
+}
+
+std::string pattern_to_ini(const std::string& name, const PatternData& p) {
     std::ostringstream ss;
     ss << "# fMCG pattern: " << name << "\n";
     ss << "layout = " << escape_newlines(p.layout_text) << "\n";
@@ -334,7 +350,7 @@ bool save_pattern(const std::string& name, const PatternData& p) {
     if (bpm_dec < 0) bpm_dec = 0;
     if (bpm_dec > 6) bpm_dec = 6;
     ss << "bpm_decimals = " << bpm_dec << "\n";
-    return write_file_atomic(path_from_utf8(pdir) / path_from_utf8(name + ".ini"), ss.str());
+    return ss.str();
 }
 
 bool load_pattern(const std::string& name, PatternData& out) {
@@ -343,7 +359,20 @@ bool load_pattern(const std::string& name, PatternData& out) {
     std::ifstream f(path_from_utf8(pdir) / path_from_utf8(name + ".ini"));
     if (!f.is_open()) return false;
     std::ostringstream ss; ss << f.rdbuf();
-    KV kv = parse_ini(ss.str());
+    pattern_from_ini(ss.str(), out);
+    return true;
+}
+
+void pattern_from_ini(const std::string& text, PatternData& out) {
+    KV kv = parse_ini(text);
+    auto has = [&kv](const char* key) {
+        for (const auto& e : kv) if (e.first == key) return true;
+        return false;
+    };
+    // Patterns saved before the in-built renderer (no outline keys) were drawn
+    // by libass, with a 1 px black outline and custom x,y anchoring the block
+    // by its corner alignment (\pos under the style's alignment).
+    const bool ass_era = !has("outline_enabled");
     out.layout_text          = unescape_newlines(get_str(kv, "layout", k_default_layout));
     out.alignment            = get_int(kv, "alignment", 0);
     out.pos_mode             = get_int(kv, "pos_mode", 0);
@@ -361,7 +390,7 @@ bool load_pattern(const std::string& name, PatternData& out) {
     out.font_size            = get_int(kv, "font_size", 36);
     out.text_color_aabbggrr  = get_str(kv, "text_color", "&H00FFFFFF");
     out.bg_color_aabbggrr    = get_str(kv, "bg_color", "&H00000000");
-    out.outline_enabled      = get_bool(kv, "outline_enabled", false);
+    out.outline_enabled      = get_bool(kv, "outline_enabled", true);   // ASS era: libass's 1 px outline
     out.outline_width        = get_dbl(kv, "outline_width", 1.0);
     if (out.outline_width < 0.0) out.outline_width = 0.0;
     if (out.outline_width > 20.0) out.outline_width = 20.0;
@@ -395,7 +424,13 @@ bool load_pattern(const std::string& name, PatternData& out) {
     if (out.pos_mode < 0 || out.pos_mode > 1) out.pos_mode = 0;
     if (out.alignment < 0 || out.alignment > 5) out.alignment = 0;
     if (out.font_size <= 0) out.font_size = 36;
-    return true;
+    if (ass_era && out.pos_mode == 1 && !has("block_anchor")) {
+        // GUI corner index (TL, TR, BL, BR, top centre, bottom centre) ->
+        // 3x3 anchor index; x,y stayed measured from the frame's top-left.
+        static const int k_corner_anchor[6] = {0, 2, 6, 8, 1, 7};
+        out.block_anchor = k_corner_anchor[out.alignment];
+        out.frame_anchor = 0;
+    }
 }
 
 bool delete_pattern(const std::string& name) {

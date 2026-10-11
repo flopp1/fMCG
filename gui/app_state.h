@@ -46,11 +46,11 @@ struct GuiSettings {
     bool        close_held_notes = false;   // release notes still held at a track's end (off = MIDI-spec ons - offs)
     int         ffmpeg_threads = 0;   // encoder (x264) threads, 0 = auto; key name kept for saved settings
     int         parse_threads = 0;    // 0 = all cores (bounded to hw_concurrency); 1 = sequential parse
-    bool        track_dedup = false;  // skip repeated content (track replay / layered dedup)
-    bool        risky_dedup = false;  // risky fast dedup (layered); deliberately NOT saved across restarts
+    int         dedup_mode = 0;       // 0 off, 1 track (traditional), 2 layered -- one at a time
+    bool        risky_dedup = false;  // risky fast dedup (needs layered); deliberately NOT saved across restarts
     std::string text_color_aabbggrr = "&H00FFFFFF";
     std::string bg_color_aabbggrr = "&H00000000";
-    bool        outline_enabled = false;     // pattern: text outline (in-built renderer)
+    bool        outline_enabled = true;      // pattern: text outline (in-built renderer)
     double      outline_width = 1.0;
     std::string outline_color_aabbggrr = "&H00000000";
     fmcg_text::Typography typo;              // pattern: advanced typography
@@ -175,7 +175,7 @@ struct AppState {
     BpmOpts                   preview_bpm;
     std::string               bg_colour_ass{"&H00000000"};
     // Text outline (pattern settings) for the in-built renderer / preview.
-    bool                      outline_enabled{false};
+    bool                      outline_enabled{true};
     double                    outline_width{1.0};
     std::string               outline_colour_ass{"&H00000000"};
     fmcg_text::Typography     typo;            // advanced typography (pattern)

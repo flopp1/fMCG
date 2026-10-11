@@ -104,7 +104,10 @@ struct Placement {
 
 // One run of a line: literal text (cell -1) or a stat value (cell = index of
 // the stat on its line).
-struct TextPiece { std::string text; int cell = -1; };
+struct TextPiece {
+    std::string text; int cell = -1;
+    bool operator==(const TextPiece& o) const { return cell == o.cell && text == o.text; }
+};
 using PieceLines = std::vector<std::vector<TextPiece>>;
 // What a whole video will show: the template's pieces (stat text = any value)
 // and, per line and cell, candidate strings whose widest rendering bounds
@@ -171,6 +174,8 @@ public:
     // fitting the largest block into the frame (placement.fit).
     bool init(const TextStyle& style, const Placement& placement, RGBA background,
               const TextBlockSpec& spec, std::string* err = nullptr);
+    // Text identical to the previous call's: nothing is shaped or drawn and
+    // dirty() is empty (encoders then store the frame as unchanged).
     const Canvas& render(const std::vector<std::string>& lines);
     const Canvas& render_pieces(const PieceLines& pieces);
     Layout layout_pieces(const PieceLines& pieces) const;   // the layout render_pieces draws
@@ -192,6 +197,11 @@ private:
     Rect last_{}, dirty_{};
     std::vector<std::vector<double>> cell_w_;
     double scale_ = 1.0, block_w_ = 0, block_h_ = 0;
+    bool have_prev_ = false;               // prev_pieces_ is what the canvas shows
+    PieceLines prev_pieces_;
+    // Per line: the pieces last shaped there and the result. Usually only one
+    // or two lines change between frames (time, notes), so the rest are reused.
+    mutable std::vector<std::pair<std::vector<TextPiece>, ShapedLine>> line_cache_;
 };
 
 } // namespace fmcg_text

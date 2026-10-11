@@ -32,7 +32,7 @@ struct PatternData {
     int         font_size = 36;
     std::string text_color_aabbggrr = "&H00FFFFFF";
     std::string bg_color_aabbggrr = "&H00000000";
-    bool        outline_enabled = false;     // text outline (in-built renderer), off by default
+    bool        outline_enabled = true;      // text outline (in-built renderer): 1 px black by default
     double      outline_width = 1.0;         // px at video resolution
     std::string outline_color_aabbggrr = "&H00000000";
     fmcg_text::Typography typo;              // "Advanced typography" (OpenType features, spacing)
@@ -74,7 +74,7 @@ struct GlobalSettings {
     double      end_delay = 0.0;
     int         ffmpeg_threads = 0;   // encoder (x264) threads, 0 = auto (saved key name kept for compatibility)
     int         parse_threads = 0;    // 0 = all cores (parallel per-track parse); 1 = sequential
-    bool        track_dedup = false;  // skip repeated content (track replay / layered dedup)
+    int         dedup_mode = 0;       // 0 off, 1 track (traditional), 2 layered
     int         output_format = 0;    // 0 = MP4 (H.264, x264), 1 = MOV (QuickTime Animation, lossless)
     bool        transparent_bg = false;   // MOV only: alpha-transparent background
     int         x264_crf = 18;               // global encoder settings (MP4): CRF 0..51
@@ -90,10 +90,18 @@ std::string settings_dir();
 // Global settings: load returns false (leaving defaults) if no file exists.
 bool load_global_settings(GlobalSettings& out);
 bool save_global_settings(const GlobalSettings& s);
+// The file text without the I/O (tests; load also migrates old keys).
+void globals_from_ini(const std::string& text, GlobalSettings& out);
+std::string globals_to_ini(const GlobalSettings& s);
 
 // Patterns: stored as one INI per pattern inside the patterns/ subfolder.
 std::vector<std::string> list_patterns();                 // sorted by name
 bool load_pattern(const std::string& name, PatternData& out);
+// Parse a pattern file's text (load_pattern without the file I/O). Accepts
+// files written by every earlier version: missing keys take the defaults,
+// and keys whose meaning changed are migrated (see the comments inside).
+void pattern_from_ini(const std::string& text, PatternData& out);
+std::string pattern_to_ini(const std::string& name, const PatternData& p);
 bool save_pattern(const std::string& name, const PatternData& p);   // overwrite allowed
 bool delete_pattern(const std::string& name);
 bool pattern_exists(const std::string& name);

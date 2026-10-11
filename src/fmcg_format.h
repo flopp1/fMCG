@@ -38,6 +38,12 @@ std::vector<TemplateSegment> parse_template_line(const std::string& line);
 // One formatted line as pieces: literal text (cell -1) and stat values
 // (cell = index of the stat on its line, 0, 1, ...). Concatenated, it is
 // exactly ProcessTemplateLine's result.
+// Same, from a line already split by parse_template_line (no re-parse per frame).
+std::vector<fmcg_text::TextPiece> format_template_segments(const std::vector<TemplateSegment>& segs,
+                                                           const FrameStats& fs, uint64_t total_notes,
+                                                           uint64_t total_cc_events, double max_time_sec,
+                                                           uint16_t ppqn, const CommaOpts& commas, PadOpts pad,
+                                                           BpmOpts bpm, uint64_t total_ticks);
 std::vector<fmcg_text::TextPiece> format_template_line(const std::string& line, const FrameStats& fs,
                                                        uint64_t total_notes, uint64_t total_cc_events,
                                                        double max_time_sec, uint16_t ppqn,
@@ -78,4 +84,13 @@ struct FrameTextSource {
     // stat takes in this video: what the renderer needs for fixed-width cells
     // and for fitting the largest block into the frame.
     fmcg_text::TextBlockSpec block_spec() const;
+
+private:
+    // template_lines split once (re-split only when the lines change); the
+    // render loop asks for every frame. Not shared across threads: each
+    // render / preview owns its FrameTextSource copy.
+    const std::vector<std::vector<TemplateSegment>>& parsed() const;
+    mutable std::vector<std::string> parsed_from_;
+    mutable std::vector<std::vector<TemplateSegment>> parsed_;
+    mutable bool parsed_ok_ = false;
 };

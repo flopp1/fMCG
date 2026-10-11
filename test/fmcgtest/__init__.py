@@ -57,7 +57,7 @@ if IS_WIN:
     LIBS = ["vendor/libarchive/lib/libarchive.a", "vendor/libarchive/lib/libzstd.a",
             "vendor/libarchive/lib/liblzma.a", "vendor/libarchive/lib/liblz4.a",
             "vendor/libarchive/lib/libbz2.a", "vendor/libarchive/lib/libzs.a", "-lbcrypt",
-            "vendor/x264/lib/libx264.a", "-lpthread", "-Wl,--stack,0x10000000"]
+            "vendor/x264/lib/libx264.a", "-lshell32", "-lpthread", "-Wl,--stack,0x10000000"]
 else:
     CFLAGS = _pkg(["--cflags"])
     LIBS = ["-larchive"] + _pkg(["--libs"]) + ["-lpthread"]

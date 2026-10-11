@@ -311,4 +311,58 @@ def r_nodivide(rng):
     return xz(header + t + t + v), "header + T T V, |V| not a multiple of |T|", "normal"
 
 
+def _distinct_tracks(rng, k):
+    out = []
+    while len(out) < k:
+        t = xz(mtrk(melody_body(rng, rng.randrange(8, 30), with_tempo=False)))
+        if t not in out:
+            out.append(t)
+    return out
+
+
+def r_period_exact(rng):
+    """Header + a period of k distinct track members, repeated N times (period tile)."""
+    k = rng.randrange(2, 6)
+    n = rng.randrange(2, 7)
+    header = xz(mthd(480, k * n + 1) + mtrk(melody_body(rng, 15)))
+    period = b"".join(_distinct_tracks(rng, k))
+    return xz(header + period * n), f"header + period of {k} members x {n}", "exact"
+
+
+def r_period_slices(rng):
+    """BSOD-like: an MTrk stub, then a running-status stream cut mid-event into k
+    slices per period; the period repeats N times and the declared length ends it."""
+    note, vel = rng.randrange(1, 128), rng.randrange(1, 128)
+    start = b"\x00\x90" + bytes([note, vel])
+    unit = (b"\x00" + bytes([note, vel])) * rng.randrange(20, 60)
+    k = rng.randrange(2, 6)
+    cuts = sorted(rng.sample(range(1, len(unit)), k - 1))
+    slices = [unit[a:b] for a, b in zip([0] + cuts, cuts + [len(unit)])]
+    n = rng.randrange(2, 8)
+    stub = mthd(480, 1) + b"MTrk" + (len(start) + n * len(unit)).to_bytes(4, "big")
+    members = xz(stub + start) + b"".join(xz(s) for s in slices) * n
+    return xz(members), f"MTrk stub + {k} mid-event slices x {n} (BSOD-like)", "exact"
+
+
+def r_period_wrong(rng):
+    """Header + A B A B C D with |C| == |A|, |D| == |B| but different notes (wrong by design)."""
+    header = xz(mthd(480, 7) + mtrk(melody_body(rng, 15)))
+    bodies = [melody_body(rng, 20, with_tempo=False) for _ in range(2)]
+    a, b = xz(mtrk(bodies[0])), xz(mtrk(bodies[1]))
+    c = _same_len_tile(rng, len(a), bodies[0].count(b"\x90"))
+    d = _same_len_tile(rng, len(b), bodies[1].count(b"\x90"))
+    return xz(header + a + b + a + b + c + d), "header + A B A B C D, |CD| == |AB| (wrong by design)", "wrong"
+
+
+def r_period_nodivide(rng):
+    """Header + A B A B V where |V| is not a multiple of |AB|: must not fire."""
+    header = xz(mthd(480, 6) + mtrk(melody_body(rng, 15)))
+    a, b = _distinct_tracks(rng, 2)
+    while True:
+        v = xz(mtrk(melody_body(rng, rng.randrange(5, 60), with_tempo=False)))
+        if len(v) % (len(a) + len(b)):
+            break
+    return xz(header + a + b + a + b + v), "header + A B A B V, |V| not a multiple of |AB|", "normal"
+
+
 RISKY = {k[2:]: v for k, v in globals().items() if k.startswith("r_")}

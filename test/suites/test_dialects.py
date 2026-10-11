@@ -3,8 +3,8 @@
 Every generator in test/dialects/gen.py produces a random xz construction; the
 oracle (test/dialects/oracle.py) expands it fully and parses it with the
 standard scanner's semantics. The probe must agree exactly in layered mode
-(dedup=1, the walk under test) and in standard mode (dedup=0) for the dialects
-the standard decoder can express.
+(dedup=1, the walk under test), in standard mode (dedup=0) and with track dedup
+(dedup=2) for the dialects the standard decoder can express.
 """
 import os
 import random
@@ -69,9 +69,15 @@ def _add(kind):
             self.skipTest("mixed-depth construction: layered-only semantics")
         check_kind(self, kind, 0)
 
+    def track(self):   # traditional track dedup over the (nested) decoded stream
+        if kind in LAYERED_ONLY:
+            self.skipTest("mixed-depth construction: layered-only semantics")
+        check_kind(self, kind, 2)
+
     setattr(Dialects, f"test_{kind}_layered", layered)
     setattr(Dialects, f"test_{kind}_layered_close_held", layered_close_held)
     setattr(Dialects, f"test_{kind}_standard", standard)
+    setattr(Dialects, f"test_{kind}_track", track)
 
 
 for _k in gen.GENS:

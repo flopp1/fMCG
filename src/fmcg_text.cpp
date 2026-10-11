@@ -404,6 +404,9 @@ bool FrameRenderer::init(const TextStyle& style, const Placement& placement, RGB
     cell_w_.clear();
     scale_ = 1.0;
     block_w_ = block_h_ = 0;
+    have_prev_ = false;
+    prev_pieces_.clear();
+    line_cache_.clear();
     return text_.load(style, err);
 }
 
@@ -492,22 +495,45 @@ const Canvas& FrameRenderer::draw(const Layout& L) {
 }
 
 const Canvas& FrameRenderer::render(const std::vector<std::string>& lines) {
+    PieceLines p;   // one literal piece per line: the same unchanged-text check as render_pieces
+    p.reserve(lines.size());
+    for (const std::string& l : lines) p.push_back({TextPiece{l, -1}});
+    if (have_prev_ && p == prev_pieces_) { dirty_ = {}; return canvas_; }
+    prev_pieces_ = std::move(p);
+    have_prev_ = true;
     return draw(text_.layout(lines));
 }
 
 Layout FrameRenderer::layout_pieces(const PieceLines& pieces) const {
-    if (place_.cells && !cell_w_.empty()) return text_.layout(pieces, cell_w_, place_.cell_align);
-    std::vector<std::string> lines;   // without cells: whole-line shaping (kerning across stats)
-    lines.reserve(pieces.size());
-    for (const auto& line : pieces) {
-        std::string s;
-        for (const TextPiece& p : line) s += p.text;
-        lines.push_back(std::move(s));
+    const bool cells = place_.cells && !cell_w_.empty();
+    Layout L = text_.layout(std::vector<std::string>{});   // metrics only
+    if (line_cache_.size() > pieces.size()) line_cache_.resize(pieces.size());
+    for (size_t li = 0; li < pieces.size(); ++li) {
+        if (li < line_cache_.size() && line_cache_[li].first == pieces[li]) {
+            L.lines.push_back(line_cache_[li].second);
+        } else {
+            Layout one;
+            if (cells) {
+                const std::vector<std::vector<double>> w{li < cell_w_.size() ? cell_w_[li] : std::vector<double>{}};
+                one = text_.layout(PieceLines{pieces[li]}, w, place_.cell_align);
+            } else {   // without cells: whole-line shaping (kerning across stats)
+                std::string s;
+                for (const TextPiece& p : pieces[li]) s += p.text;
+                one = text_.layout(std::vector<std::string>{s});
+            }
+            if (li >= line_cache_.size()) line_cache_.resize(li + 1);
+            line_cache_[li] = {pieces[li], one.lines[0]};
+            L.lines.push_back(std::move(one.lines[0]));
+        }
+        L.width = std::max(L.width, L.lines.back().advance);
     }
-    return text_.layout(lines);
+    return L;
 }
 
 const Canvas& FrameRenderer::render_pieces(const PieceLines& pieces) {
+    if (have_prev_ && pieces == prev_pieces_) { dirty_ = {}; return canvas_; }
+    prev_pieces_ = pieces;
+    have_prev_ = true;
     return draw(layout_pieces(pieces));
 }
 

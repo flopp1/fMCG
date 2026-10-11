@@ -63,7 +63,7 @@ static void save_globals_now() {
     g_ui.globals.end_delay = g_ui.s.end_delay;
     g_ui.globals.ffmpeg_threads = g_ui.s.ffmpeg_threads;
     g_ui.globals.parse_threads  = g_ui.s.parse_threads;
-    g_ui.globals.track_dedup    = g_ui.s.track_dedup;
+    g_ui.globals.dedup_mode     = g_ui.s.dedup_mode;
     g_ui.globals.output_format  = g_ui.s.output_format;
     g_ui.globals.transparent_bg = g_ui.s.transparent_bg;
     g_ui.globals.x264_crf       = g_ui.s.x264_crf;
@@ -156,12 +156,19 @@ static void set_active_pattern(const std::string& name) {
     }
 }
 
-static void refresh_pattern_list() {
-    g_ui.pattern_names = list_patterns();
-    // keep the combo index pointing at the active pattern
+// Keep the combo index pointing at the active pattern (cheap: every frame).
+static void sync_pattern_index() {
     g_ui.active_pattern_idx = 0;
     for (size_t i = 0; i < g_ui.pattern_names.size(); ++i)
         if (g_ui.pattern_names[i] == g_ui.active_pattern) g_ui.active_pattern_idx = (int)i;
+}
+
+static double g_pattern_list_time = -1e9;   // last patterns-folder scan (ImGui time)
+
+static void refresh_pattern_list() {
+    g_ui.pattern_names = list_patterns();
+    g_pattern_list_time = ImGui::GetTime();
+    sync_pattern_index();
 }
 
 static bool font_list_loaded = false;   // font-list lazy-init (set at startup)
@@ -331,7 +338,11 @@ static void draw_pattern_section() {
         "Pattern - the overlay look, saved with the selected pattern");
     ImGui::Spacing();
     {
-        refresh_pattern_list();
+        // Our own saves/deletes refresh the list immediately; the periodic
+        // re-scan only picks up files changed outside the program (it used to
+        // list the folder every frame).
+        if (ImGui::GetTime() - g_pattern_list_time > 2.0) refresh_pattern_list();
+        else sync_pattern_index();
         ImGui::Text("Active:");
         ImGui::SameLine(120);
 
@@ -360,6 +371,7 @@ static void draw_pattern_section() {
             } else {
                 save_pattern(g_ui.active_pattern, current_pattern_from_ui());
                 g_ui.pattern_baseline = current_pattern_from_ui();
+                refresh_pattern_list();
             }
         }
         ImGui::SameLine();
@@ -777,22 +789,46 @@ static void draw_global_section() {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Worker threads for parsing plain (uncompressed) MIDI files.\n0 = all cores (default). 1 = sequential.\nCompressed inputs and the two-pass fallback always parse sequentially.");
 
-    ImGui::Checkbox("Dedup", &g_ui.s.track_dedup);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Skip re-processing repeated content.\nPlain MIDI: byte-identical tracks are parsed once and replayed.\nCompressed/layered files: only unique members are decoded and parsed,\nduplicates are counted by multiplicity, and uniform spam grids fold\nanalytically. Off by default -- enable for dedup-style constructions." );
+    // Track and layered dedup are exclusive: ticking one greys the other out.
+    {
+        bool track = g_ui.s.dedup_mode == 1, layered = g_ui.s.dedup_mode == 2;
+        if (layered) ImGui::BeginDisabled();
+        if (ImGui::Checkbox("Track dedup", &track)) {
+            g_ui.s.dedup_mode = track ? 1 : 0;
+            mark_globals_dirty();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Traditional dedup: byte-identical MIDI tracks are parsed once and replayed.\n"
+                              "Works on every input: plain, compressed and nested archives (the\n"
+                              "archive is still fully decompressed; parsing is what is saved).\n"
+                              "Off by default. Cannot be combined with Layered dedup.");
+        if (layered) ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (track) ImGui::BeginDisabled();
+        if (ImGui::Checkbox("Layered dedup", &layered)) {
+            g_ui.s.dedup_mode = layered ? 2 : 0;
+            mark_globals_dirty();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Nested archives (xz-in-xz, repeated members): only unique members are\n"
+                              "decoded and parsed, duplicates are counted by multiplicity, and uniform\n"
+                              "spam grids fold analytically. Other inputs get the normal scan.\n"
+                              "Off by default. Cannot be combined with Track dedup.");
+        if (track) ImGui::EndDisabled();
+    }
     ImGui::SameLine();
-    if (!g_ui.s.track_dedup) ImGui::BeginDisabled();
+    if (g_ui.s.dedup_mode != 2) ImGui::BeginDisabled();
     ImGui::Checkbox("Risky fast dedup", &g_ui.s.risky_dedup);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("Layered (xz-in-xz) files only, needs Dedup.\n"
+        ImGui::SetTooltip("Layered (xz-in-xz) files only, needs Layered dedup.\n"
                           "In each layer, once the first tile repeats, assume the REST of the layer is\n"
                           "that tile repeated whenever the remaining size is an exact multiple of the\n"
                           "tile's size, and skip decoding it. Much faster on huge single-tile layers.\n"
                           "WRONG (silently) if that part of the layer is made of different tiles whose\n"
                           "sizes happen to add up -- only use it on files where that cannot happen.\n"
                           "The log lists every assumption applied. Not saved: off at every start.");
-    if (!g_ui.s.track_dedup) ImGui::EndDisabled();
-    if (g_ui.s.track_dedup && g_ui.s.risky_dedup)
+    if (g_ui.s.dedup_mode != 2) ImGui::EndDisabled();
+    if (g_ui.s.dedup_mode == 2 && g_ui.s.risky_dedup)
         ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f),
                            "Risky: counts are wrong if a layer's rest is other tiles of matching size.");
 
@@ -1030,7 +1066,7 @@ static std::string render_stale_note() {
     add(s.end_delay != p.end_delay, "end delay");
     add(s.vel0_note_off != p.vel0_note_off, "velocity-0 handling");
     add(s.close_held_notes != p.close_held_notes, "close held notes");
-    add(s.track_dedup != p.track_dedup || (s.track_dedup && s.risky_dedup != p.risky_dedup), "dedup");
+    add(s.dedup_mode != p.dedup_mode || (s.dedup_mode == 2 && s.risky_dedup != p.risky_dedup), "dedup");
     if (what.empty()) return what;
     return "Note: " + what + " changed since Process; the video uses the processed values. "
            "Press Process again to apply them.";
@@ -1585,7 +1621,7 @@ int main() {
     g_ui.s.end_delay = g_ui.globals.end_delay;
     g_ui.s.ffmpeg_threads = g_ui.globals.ffmpeg_threads;
     g_ui.s.parse_threads  = g_ui.globals.parse_threads;
-    g_ui.s.track_dedup    = g_ui.globals.track_dedup;
+    g_ui.s.dedup_mode     = g_ui.globals.dedup_mode;
     g_ui.s.output_format  = g_ui.globals.output_format;
     g_ui.s.transparent_bg = g_ui.globals.transparent_bg;
     g_ui.s.x264_crf       = g_ui.globals.x264_crf;

@@ -1,6 +1,7 @@
 """Real-corpus tests (need FMCG_TEST_FILES).
 
-quick : plain corpus MIDIs, xz-compressed on the fly -> layered == standard.
+quick : plain corpus MIDIs, xz-compressed on the fly -> layered == track dedup
+        == standard (track dedup also on the plain file).
 corpus: every layered corpus file SHRUNK (same unique tiles, <= K repeats per
         run; test/tools/shrink_layered.py) -> layered == standard. This checks
         the walk on the real tile shapes/phases at a size the standard scan
@@ -48,8 +49,12 @@ class PlainDifferential(unittest.TestCase):
                     fo.write(lzma.compress(fi.read(), format=lzma.FORMAT_XZ, preset=1))
             std, l0 = T.run_probe(dst, 0)
             lay, l1 = T.run_probe(dst, 1)
+            trk, l2 = T.run_probe(dst, 2)          # track dedup on the compressed stream
+            ptrk, l3 = T.run_probe(src, 2)         # track dedup on the plain file
             with self.subTest(file=f):
                 same(self, lay, std, l1, l0)
+                same(self, trk, std, l2, l0)
+                same(self, ptrk, std, l3, l0)
 
 
 @unittest.skipUnless(T.have_corpus() and T.level() >= 1, "corpus level")
@@ -73,6 +78,9 @@ class ShrunkLayered(unittest.TestCase):
                 if f in SPEC_BREAKING:
                     self.assertEqual(std and std.get("twopass"), 1, f"standard reference must be two-pass: {l0}")
                 same(self, lay, std, l1, l0)
+                if f not in SPEC_BREAKING:      # track dedup on the nested archive stream
+                    trk, l2 = T.run_probe(dst, 2)
+                    same(self, trk, std, l2, l0)
 
 
 @unittest.skipUnless(T.have_corpus() and T.level() >= 2, "full level")

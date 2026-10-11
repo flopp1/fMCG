@@ -75,5 +75,8 @@ class Cpp(unittest.TestCase):
     def test_render(self):
         run(self, "test_render", [T.BUILD, "test/data/tempo2.mid"], sources=T.CORE_FULL + T.TEXT)
 
+    def test_patterns(self):
+        run(self, "test_patterns", sources=T.CORE_FULL + T.TEXT + ["gui/settings_store.cpp"])
+
     def test_harness(self):
         run(self, "test_harness", cwd=os.path.join(T.TEST_DIR, "data"))

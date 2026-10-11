@@ -7,6 +7,8 @@
 #include <cctype>
 #include <cstdlib>
 #include <algorithm>
+#include <memory>
+#include <mutex>
 #include <set>
 #include <filesystem>
 #include <system_error>
@@ -292,28 +294,39 @@ static bool renderable_name(const std::string& fam) {
     return true;
 }
 
-std::vector<std::string> enumerate_system_fonts() {
-    std::set<std::string, bool (*)(const std::string&, const std::string&)> families(ci_less_str);
-    std::vector<std::string> files;
-    for (const std::string& dir : get_font_directories()) {
-        files.clear();
-        collect_font_files(dir, files, 0);
-        for (const auto& path : files)
-            for (const std::string& fam : read_font_families(path))
-                if (!fam.empty() && renderable_name(fam)) families.insert(fam);
-    }
-    return std::vector<std::string>(families.begin(), families.end());
-}
+// ---- face index ---------------------------------------------------------------
+// Every face of every installed font, read ONCE (name + OS/2 tables) and then
+// served from memory: family lists, variant lists and file lookups used to
+// re-walk the font folders and re-open every font file on each call (every
+// family change, pattern switch, Process and Preview). enumerate_system_fonts()
+// rebuilds it, so a fresh font list also picks up newly installed fonts.
+namespace {
 
-// All faces belonging to a family (style name read from ID 17, falling back
-// to ID 2; weight/italic from the OS/2 table when present).
-std::vector<FontVariant> enumerate_font_variants(const std::string& family) {
-    std::vector<FontVariant> out;
+struct FaceInfo {
+    std::string file;
+    int         face_index = 0;
+    std::string family;       // typographic family (ID 16, else ID 1)
+    std::string style;        // ID 17, else ID 2, else "Regular"
+    int         weight = 400;
+    bool        italic = false;
+};
+
+struct FaceIndex {
+    std::vector<FaceInfo> faces;   // folder order, file order, face order
+    std::string first_file;        // first font file found (last-resort fallback)
+};
+
+std::mutex g_face_mutex;
+std::shared_ptr<const FaceIndex> g_faces;
+
+std::shared_ptr<const FaceIndex> build_face_index() {
+    auto idx = std::make_shared<FaceIndex>();
     std::set<std::string> seen_files;
     for (const std::string& dir : get_font_directories()) {
         std::vector<std::string> files;
         collect_font_files(dir, files, 0);
         for (const auto& path : files) {
+            if (idx->first_file.empty()) idx->first_file = path;
             if (!seen_files.insert(path).second) continue;
             std::ifstream f(path_from_utf8(path), std::ios::binary);
             if (!f) continue;
@@ -324,11 +337,8 @@ std::vector<FontVariant> enumerate_font_variants(const std::string& family) {
 
             for (size_t face = 0; face < bases.size(); ++face) {
                 const uint64_t base = bases[face];
-                std::string fam;
-                if (!extract_family_from_sfnt(f, base, fam) || fam.empty()) continue;
-                if (ci_less_str(fam, family) || ci_less_str(family, fam)) continue;
-
-                FontVariant v;
+                FaceInfo v;
+                if (!extract_family_from_sfnt(f, base, v.family) || v.family.empty()) continue;
                 v.file = path;
                 v.face_index = (int)face;
                 if (!extract_sfnt_name_id(f, base, 17, v.style) || v.style.empty())
@@ -342,10 +352,10 @@ std::vector<FontVariant> enumerate_font_variants(const std::string& family) {
                 uint8_t h2[12];
                 if (f.read((char*)h2, 12)) {
                     uint16_t num_tables = read_be16(h2 + 4);
-                    std::vector<uint8_t> dir((size_t)num_tables * 16);
-                    if (num_tables > 0 && num_tables <= 512 && f.read((char*)dir.data(), (std::streamsize)dir.size())) {
+                    std::vector<uint8_t> tdir((size_t)num_tables * 16);
+                    if (num_tables > 0 && num_tables <= 512 && f.read((char*)tdir.data(), (std::streamsize)tdir.size())) {
                         for (uint16_t i = 0; i < num_tables; ++i) {
-                            const uint8_t* rec = dir.data() + (size_t)i * 16;
+                            const uint8_t* rec = tdir.data() + (size_t)i * 16;
                             if (read_be32(rec) != 0x4F532F32) continue;   // "OS/2"
                             uint64_t os2 = read_be32(rec + 8);   // file-absolute (TTC too)
                             if (os2 + 64 > (uint64_t)fsize) break;
@@ -359,14 +369,52 @@ std::vector<FontVariant> enumerate_font_variants(const std::string& family) {
                         }
                     }
                 }
-
-                // One entry per style: the same family+style in two files
-                // (or two faces) would be indistinguishable in the dropdown.
-                bool dup = false;
-                for (const auto& e : out) if (e.style == v.style) { dup = true; break; }
-                if (!dup) out.push_back(std::move(v));
+                idx->faces.push_back(std::move(v));
             }
         }
+    }
+    return idx;
+}
+
+std::shared_ptr<const FaceIndex> faces_snapshot(bool rebuild = false) {
+    std::lock_guard<std::mutex> lk(g_face_mutex);
+    if (rebuild || !g_faces) g_faces = build_face_index();
+    return g_faces;
+}
+
+bool same_family(const std::string& a, const std::string& b) {
+    return !ci_less_str(a, b) && !ci_less_str(b, a);
+}
+
+} // namespace
+
+std::vector<std::string> enumerate_system_fonts() {
+    const auto idx = faces_snapshot(/*rebuild=*/true);
+    std::set<std::string, bool (*)(const std::string&, const std::string&)> families(ci_less_str);
+    for (const FaceInfo& fi : idx->faces)
+        if (renderable_name(fi.family)) families.insert(fi.family);
+    return std::vector<std::string>(families.begin(), families.end());
+}
+
+// All faces belonging to a family (style name read from ID 17, falling back
+// to ID 2; weight/italic from the OS/2 table when present).
+std::vector<FontVariant> enumerate_font_variants(const std::string& family) {
+    const auto idx = faces_snapshot();
+    std::vector<FontVariant> out;
+    for (const FaceInfo& fi : idx->faces) {
+        if (!same_family(fi.family, family)) continue;
+        // One entry per style: the same family+style in two files
+        // (or two faces) would be indistinguishable in the dropdown.
+        bool dup = false;
+        for (const auto& e : out) if (e.style == fi.style) { dup = true; break; }
+        if (dup) continue;
+        FontVariant v;
+        v.file = fi.file;
+        v.face_index = fi.face_index;
+        v.style = fi.style;
+        v.weight = fi.weight;
+        v.italic = fi.italic;
+        out.push_back(std::move(v));
     }
     // Stable presentation: Regular first, then by weight, then by style name.
     std::stable_sort(out.begin(), out.end(), [](const FontVariant& a, const FontVariant& b) {
@@ -400,24 +448,12 @@ std::string find_font_file_for_variant(const std::string& family, const std::str
 
 std::string find_font_file_for_family(const std::string& family, int* face_index) {
     if (face_index) *face_index = 0;
-    std::string first_file;
-    for (const std::string& dir : get_font_directories()) {
-        std::vector<std::string> files;
-        collect_font_files(dir, files, 0);
-        for (const auto& path : files) {
-            if (first_file.empty()) first_file = path;
-            if (family.empty()) continue;
-            std::ifstream f(path_from_utf8(path), std::ios::binary);
-            const std::vector<uint64_t> bases = face_bases(f);
-            for (size_t face = 0; face < bases.size(); ++face) {
-                std::string fam;
-                if (extract_family_from_sfnt(f, bases[face], fam) &&
-                    !ci_less_str(fam, family) && !ci_less_str(family, fam)) {
-                    if (face_index) *face_index = (int)face;
-                    return path;
-                }
+    const auto idx = faces_snapshot();
+    if (!family.empty())
+        for (const FaceInfo& fi : idx->faces)
+            if (same_family(fi.family, family)) {
+                if (face_index) *face_index = fi.face_index;
+                return fi.file;
             }
-        }
-    }
-    return first_file;
+    return idx->first_file;
 }

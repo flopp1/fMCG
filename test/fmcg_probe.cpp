@@ -22,7 +22,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     const double fps = argc > 2 ? atof(argv[2]) : 60.0;
-    const bool dedup = argc > 3 ? atoi(argv[3]) != 0 : true;
+    const int dedup = argc > 3 ? atoi(argv[3]) : 1;   // 0 none, 1 layered, 2 track (traditional)
     const int threads = argc > 4 ? atoi(argv[4]) : 0;
     fmcg_stream::set_close_held_notes(argc > 5 && atoi(argv[5]) != 0);
     const bool spec_twopass = argc > 6 ? atoi(argv[6]) != 0 : true;
@@ -37,7 +37,7 @@ int main(int argc, char** argv) {
     if (spec_twopass)
         cb.on_spec_violation = [&twopass](uint64_t, size_t) -> int { twopass = true; return 1; };
     uint16_t ppqn = 0; uint64_t notes = 0, ticks = 0;
-    auto fr = fmcg_stream::process_streaming(argv[1], fps, ppqn, notes, true, ticks, cb, 0.0, threads, dedup, risky);
+    auto fr = fmcg_stream::process_streaming(argv[1], fps, ppqn, notes, true, ticks, cb, 0.0, threads, dedup == 2, dedup == 1, risky);
     if (fr.empty()) { printf("FAIL\n"); return 1; }
     printf("OK notes=%llu ticks=%llu ppqn=%u peak_poly=%lld peak_nps=%.0f frames=%zu lossy=%d twopass=%d assumed=%d\n",
            (unsigned long long)notes, (unsigned long long)ticks, (unsigned)ppqn,

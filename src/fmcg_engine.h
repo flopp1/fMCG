@@ -41,7 +41,13 @@ bool close_held_notes();
 // scan is replayed from a cached summary instead of being parsed again --
 // O(unique bytes) instead of O(total bytes). Off by default.
 //
-// risky_dedup (needs track_dedup; layered xz files only): in each layer, once
+// track_dedup and layered_dedup are separate modes (the GUI allows one at a
+// time). track_dedup works on the decoded MIDI byte stream of ANY input --
+// plain, compressed or nested archives. layered_dedup applies only to
+// compressed inputs: the layered walk (fmcg_layered.cpp) reads the raw
+// archive members; inputs it cannot interpret get the normal scan.
+//
+// risky_dedup (needs layered_dedup; layered xz files only): in each layer, once
 // the first repeated tile is seen, assume the rest of the layer is that tile
 // repeated if the remaining size is an exact multiple of the tile's size, and
 // stop decoding the layer. WRONG (silently) on files where the rest of a layer
@@ -51,6 +57,7 @@ std::vector<FrameStats> process_streaming(
     const std::string& filename, double fps, uint16_t& out_division,
     uint64_t& out_total_notes, bool vel0_as_note_off, uint64_t& out_total_ticks,
     const ProgressCallbacks& cb, double end_delay = 0.0,
-    int parse_threads = 0, bool track_dedup = false, bool risky_dedup = false);
+    int parse_threads = 0, bool track_dedup = false, bool layered_dedup = false,
+    bool risky_dedup = false);
 
 } // namespace fmcg_stream

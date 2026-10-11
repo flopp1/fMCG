@@ -47,6 +47,7 @@
 #include "archive_entry.h"
 
 #include <algorithm>
+#include <deque>
 #include <array>
 #include <chrono>
 #include <cstring>
@@ -200,14 +201,15 @@ public:
         return (size_t)r;
     }
     // Zero-copy: next decoded block (valid until the next call); 0 = end.
-    size_t pull_block(const uint8_t*& p) {
+    // strict: a warning is an error too, exactly like pull() (archive_read_data).
+    size_t pull_block(const uint8_t*& p, bool strict = false) {
         if (!ok_ || err_ || eof_) return 0;
         const void* b = nullptr;
         size_t sz = 0;
         la_int64_t off = 0;
         const int r = archive_read_data_block(a_, &b, &sz, &off);
         if (r == ARCHIVE_EOF) { eof_ = true; return 0; }
-        if (r < ARCHIVE_WARN) { err_ = true; return 0; }
+        if (r < (strict ? ARCHIVE_OK : ARCHIVE_WARN)) { err_ = true; return 0; }
         p = static_cast<const uint8_t*>(b);
         return sz;
     }
@@ -470,19 +472,21 @@ public:
             if (!body || !R || deficits_ok(*e, R)) { ++memo_hits; return e; }
             break;
         }
+        // `lst` stays valid while compute() recurses: unordered_map element
+        // references survive rehashing (and a node never recurses into itself).
         if (!generic_found) {
             EffPtr g = compute(id, st, nullptr);
-            memo[MemoKey{id, st.s}].push_back(g);
+            lst.push_back(g);
             if (!body || !R || deficits_ok(*g, R)) return g;
         }
         // Incoming refcounts below a deficit: exact re-walk with them.
         const uint64_t h = hash_R(R);
-        for (const EffPtr& e : memo[MemoKey{id, st.s}])
+        for (const EffPtr& e : lst)
             if (!e->generic && e->rhash == h && counters_ok(*e, st)) { ++memo_hits; return e; }
         auto k = std::make_shared<Effect>(*compute(id, st, R));
         k->rhash = h;
         EffPtr kp = k;
-        memo[MemoKey{id, st.s}].push_back(kp);
+        lst.push_back(kp);
         return kp;
     }
 
@@ -846,11 +850,11 @@ EffPtr Walk::parse_leaf(uint32_t id, const State& st, const int64_t* R) {
         }
     } else if (n.unc > 0 || n.truncated) {
         XzDec dec(n.cptr, (size_t)n.clen);
-        std::vector<uint8_t> buf(1u << 20);
-        for (;;) {
-            const size_t got = dec.pull(buf.data(), buf.size());
+        for (;;) {   // parse libarchive's blocks in place (no copy into a buffer)
+            const uint8_t* bp = nullptr;
+            const size_t got = dec.pull_block(bp, /*strict=*/true);
             if (!got) break;
-            p.feed(buf.data(), got);
+            p.feed(bp, got);
             progress(got);
         }
         if (dec.error() && !n.decode_error) { n.decode_error = true; ++decode_errors; }
@@ -1268,41 +1272,74 @@ public:
             recent.insert(recent.begin(), {L, id});
             if (recent.size() > 32) recent.pop_back();
         };
-        // Risky fast dedup (opt-in, goal 8): the FIRST member that occurs
-        // twice in a row is the layer's tile; everything before it is header.
-        // If the rest of the layer (declared payload size minus the header)
-        // is an exact multiple of the tile, it is ASSUMED to be that tile
-        // repeated and the layer is not decoded further. Only that first
-        // repeated tile is ever tried. Returns true when the assumption was
-        // applied (the caller stops cutting this layer).
+        // Risky fast dedup (opt-in, goal 8): the FIRST run of members that
+        // occurs twice in a row is the layer's tile -- one member (a tile
+        // repeated back to back) or a period of up to kMaxPeriod members (BSOD
+        // cycles through 16 slices of one track); everything before it is
+        // header. If the rest of the layer (declared payload size minus the
+        // header) is an exact multiple of the tile's bytes, it is ASSUMED to
+        // be that tile repeated and the layer is not decoded further. Only
+        // that first repeated tile is ever tried. Returns true when the
+        // assumption was applied (the caller stops cutting this layer).
         bool risky_open = risky_ && unc_total > 0;
-        uint32_t prev_id = UINT32_MAX;
-        uint64_t prev_pos = 0, prev_len = 0;
+        struct Seen { uint32_t id; uint64_t pos, len; };
+        constexpr size_t kMaxPeriod = 64;
+        std::deque<Seen> seq;   // this layer's latest members (2 x kMaxPeriod window)
         auto after_member = [&](uint32_t id, uint64_t pos, uint64_t L) -> bool {
             if (!risky_open) return false;
-            if (!(id == prev_id && L == prev_len && pos == prev_pos + L)) {
-                prev_id = id; prev_pos = pos; prev_len = L;
-                return false;
+            seq.push_back({id, pos, L});
+            if (seq.size() > 2 * kMaxPeriod) seq.pop_front();
+            const size_t n = seq.size();
+            size_t k = 0;
+            for (size_t c = 1; c <= n / 2 && !k; ++c) {
+                bool same = true;
+                for (size_t i = 1; i <= c && same; ++i)   // from the newest member back
+                    same = seq[n - i].id == seq[n - c - i].id && seq[n - i].len == seq[n - c - i].len;
+                // Byte-adjacent copies of equal size (no stray bytes between them).
+                if (same && seq[n - c].pos - seq[n - 2 * c].pos == seq[n - 1].pos + seq[n - 1].len - seq[n - c].pos)
+                    k = c;
             }
+            if (!k) return false;
             risky_open = false;
-            const uint64_t hdr = prev_pos;
+            const uint64_t hdr = seq[n - 2 * k].pos;
+            const uint64_t P = seq[n - k].pos - hdr;   // tile bytes
             const uint64_t rest = unc_total > hdr ? unc_total - hdr : 0;
             std::ostringstream os;
-            if (rest < 2 * L || rest % L != 0) {
-                os << "  [layered] risky fast dedup: layer member " << parent << ": first repeated tile ("
-                   << format_with_commas(L) << " bytes after " << format_with_commas(hdr)
-                   << " header bytes) does not divide the remaining " << format_with_commas(rest)
-                   << " bytes; layer decoded normally.\n";
+            const std::string what = k == 1 ? format_with_commas(P) + "-byte tile"
+                : format_with_commas(P) + "-byte tile of " + std::to_string(k) + " members";
+            if (rest < 2 * P || rest % P != 0) {
+                os << "  [layered] risky fast dedup: layer member " << parent << ": first repeated " << what
+                   << " (after " << format_with_commas(hdr) << " header bytes) does not divide the remaining "
+                   << format_with_commas(rest) << " bytes; layer decoded normally.\n";
                 emit(cb_, os.str());
                 return false;
             }
-            const uint64_t m = rest / L;
-            W_.nodes[parent].kids.back().second += m - 2;   // the two seen copies are already counted
-            occurrences += m - 2;
+            const uint64_t m = rest / P;
+            if (k == 1) {
+                W_.nodes[parent].kids.back().second += m - 2;   // the two seen copies are already counted
+            } else {
+                // One node for the period, then the parent's last 2k member
+                // occurrences become that node x m.
+                Node pn;
+                pn.kind = Node::INTERNAL;
+                pn.unc = P;
+                for (size_t i = n - k; i < n; ++i) push_kid(pn, seq[i].id);
+                W_.nodes.push_back(std::move(pn));
+                const uint32_t pid = (uint32_t)(W_.nodes.size() - 1);
+                auto& kids = W_.nodes[parent].kids;
+                for (size_t left = 2 * k; left > 0;) {
+                    const uint64_t take = std::min<uint64_t>(left, kids.back().second);
+                    kids.back().second -= take;
+                    left -= (size_t)take;
+                    if (kids.back().second == 0) kids.pop_back();
+                }
+                kids.push_back({pid, m});
+            }
+            occurrences += (m - 2) * k;
             ++assumed_layers;
             os << "  WARNING: risky fast dedup ASSUMED layer member " << parent << " = "
-               << format_with_commas(hdr) << " header bytes + a " << format_with_commas(L) << "-byte tile x "
-               << format_with_commas(m) << " (" << fmt_bytes(rest - 2 * L)
+               << format_with_commas(hdr) << " header bytes + a " << what << " x "
+               << format_with_commas(m) << " (" << fmt_bytes(rest - 2 * P)
                << " not decoded). The counts are wrong if that part of the layer holds other tiles.\n";
             emit(cb_, os.str(), true);
             return true;

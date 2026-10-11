@@ -129,7 +129,7 @@ public:
         uint64_t& out_total_notes, bool vel0_as_note_off,
         uint64_t& out_total_ticks, const ProgressCallbacks& cb = {},
         double end_delay = 0.0, int parse_threads = 0, bool track_dedup = false,
-        bool risky_dedup = false);
+        bool layered_dedup = false, bool risky_dedup = false);
     // Back-compat form used by tests/benchmarks (total ticks not reported).
     static std::vector<FrameStats> process_midi(
         const std::string& filename, double fps, uint16_t& out_division,

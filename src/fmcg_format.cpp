@@ -146,10 +146,20 @@ std::vector<fmcg_text::TextPiece> format_template_line(const std::string& line, 
                                                        double max_time_sec, uint16_t ppqn,
                                                        const CommaOpts& commas, PadOpts pad,
                                                        BpmOpts bpm, uint64_t total_ticks) {
+    return format_template_segments(parse_template_line(line), fs, total_notes, total_cc_events, max_time_sec,
+                                    ppqn, commas, pad, bpm, total_ticks);
+}
+
+std::vector<fmcg_text::TextPiece> format_template_segments(const std::vector<TemplateSegment>& segs,
+                                                           const FrameStats& fs, uint64_t total_notes,
+                                                           uint64_t total_cc_events, double max_time_sec,
+                                                           uint16_t ppqn, const CommaOpts& commas, PadOpts pad,
+                                                           BpmOpts bpm, uint64_t total_ticks) {
     const StatFormatter f(fs, total_notes, total_cc_events, max_time_sec, ppqn, commas, pad, bpm, total_ticks);
     std::vector<fmcg_text::TextPiece> out;
+    out.reserve(segs.size());
     int cell = 0;
-    for (const TemplateSegment& s : parse_template_line(line))
+    for (const TemplateSegment& s : segs)
         out.push_back(s.token ? fmcg_text::TextPiece{f.token(s.text), cell++} : fmcg_text::TextPiece{s.text, -1});
     return out;
 }
@@ -207,14 +217,24 @@ FrameStats FrameTextSource::stats(size_t k) const {
     return z;
 }
 
+const std::vector<std::vector<TemplateSegment>>& FrameTextSource::parsed() const {
+    if (!parsed_ok_ || parsed_from_ != template_lines) {
+        parsed_.clear();
+        for (const std::string& t : template_lines) parsed_.push_back(parse_template_line(t));
+        parsed_from_ = template_lines;
+        parsed_ok_ = true;
+    }
+    return parsed_;
+}
+
 fmcg_text::PieceLines FrameTextSource::pieces_for(const FrameStats& fs, bool lead_in) const {
     const double max_time = song_duration();
     fmcg_text::PieceLines out;
     out.reserve(template_lines.size());
-    for (const std::string& t : template_lines)
+    for (const std::vector<TemplateSegment>& t : parsed())
         out.push_back(lead_in
-            ? format_template_line(t, fs, total_notes, 0, max_time, ppqn, commas, pad, bpm, 0)
-            : format_template_line(t, fs, total_notes, total_cc, max_time, ppqn, commas, pad, bpm, total_ticks));
+            ? format_template_segments(t, fs, total_notes, 0, max_time, ppqn, commas, pad, bpm, 0)
+            : format_template_segments(t, fs, total_notes, total_cc, max_time, ppqn, commas, pad, bpm, total_ticks));
     return out;
 }
 
