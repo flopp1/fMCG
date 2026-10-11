@@ -29,7 +29,8 @@ Pipeline today:
 | `src/fmcg_engine_internal.h` | engine-private shared types (`TickData`, `TrackSummary`, `scan_layered`) |
 | `src/fmcg_midi.{h,cpp}` | `FrameStats`, `ProgressCallbacks`, format detection, mmap reader |
 | `src/fmcg_format.{h,cpp}` | template tokens, comma/pad/BPM options, ASS generation |
-| `src/fmcg_render.{h,cpp}` | FFmpeg argv construction |
+| `src/fmcg_render.{h,cpp}` | FFmpeg argv construction (to be removed by goal 3) |
+| `src/fmcg_text.{h,cpp}` | in-built renderer, text: HarfBuzz shaping + stb_truetype raster (`src/stb_truetype.h`) into an RGBA canvas; `FrameRenderer` redraws only the dirty rect (RENDER_PLAN.md) |
 | `src/fmcg_fonts.{h,cpp}` | system font discovery (sfnt name/OS2 parsing) |
 | `src/fmcg_path.*`, `src/fmcg_util.*` | path + misc helpers; `src/xxhash64.h` vendored hash |
 | `fMCG_core.h` | umbrella header over `src/` |
@@ -47,7 +48,7 @@ Pipeline today:
 | `test/data/`, `test/expected/` | small fixture MIDIs; verified full-corpus expected values |
 | `build.bat` / `bootstrap.bat` / `release.bat` | Windows build (w64devkit g++); `release.bat` also builds the Linux package through WSL via `release_linux.sh` |
 | `Makefile` | Linux/macOS build (pkg-config glfw3 + libarchive) |
-| `vendor/` | imgui submodule, GLFW, libarchive (populated by `bootstrap.bat`; gitignored) |
+| `vendor/` | imgui submodule, GLFW, libarchive, HarfBuzz 14.5.0 source, x264 static lib (populated by `bootstrap.bat`, SHA-256 pinned; gitignored). `build_cache/` holds the downloads + NASM/x264 build trees |
 
 ## 3. Building
 **Windows (this machine):** w64devkit g++ 16 at `C:\Users\ethen\Downloads\w64devkit\bin`.
@@ -58,7 +59,9 @@ g++ -std=c++17 -O2 -I. -Isrc -Ivendor/libarchive src/fmcg_{midi,format,util,path
     -Wl,--stack,0x10000000
 cp vendor/libarchive/bin/libarchive.dll build/
 ```
-(256 MB stack: the layered walker recurses deeply.)
+(256 MB stack: the layered walker recurses deeply.) Renderer code also needs `-Ivendor/harfbuzz/src -Ivendor/x264/include`,
+`vendor/harfbuzz/src/harfbuzz.cc` (one TU, ~45 s to compile; cached as lib\harfbuzz.o / build/test/obj) and `vendor/x264/lib/libx264.a`.
+Linux: `pkg-config --cflags --libs harfbuzz x264` (apt: libharfbuzz-dev libx264-dev).
 
 **Linux (WSL Ubuntu on this machine, g++ 15, libarchive-dev 3.8.5):** `make` for the GUI;
 probe: same sources, link `-larchive -lpthread`, run under `ulimit -s 65536`
@@ -155,16 +158,19 @@ No content heuristics. See DESIGN.md.
    placement directly): let a stat occupy a fixed-width cell (e.g. width of its widest possible value,
    or a user-set width, with alignment inside the cell) so several stats on one line no longer shift
    left/right as digit counts and proportional glyph widths change frame to frame.
-8. Risky fast dedup (added 2026-10-11): a SEPARATE opt-in checkbox beside "Dedup". Rule: when a
-   layer's total size is an exact multiple of its FIRST tile (member) size, assume the whole layer is
-   that tile repeated (size / tile) times and skip cutting/decoding the rest of the layer. Show a clear
-   warning next to the option: only use it on files where a layer can never be an exact multiple of
-   its first tile while being made of different tiles -- otherwise the counts are silently wrong.
-   Design notes: this is the one place a silent wrong answer is accepted by the user's choice, so the
-   log must state that the assumption was applied (which layer, tile size, multiplicity). Where the
-   layer size comes from: the xz index's declared uncompressed size of the parent member (free), so
-   the payload never needs decoding past the first tile. Must stay off by default, and the test suite
-   must not depend on it (add dialect cases that show both a correct and a wrong-by-design result).
+8. Risky fast dedup (added 2026-10-11, rule revised by the user the same day): a SEPARATE opt-in
+   checkbox beside "Dedup". Rule: within a layer's payload, skip any leading header member(s) and take
+   the FIRST REPEATED tile (the first member that occurs twice in a row). If the remaining payload size
+   (layer size minus the header bytes before that tile) is an exact multiple of that tile's size, assume
+   the rest of the layer is that tile repeated (remaining / tile) times and stop cutting/decoding the
+   layer there. (Matching against the very first member would almost never fire: in every corpus file
+   the first member is a small header tile -- 884 / 72 / 172 bytes.) Show a clear warning next to the
+   option: only use it on files where the rest of a layer can never be an exact multiple of that tile
+   while being made of different tiles -- otherwise the counts are silently wrong.
+   Design notes: the one place a silent wrong answer is accepted by the user's choice, so the log must
+   state that the assumption was applied (which layer, header bytes, tile size, multiplicity). Layer
+   size = the parent member's declared uncompressed size from its xz index (free). Off by default; the
+   suite must not depend on it (add dialect cases showing both a correct and a wrong-by-design result).
 
 ## 7. Status log
 - Session 3 (2026-10-10, Claude Code): layered dedup rewritten (fmcg_layered.cpp); all 8

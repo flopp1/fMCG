@@ -54,6 +54,14 @@ if not exist vendor\libarchive\lib\libarchive.dll.a (
     echo ERROR: vendor\libarchive not found. Run bootstrap.bat first.
     exit /b 1
 )
+if not exist vendor\harfbuzz\src\harfbuzz.cc (
+    echo ERROR: vendor\harfbuzz not found. Run bootstrap.bat first.
+    exit /b 1
+)
+if not exist vendor\x264\lib\libx264.a (
+    echo ERROR: vendor\x264 not found. Run bootstrap.bat first.
+    exit /b 1
+)
 
 where g++ >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
@@ -113,9 +121,24 @@ if "!NEED_REBUILD!"=="1" (
     echo   lib\libimgui.a is up to date.
 )
 
+REM HarfBuzz (text shaping) builds once from its single-file amalgamation.
+set NEED_HB=0
+if not exist lib\harfbuzz.o set NEED_HB=1
+if "!NEED_HB!"=="0" (
+    for /f %%c in ('echo F ^| xcopy /D /L /Y "vendor\harfbuzz\src\harfbuzz.cc" "lib\harfbuzz.o" 2^>nul ^| findstr /C:"1 File"') do set NEED_HB=1
+)
+if "!NEED_HB!"=="1" (
+    echo   Building harfbuzz ^(one-time, ~1 min^)...
+    g++ -std=c++17 -O2 -c vendor\harfbuzz\src\harfbuzz.cc -o lib\harfbuzz.o
+    if !ERRORLEVEL! NEQ 0 (
+        echo harfbuzz build FAILED.
+        exit /b 1
+    )
+)
+
 echo [2/2] Building fMCG_gui (GUI)...
 set FAILED=0
-for %%f in (fmcg_path fmcg_util fmcg_midi fmcg_engine fmcg_layered fmcg_format fmcg_fonts fmcg_render) do call :compile_core %%f
+for %%f in (fmcg_path fmcg_util fmcg_midi fmcg_engine fmcg_layered fmcg_format fmcg_fonts fmcg_render fmcg_text) do call :compile_core %%f
 if "!FAILED!"=="1" (
     echo Build FAILED during core compilation.
     exit /b 1
@@ -132,7 +155,7 @@ if not exist fMCG_gui.exe (
     set NEED_LINK=1
     goto do_link
 )
-for %%o in (lib\gui\app_state.o lib\gui\dialogs.o lib\gui\jobs.o lib\gui\preview.o lib\gui\main.o lib\gui\colour_edit.o lib\gui\settings_store.o lib\src\fmcg_path.o lib\src\fmcg_util.o lib\src\fmcg_midi.o lib\src\fmcg_engine.o lib\src\fmcg_layered.o lib\src\fmcg_format.o lib\src\fmcg_fonts.o lib\src\fmcg_render.o lib\libimgui.a) do (
+for %%o in (lib\gui\app_state.o lib\gui\dialogs.o lib\gui\jobs.o lib\gui\preview.o lib\gui\main.o lib\gui\colour_edit.o lib\gui\settings_store.o lib\src\fmcg_path.o lib\src\fmcg_util.o lib\src\fmcg_midi.o lib\src\fmcg_engine.o lib\src\fmcg_layered.o lib\src\fmcg_format.o lib\src\fmcg_fonts.o lib\src\fmcg_render.o lib\src\fmcg_text.o lib\harfbuzz.o lib\libimgui.a) do (
     for /f %%c in ('echo F ^| xcopy /D /L /Y "%%o" "fMCG_gui.exe" 2^>nul ^| findstr /C:"1 File"') do set NEED_LINK=1
 )
 if "!NEED_LINK!"=="0" (
@@ -140,7 +163,7 @@ if "!NEED_LINK!"=="0" (
     goto link_done
 )
 :do_link
-g++ -std=c++17 -O3 -o fMCG_gui.exe lib\gui\app_state.o lib\gui\dialogs.o lib\gui\jobs.o lib\gui\preview.o lib\gui\main.o lib\gui\colour_edit.o lib\gui\settings_store.o lib\src\fmcg_path.o lib\src\fmcg_util.o lib\src\fmcg_midi.o lib\src\fmcg_engine.o lib\src\fmcg_layered.o lib\src\fmcg_format.o lib\src\fmcg_fonts.o lib\src\fmcg_render.o -Ivendor\imgui -Ivendor\imgui\backends -Ivendor\GLFW -I. -Isrc -Igui -Ivendor\libarchive -Lvendor\GLFW -Lvendor\libarchive\lib lib\libimgui.a vendor\libarchive\lib\libarchive.dll.a -lglfw3 -lbcrypt -lopengl32 -lgdi32 -luser32 -lkernel32 -lpthread -Wl,--stack,0x1000000 %CONSOLE_FLAG%
+g++ -std=c++17 -O3 -o fMCG_gui.exe lib\gui\app_state.o lib\gui\dialogs.o lib\gui\jobs.o lib\gui\preview.o lib\gui\main.o lib\gui\colour_edit.o lib\gui\settings_store.o lib\src\fmcg_path.o lib\src\fmcg_util.o lib\src\fmcg_midi.o lib\src\fmcg_engine.o lib\src\fmcg_layered.o lib\src\fmcg_format.o lib\src\fmcg_fonts.o lib\src\fmcg_render.o lib\src\fmcg_text.o lib\harfbuzz.o -Ivendor\imgui -Ivendor\imgui\backends -Ivendor\GLFW -I. -Isrc -Igui -Ivendor\libarchive -Lvendor\GLFW -Lvendor\libarchive\lib lib\libimgui.a vendor\libarchive\lib\libarchive.dll.a vendor\x264\lib\libx264.a -lglfw3 -lbcrypt -lopengl32 -lgdi32 -luser32 -lkernel32 -lpthread -Wl,--stack,0x1000000 %CONSOLE_FLAG%
 if errorlevel 1 (
     echo GUI build FAILED.
     exit /b 1
@@ -158,7 +181,7 @@ goto :eof
 call :uptodate "lib\src\%~1.o" "lib\src\%~1.d"
 if "!UT!"=="1" goto :eof
 echo   compiling src\%~1.cpp
-g++ -std=c++17 -O3 %EXTRA_CFLAGS% -c src\%~1.cpp -I. -Isrc -Ivendor\libarchive -o lib\src\%~1.o -MD -MF lib\src\%~1.d
+g++ -std=c++17 -O3 %EXTRA_CFLAGS% -c src\%~1.cpp -I. -Isrc -Ivendor\libarchive -Ivendor\harfbuzz\src -Ivendor\x264\include -o lib\src\%~1.o -MD -MF lib\src\%~1.d
 if errorlevel 1 (
     echo   compile FAILED: src\%~1.cpp
     set FAILED=1

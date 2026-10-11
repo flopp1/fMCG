@@ -74,6 +74,20 @@ ARCH_CFLAGS :=
 ARCH_LIBS   := -larchive
 endif
 
+# --- HarfBuzz (text shaping) + x264 (H.264 encoder): in-built renderer ---------
+ifeq ($(shell $(PKG) --exists harfbuzz x264 2>/dev/null && echo y),y)
+RENDER_CFLAGS := $(shell $(PKG) --cflags harfbuzz x264)
+RENDER_LIBS   := $(shell $(PKG) --libs harfbuzz x264)
+else
+$(warning pkg-config cannot find harfbuzz and/or x264. Install the development packages:)
+$(warning   Debian/Ubuntu: sudo apt install libharfbuzz-dev libx264-dev)
+$(warning   Fedora:        sudo dnf install harfbuzz-devel x264-devel)
+$(warning   Arch:          sudo pacman -S harfbuzz x264)
+$(warning   macOS:         brew install harfbuzz x264)
+RENDER_CFLAGS :=
+RENDER_LIBS   := -lharfbuzz -lx264
+endif
+
 # --- Dear ImGui (git submodule at vendor/imgui) ----------------------------------
 IMGUI_DIR  ?= vendor/imgui
 IMGUI_CFLAGS ?= -I$(IMGUI_DIR) -I$(IMGUI_DIR)/backends
@@ -101,12 +115,12 @@ ifeq ($(DEBUG),1)
 CXXFLAGS := $(CXXFLAGS) -DFMCG_DEBUG=1
 endif
 
-ALL_CFLAGS := $(CXXFLAGS) $(GLFW_CFLAGS) $(ARCH_CFLAGS) $(IMGUI_CFLAGS) -Isrc -Igui -I.
-ALL_LIBS   := $(GLFW_LIBS) $(ARCH_LIBS) $(GL_LDLIBS) -lpthread
+ALL_CFLAGS := $(CXXFLAGS) $(GLFW_CFLAGS) $(ARCH_CFLAGS) $(RENDER_CFLAGS) $(IMGUI_CFLAGS) -Isrc -Igui -I.
+ALL_LIBS   := $(GLFW_LIBS) $(ARCH_LIBS) $(RENDER_LIBS) $(GL_LDLIBS) -lpthread
 
 CORE_SOURCES := src/fmcg_path.cpp src/fmcg_util.cpp src/fmcg_midi.cpp \
                 src/fmcg_engine.cpp src/fmcg_layered.cpp src/fmcg_format.cpp src/fmcg_fonts.cpp \
-                src/fmcg_render.cpp
+                src/fmcg_render.cpp src/fmcg_text.cpp
 CORE_OBJECTS := $(CORE_SOURCES:.cpp=.o)
 GUI_SOURCES  := gui/app_state.cpp gui/dialogs.cpp gui/jobs.cpp gui/preview.cpp gui/main.cpp \
                 gui/colour_edit.cpp gui/settings_store.cpp
@@ -142,7 +156,7 @@ fMCG_gui: $(GUI_OBJECTS) $(CORE_OBJECTS) $(IMGUI_SOURCES)
 	$(CXX) $(ALL_CFLAGS) -o $@ $(GUI_OBJECTS) $(CORE_OBJECTS) $(IMGUI_SOURCES) $(LDFLAGS) $(ALL_LIBS)
 
 src/%.o: src/%.cpp $(wildcard src/*.h) fMCG_core.h $(PROFILE_STAMP)
-	$(CXX) $(CXXFLAGS) $(ARCH_CFLAGS) -Isrc -I. -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(ARCH_CFLAGS) $(RENDER_CFLAGS) -Isrc -I. -c $< -o $@
 
 gui/%.o: gui/%.cpp $(wildcard gui/*.h) $(wildcard src/*.h) fMCG_core.h $(PROFILE_STAMP)
 	$(CXX) $(ALL_CFLAGS) -c $< -o $@

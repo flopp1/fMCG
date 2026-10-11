@@ -60,5 +60,8 @@ class Cpp(unittest.TestCase):
         ref = T.build("test_burst_fuzz_ref", T.CORE_FULL + ["test/cpp/test_burst_fuzz.cpp"], ["-DFMCG_NO_BURST"])
         run(self, "test_burst_fuzz", [ref, "40"])
 
+    def test_text(self):
+        run(self, "test_text", sources=T.TEXT)
+
     def test_harness(self):
         run(self, "test_harness", cwd=os.path.join(T.TEST_DIR, "data"))

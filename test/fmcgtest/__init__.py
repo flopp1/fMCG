@@ -41,6 +41,23 @@ def seeds():
 CORE = ["src/fmcg_midi.cpp", "src/fmcg_format.cpp", "src/fmcg_util.cpp", "src/fmcg_path.cpp",
         "src/fmcg_engine.cpp", "src/fmcg_layered.cpp"]
 CORE_FULL = CORE + ["src/fmcg_fonts.cpp", "src/fmcg_render.cpp"]
+# In-built renderer: HarfBuzz is compiled from the vendored amalgamation on
+# Windows and comes from the system (pkg-config) elsewhere.
+TEXT = ["src/fmcg_text.cpp"] + (["vendor/harfbuzz/src/harfbuzz.cc"] if IS_WIN else [])
+
+
+def _pkg(args):
+    r = subprocess.run(["pkg-config"] + args + ["harfbuzz", "x264"], capture_output=True, text=True)
+    return r.stdout.split() if r.returncode == 0 else []
+
+
+if IS_WIN:
+    CFLAGS = ["-Ivendor/libarchive", "-Ivendor/harfbuzz/src", "-Ivendor/x264/include"]
+    LIBS = ["vendor/libarchive/lib/libarchive.dll.a", "vendor/x264/lib/libx264.a", "-lpthread",
+            "-Wl,--stack,0x10000000"]
+else:
+    CFLAGS = _pkg(["--cflags"])
+    LIBS = ["-larchive"] + _pkg(["--libs"]) + ["-lpthread"]
 
 
 BUILD_TIMES = {}   # name -> seconds spent compiling/linking (this run)
@@ -65,7 +82,7 @@ def _obj_stale(obj, dep):
 def _compile(src, flags):
     """Compile one source to a cached object (per flag set); returns the object path."""
     tag = "_".join(f.strip("-").replace("=", "") for f in flags) or "default"
-    obj_dir = os.path.join(BUILD, "obj", tag)
+    obj_dir = os.path.join(BUILD, "obj", sys.platform, tag)   # per platform: WSL shares this checkout
     stem = src.replace("/", "_").replace("\\", "_")[:-4]
     obj = os.path.join(obj_dir, stem + ".o")
     dep = os.path.join(obj_dir, stem + ".d")
@@ -74,9 +91,7 @@ def _compile(src, flags):
             return obj
     if _obj_stale(obj, dep):
         os.makedirs(obj_dir, exist_ok=True)
-        cmd = ["g++", "-std=c++17", "-O2", "-I.", "-Isrc"] + list(flags)
-        if IS_WIN:
-            cmd += ["-Ivendor/libarchive"]
+        cmd = ["g++", "-std=c++17", "-O2", "-I.", "-Isrc"] + list(flags) + CFLAGS
         cmd += ["-c", src, "-o", obj, "-MMD", "-MF", dep, "-MT", "obj"]   # fixed target: no drive-letter colon
         r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
         if r.returncode != 0:
@@ -97,14 +112,11 @@ def build(name, sources, extra_flags=()):
     with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as ex:
         objs = list(ex.map(lambda s: _compile(s, tuple(extra_flags)), sources))
     if not os.path.exists(out) or os.path.getmtime(out) < max(os.path.getmtime(o) for o in objs):
-        cmd = ["g++", "-o", out] + objs
+        cmd = ["g++", "-o", out] + objs + LIBS
         if IS_WIN:
-            cmd += ["vendor/libarchive/lib/libarchive.dll.a", "-lpthread", "-Wl,--stack,0x10000000"]
             dll = os.path.join(BUILD, "libarchive.dll")
             if not os.path.exists(dll):
                 shutil.copy(os.path.join(ROOT, "vendor", "libarchive", "bin", "libarchive.dll"), dll)
-        else:
-            cmd += ["-larchive", "-lpthread"]
         r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
         if r.returncode != 0:
             raise RuntimeError(f"link of {name} failed:\n{r.stderr[-4000:]}")

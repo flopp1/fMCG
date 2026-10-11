@@ -110,7 +110,14 @@ the FFmpeg requirement in README, `test/cpp/test_ffspawn.cpp`, `test/cpp/test_do
 
 ## 4. Implementation order
 1. DONE: FrameText refactor (`FrameTextSource` in fmcg_format; ASS output verified byte-identical on 4 configs).
-2. Text layout + raster (stb_truetype; HarfBuzz if chosen) + golden tests.
+2. DONE: text layout + raster (`src/fmcg_text`: HarfBuzz + stb_truetype, libass-compatible size, OS/2 win
+   metrics, 4 subpixel phases, outline by disc dilation, straight-alpha blending, dirty-rect FrameRenderer).
+   Tests (`test/cpp/test_text.cpp`, system font, skips without one): incremental == fresh render, custom
+   position clamped on screen, corner alignment, outline growth, OpenType features applied, transparent bg.
+   No bundled font, so invariant tests instead of stored golden images. Deps: HarfBuzz 14.5.0 + x264
+   (b35605ac) + NASM 3.02 via bootstrap.bat (SHA-256 pinned); Linux via pkg-config.
+   Behaviour fix vs ASS: custom x,y really is the block's TOP-LEFT (libass anchored \pos at the
+   selected corner alignment).
 3. Preview switched to the raster canvas (WYSIWYG) -- shippable on its own.
 4. qtrle encoder + MOV muxer + render thread; GUI output format selector; tests.
 5. H.264 (if chosen): x264 integration + MP4 (avcC) + bootstrap/release/README updates.

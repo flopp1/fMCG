@@ -17,13 +17,13 @@ for t in g++ make pkg-config tar; do
     command -v "$t" >/dev/null 2>&1 || missing+=("$t")
 done
 if command -v pkg-config >/dev/null 2>&1; then
-    for p in glfw3 libarchive; do
+    for p in glfw3 libarchive harfbuzz x264; do
         pkg-config --exists "$p" 2>/dev/null || missing+=("$p (development package)")
     done
 fi
 if [ ${#missing[@]} -gt 0 ]; then
     echo "ERROR: the Linux build environment is missing: ${missing[*]}"
-    echo "       Debian/Ubuntu: sudo apt install build-essential pkg-config libglfw3-dev libarchive-dev libgl1-mesa-dev"
+    echo "       Debian/Ubuntu: sudo apt install build-essential pkg-config libglfw3-dev libarchive-dev libharfbuzz-dev libx264-dev libgl1-mesa-dev"
     exit 2
 fi
 if [ ! -f "$SRC/vendor/imgui/imgui.h" ]; then

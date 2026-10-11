@@ -34,13 +34,13 @@ GLFW and libarchive are resolved via pkg-config (i.e. your system package manage
 
 ```bash
 # Debian/Ubuntu
-sudo apt install build-essential pkg-config git libglfw3-dev libarchive-dev libgl1-mesa-dev
+sudo apt install build-essential pkg-config git libglfw3-dev libarchive-dev libharfbuzz-dev libx264-dev libgl1-mesa-dev
 # Fedora
-sudo dnf install gcc-c++ make pkgconf-pkg-config git glfw-devel libarchive-devel mesa-libGL-devel
+sudo dnf install gcc-c++ make pkgconf-pkg-config git glfw-devel libarchive-devel harfbuzz-devel x264-devel mesa-libGL-devel   # x264-devel: RPM Fusion
 # Arch
-sudo pacman -S base-devel pkgconf git glfw libarchive mesa
+sudo pacman -S base-devel pkgconf git glfw libarchive harfbuzz x264 mesa
 # macOS
-brew install pkg-config glfw libarchive
+brew install pkg-config glfw libarchive harfbuzz x264
 
 git submodule update --init   # fetch Dear ImGui (pinned v1.92.9b)
 make                          # builds ./fMCG_gui (default target)
@@ -118,7 +118,7 @@ wsl --install
 then, inside the distribution (Debian/Ubuntu):
 
 ```bash
-sudo apt install build-essential pkg-config libglfw3-dev libarchive-dev libgl1-mesa-dev
+sudo apt install build-essential pkg-config libglfw3-dev libarchive-dev libharfbuzz-dev libx264-dev libgl1-mesa-dev
 ```
 
 Without WSL (or with packages missing) the Windows release is still produced and `release.bat` reports the Linux step as an error with what to install. On a Linux/macOS machine, `./release_linux.sh "$PWD" fMCG` (or `make release`) builds the Linux package directly.
