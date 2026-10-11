@@ -17,12 +17,13 @@ Pipeline today:
 2. **Sweep** (`sweep_to_frames`): tick space -> per-frame `FrameStats` (cumulative notes,
    NPS over a 1 s window, polyphony, peaks, BPM, CC).
 3. **Format** (`src/fmcg_format.cpp`): layout template (`{nc}`, `{nps}`, ... see README) ->
-   per-video-frame text (`FrameTextSource`: start-delay lead-in, song, end tail).
+   per-video-frame text (`FrameTextSource`: start-delay lead-in, song, end tail), as plain lines or
+   as pieces (literal text + stat cells); `block_spec()` bounds every stat's widest value.
 4. **Render** (`src/fmcg_text.cpp`, `src/fmcg_video.cpp`, `gui/jobs.cpp`): HarfBuzz-shaped text
    rasterized into an RGBA canvas (dirty-rect redraw), encoded in-process to MP4 (x264) or MOV
    (QuickTime Animation, optional alpha) by `fmcg_video::render_video`. The preview
-   (`gui/preview.cpp`) shows the same canvas as a GL texture. No FFmpeg, no ASS file
-   (`generate_ass` remains only as a tested library function).
+   (`gui/preview.cpp`) shows the same canvas as a GL texture. No FFmpeg, no ASS (removed;
+   colours are still stored in the ASS `&HAABBGGRR` notation, `fmcg_text::from_ass_colour`).
 
 ## 2. Repository map
 | path | role |
@@ -31,7 +32,7 @@ Pipeline today:
 | `src/fmcg_layered.cpp` | **layered dedup** (~1.4k lines): xz grammar discovery + memoized byte-level transducer (see DESIGN.md) |
 | `src/fmcg_engine_internal.h` | engine-private shared types (`TickData`, `TrackSummary`, `scan_layered`) |
 | `src/fmcg_midi.{h,cpp}` | `FrameStats`, `ProgressCallbacks`, format detection, mmap reader |
-| `src/fmcg_format.{h,cpp}` | template tokens, comma/pad/BPM options, ASS generation |
+| `src/fmcg_format.{h,cpp}` | template tokens, comma/pad/BPM options, `FrameTextSource` (per-frame text, pieces, block spec) |
 | `src/fmcg_video.{h,cpp}` | encoders (x264 H.264, qtrle) + ISO-BMFF MP4/MOV writer + `render_video` (the Render button's loop) |
 | `src/fmcg_text.{h,cpp}` | in-built renderer, text: HarfBuzz shaping + stb_truetype raster (`src/stb_truetype.h`) into an RGBA canvas; `FrameRenderer` redraws only the dirty rect (RENDER_PLAN.md) |
 | `src/fmcg_fonts.{h,cpp}` | system font discovery (sfnt name/OS2 parsing) |
@@ -46,7 +47,7 @@ Pipeline today:
 | `test/fmcgtest/` | shared helpers: build, probe runner, paths, levels |
 | `test/fmcg_probe.cpp` | headless CLI over the engine (used by all automated tests) |
 | `test/dialects/` | generators (`gen.py`), brute-force oracle (`oracle.py`), table CLI (`run.py`) |
-| `test/cpp/` | C++ engine tests (newopts, twopass, parallel, dedup, burst_window, burst_fuzz, harness) + benchmarks (bench_throughput, test_tickspace) + test_text / test_video / test_render (renderer, encoders with bit-exact qtrle round trips + optional FFmpeg cross-decode, end to end) |
+| `test/cpp/` | C++ engine tests (newopts, twopass, parallel, dedup, burst_window, burst_fuzz, harness) + benchmarks (bench_throughput, test_tickspace) + test_text / test_layout / test_video / test_render (renderer, placement/cells/fit, encoders with bit-exact qtrle round trips + optional FFmpeg cross-decode, end to end) |
 | `test/tools/` | `shrink_layered.py` (rebuild a layered file with <= K repeats per run), `layered_inspect.py` / `layered_stream_cut.py` (sparse structure dumps of layered files, never full expansion), legacy CSV reference tools |
 | `test/data/`, `test/expected/` | small fixture MIDIs; verified full-corpus expected values |
 | `build.bat` / `bootstrap.bat` / `release.bat` | Windows build (w64devkit g++); `release.bat` also builds the Linux package through WSL via `release_linux.sh` |
@@ -155,7 +156,10 @@ No content heuristics. See DESIGN.md.
    `fmcg_text::Typography` (features() / apply()) -> `TextStyle::features`, `letter_spacing`,
    `line_spacing`; `fmcg_text::font_features()` lists a font's GSUB/GPOS tags. Pattern keys typo_* ,
    letter_spacing, line_spacing. Layout::height() no longer counts line spacing after the last line.
-5. Resolution limits so text never overflows the frame in preview or render (re-check after 3).
+5. DONE (session 3): text never overflows. `TextRenderer::place` clamps the block (+ outline, 1 px edge)
+   in every mode; `FrameRenderer::init(..., TextBlockSpec)` scales the font once for the whole video when
+   the largest block (from `FrameTextSource::block_spec()`) does not fit (`Placement::fit`); GUI notes
+   the scale (preview overlay, render log). Resolution 16..16384, MP4 even-size warning.
 6. DONE (session 3): GUI restructure. `gui/main.cpp` draw_frame: MIDI File row on top, then a 2-column
    resizable ImGui table -- `draw_global_section()` LEFT, `draw_pattern_section()` RIGHT -- then action
    buttons, progress, log. The options inside each group are unchanged (only moved). Done together with
@@ -163,10 +167,10 @@ No content heuristics. See DESIGN.md.
    preset, tune, keyframe interval; `fmcg_video::Options` crf/preset/tune/keyframe_seconds,
    `fmcg_video::k_presets` / `k_tunes`; settings.ini keys x264_crf / x264_preset / x264_tune /
    keyframe_seconds).
-7. Fixed-width cells (added 2026-10-11; AFTER goal 3, since the in-built renderer controls glyph
-   placement directly): let a stat occupy a fixed-width cell (e.g. width of its widest possible value,
-   or a user-set width, with alignment inside the cell) so several stats on one line no longer shift
-   left/right as digit counts and proportional glyph widths change frame to frame.
+7. DONE (session 3): fixed-width cells. Pattern "Fixed-width stats" + align (`Placement::cells`,
+   `cell_align`): each stat's cell = widest of its block_spec candidates (probe frames with every digit
+   replaced by 0..9, measured in the font); `TextRenderer::layout(PieceLines, cell widths, align)`.
+   Verified by the user in the GUI; test/cpp/test_layout.cpp.
 8. Risky fast dedup (added 2026-10-11, rule revised by the user the same day): a SEPARATE opt-in
    checkbox beside "Dedup". Rule: within a layer's payload, skip any leading header member(s) and take
    the FIRST REPEATED tile (the first member that occurs twice in a row). If the remaining payload size
@@ -181,7 +185,9 @@ No content heuristics. See DESIGN.md.
    size = the parent member's declared uncompressed size from its xz index (free). Off by default; the
    suite must not depend on it (add dialect cases showing both a correct and a wrong-by-design result).
 
-9. Separate frame-corner anchoring from block anchoring (added 2026-10-11): custom x,y must not force
+9. DONE (session 3; user-verified): `Placement::frame_anchor` / `block_anchor` (numpad), GUI "Measured from"
+   / "Block anchor" (pattern keys frame_anchor / block_anchor, 3x3 index). Original request:
+   Separate frame-corner anchoring from block anchoring (added 2026-10-11): custom x,y must not force
    the block's TOP-LEFT to be the anchor. Two independent settings: (a) which point of the FRAME the
    position is measured from / which corner preset to use, and (b) which point of the TEXT BLOCK sits on
    that position (top-left, top-centre, top-right, centre-left, centre, ..., bottom-right) -- e.g. a
@@ -189,6 +195,15 @@ No content heuristics. See DESIGN.md.
    block anchor's horizontal side. Today (renderer step 2) custom x,y is always the block's top-left
    (`fmcg_text::Placement`, `TextRenderer::place`); extend Placement with a block anchor rather than
    overloading `alignment`. Keep clamping so the whole block stays on screen (goal 5).
+
+10. Static libarchive on Windows (added 2026-10-11): build libarchive from source (plus the compression
+   libraries it needs for the supported inputs: zlib, bzip2, xz/liblzma, zstd, lz4, and 7z/rar support
+   from libarchive itself) as static libraries with the w64devkit toolchain, SHA-256-pinned in
+   `bootstrap.bat` like HarfBuzz/x264, and link them into `fMCG_gui.exe` so the Windows release is a single
+   exe with no `libarchive.dll`. Update build.bat, release.bat (no DLL to ship / verify), the test build
+   (test/fmcgtest: link the static libs, no DLL copy), README "Distributing Windows binaries" and
+   THIRD_PARTY_LICENSES.txt (notices for every statically linked library). Linux keeps the system
+   libarchive.
 
 ## 7. Status log
 - Session 3 (2026-10-10, Claude Code): layered dedup rewritten (fmcg_layered.cpp); all 8
@@ -199,7 +214,6 @@ No content heuristics. See DESIGN.md.
   Font discovery fixed: TTC table offsets are file-absolute (every .ttc family was unreadable, e.g.
   Iosevka, Cambria); all families of a collection listed; FontVariant::face_index carried to the
   renderer; per-user font dir no longer scanned twice (duplicate styles).
-  Goals 5/7/9 implemented (session 3, end): FrameTextSource::pieces()/block_spec(), Placement frame/block
-  anchors, cells, fit; test/cpp/test_layout.cpp. Pending: Linux build+suite run, README docs for them,
-  GUI check of anchor combos. Next after that: goal 8.
+  Goals 5/7/9 done (user-verified in the GUI; Windows + Linux suites green). ASS generation removed.
+  Goal 10 (static libarchive on Windows) added.
 See OPEN_QUESTIONS.md "Corpus status" for the per-file table; update it every session.

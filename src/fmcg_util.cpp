@@ -73,13 +73,3 @@ std::string format_time(double total_sec, bool milli, int pad) {
 }
 
 
-std::string to_ass_time(double seconds) {
-    int hrs = static_cast<int>(seconds) / 3600;
-    int mins = (static_cast<int>(seconds) % 3600) / 60;
-    int secs = static_cast<int>(seconds) % 60;
-    int cs = static_cast<int>((seconds - static_cast<int>(seconds)) * 100);
-    std::ostringstream ss;
-    ss << hrs << ":" << std::setfill('0') << std::setw(2) << mins << ":"
-       << std::setw(2) << secs << "." << std::setw(2) << cs;
-    return ss.str();
-}

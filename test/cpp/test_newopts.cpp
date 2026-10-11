@@ -84,20 +84,16 @@ int main() {
         auto out = ProcessTemplateLine("N:{nc} T:{time-milli} B:{bpm}", z, 5000, 0, tmax, ppqn, c, p0);
         check("delay zero block", out, "N:0 T:00:00.000 B:150.00");
     }
-    {   // ASS start-delay lead-in lines exist and carry the negative first frame.
+    {   // Start-delay lead-in frames exist and carry the negative first frame.
         std::vector<FrameStats> frames(2);
         frames[0].timestamp_sec = 0.0; frames[1].timestamp_sec = 1.0;
-        AssConfig ac; ac.start_delay = 2.0; ac.pos_mode = 1; ac.pos_x = 55; ac.pos_y = 66;
-        generate_ass("_t.ass", frames, {"T:{time-milli}"}, 10, 0, 480, ac);
-        std::ifstream f("_t.ass");
-        std::string all((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-        std::remove("_t.ass");
-        check("delay lead-in present", all.find("-00:02.000") != std::string::npos ? "yes" : "no", "yes");
-        check("custom pos in ass", all.find("\\pos(55,66)") != std::string::npos ? "yes" : "no", "yes");
-        int npos = 0;
-        for (size_t at = all.find("\\pos("); at != std::string::npos; at = all.find("\\pos(", at + 1)) npos++;
-        char buf[8]; snprintf(buf, sizeof(buf), "%d", npos);
-        check("lead-in frame count", buf, "122");   // 2s delay x 60fps + 2 song frames
+        FrameTextSource src;
+        src.frames = &frames;
+        src.template_lines = {"T:{time-milli}"};
+        src.total_notes = 10;
+        src.start_delay = 2.0;
+        check("delay lead-in present", src.lines(0)[0], "T:-00:02.000");
+        check("lead-in frame count", std::to_string(src.frame_count()), "122");   // 2s delay x 60fps + 2 song frames
     }
     {   // End-delay tail: engine-produced tail frames. A note held 1920 ticks
         // (=2s at 120bpm, ppqn 480) at 10fps plus a 1.5s tail: 21 song frames
@@ -131,17 +127,17 @@ int main() {
         check("tail tick advance", std::to_string((int)(tail_end.tick - tail1.tick)), "1344");
         check("tail tick-rem clamped", std::to_string((int)std::max<int64_t>(0, (int64_t)tt - tail_end.tick)), "0");
         // {time-max} shows the MIDI song horizon (2s), NOT the extended 3.5s:
-        // generate the ASS and inspect the first/last dialogue lines.
+        // inspect the first/last video frames' text.
         {
-            AssConfig ac; ac.fps = 10.0; ac.end_delay = 1.5;
-            generate_ass("_tmax.ass", frames, {"T:{time} / {time-max} R:{time-rem}"}, tn, 0, 480, ac, tt);
-            std::ifstream f("_tmax.ass"); std::string line, first, last;
-            while (std::getline(f, line)) if (line.rfind("Dialogue:", 0) == 0) { if (first.empty()) first = line; last = line; }
-            std::remove("_tmax.ass");
-            size_t p = first.find('}') + 1;
-            check("time-max is MIDI horizon", first.substr(p), "T:00:00 / 00:02 R:00:02");
-            p = last.find('}') + 1;
-            check("tail time counts past song", last.substr(p), "T:00:03 / 00:02 R:00:00");
+            FrameTextSource src;
+            src.frames = &frames;
+            src.template_lines = {"T:{time} / {time-max} R:{time-rem}"};
+            src.total_notes = tn;
+            src.total_ticks = tt;
+            src.fps = 10.0;
+            src.end_delay = 1.5;
+            check("time-max is MIDI horizon", src.lines(0)[0], "T:00:00 / 00:02 R:00:02");
+            check("tail time counts past song", src.lines(src.frame_count() - 1)[0], "T:00:03 / 00:02 R:00:00");
         }
     }
     {   // Exact peak-NPS window: note-ons in any literal 1.000000s window,
@@ -208,52 +204,6 @@ int main() {
         check("ass colour alpha", hex(fmcg_text::from_ass_colour("&H80FF8040")), "0x4080FF7F");
         check("ass colour default", hex(fmcg_text::from_ass_colour("junk")), "0xFFFFFFFF");
     }
-    {   // Center alignments place the anchor mid-width; x/y clamp to the frame.
-        std::vector<FrameStats> frames(1);
-        frames[0].timestamp_sec = 0.0;
-        AssConfig ac; ac.width = 1000; ac.height = 500;
-        ac.ass_alignment = 8;   // Top Center
-        generate_ass("_t.ass", frames, {"X"}, 0, 0, 480, ac);
-        {
-            std::ifstream f("_t.ass");
-            std::string all((std::istreambuf_iterator<char>(f)), {});
-            std::remove("_t.ass");
-            check("top-center anchor", all.find("\\pos(500,30)") != std::string::npos ? "yes" : "no", "yes");
-        }
-        ac.ass_alignment = 2;   // Bottom Center
-        generate_ass("_t.ass", frames, {"X"}, 0, 0, 480, ac);
-        {
-            std::ifstream f("_t.ass");
-            std::string all((std::istreambuf_iterator<char>(f)), {});
-            std::remove("_t.ass");
-            check("bottom-center anchor", all.find("\\pos(500,470)") != std::string::npos ? "yes" : "no", "yes");
-        }
-        ac.ass_alignment = 7;
-        ac.pos_mode = 1; ac.pos_x = -50; ac.pos_y = 5000;   // anchor out of range
-        generate_ass("_t.ass", frames, {"X"}, 0, 0, 480, ac);
-        {
-            std::ifstream f("_t.ass");
-            std::string all((std::istreambuf_iterator<char>(f)), {});
-            std::remove("_t.ass");
-            // pos_y=5000 clamps so the one-line block (1.5em x 36px = 54px) fits:
-            // y -> 500-54 = 446; x -> 0. With font_size 36 and row "X":
-            // est_w = 1*0.62*36 = 23 -> x bound 1000-23 = 977; but pos_x=-50 -> 0
-            check("pos clamped to frame", all.find("\\pos(0,446)") != std::string::npos ? "yes" : "no", "yes");
-        }
-        {   // Bottom-right clamp: a huge x/y anchor is pulled back so the block
-            // stays fully visible (est. width for a long row, height for 1 line).
-            ac.pos_x = 2000; ac.pos_y = 1000;   // beyond 1000x500 frame
-            std::string long_row(60, '0');      // 60 digits -> 60*0.62*36 = 1339 px wide
-            generate_ass("_t.ass", frames, {long_row}, 0, 0, 480, ac);
-            std::ifstream f("_t.ass");
-            std::string all((std::istreambuf_iterator<char>(f)), {});
-            std::remove("_t.ass");
-            // x -> min(0, 1000-1339<0 -> 0); y -> 500 - 54 = 446
-            check("bottom-right clamp", all.find("\\pos(0,446)") != std::string::npos ? "yes" : "no", "yes");
-        }
-    }
     printf("\n%s (%d failures)\n", fails ? "FAILURES" : "ALL OK", fails);
-    std::remove("_t.ass");      // scratch outputs: removed on every path
-    std::remove("_tmax.ass");
     return fails ? 1 : 0;
 }

@@ -1,4 +1,5 @@
-// fmcg_format.h -- per-frame template rendering and ASS subtitle generation.
+// fmcg_format.h -- layout templates: stat tokens, number formatting and the
+// per-video-frame text (FrameTextSource) shared by the preview and the renderer.
 #pragma once
 #include "fmcg_midi.h"
 #include "fmcg_text.h"   // TextPiece / TextBlockSpec (plain structs; no renderer dependency)
@@ -78,33 +79,3 @@ struct FrameTextSource {
     // and for fitting the largest block into the frame.
     fmcg_text::TextBlockSpec block_spec() const;
 };
-
-struct AssConfig {
-    int width = 1920;
-    int height = 1080;
-    double fps = 60.0;
-    int font_size = 36;
-    std::string font_family = "Arial";
-    int bold = 0;               // ASS Style Bold flag (from the chosen variant)
-    int italic_flag = 0;        // ASS Style Italic flag
-    std::string text_color_ass = "&H00FFFFFF";
-    std::string bg_color_ass = "&H00000000";   // video background (&HAABBGGRR)
-    int ass_alignment = 7;
-    // Counter placement: mode 0 = corner alignment (pos derived from
-    // ass_alignment), mode 1 = explicit (pos_x,pos_y) at the text block's
-    // TOP-LEFT corner (libass \pos anchors the top-left with alignment 7).
-    int pos_mode = 0;
-    int pos_x = 30;
-    int pos_y = 30;
-    CommaOpts commas;
-    PadOpts pad;
-    BpmOpts bpm;
-    double start_delay = 0.0;   // lead-in seconds: zero stats, negative countdown
-    double end_delay = 0.0;     // tail seconds after the song: frozen stats, time/tick keep counting
-    uint64_t total_ticks = 0;   // song horizon in ticks ({tick-total}); 0 hides it
-};
-
-void generate_ass(const std::string& ass_filename, const std::vector<FrameStats>& frames,
-                  const std::vector<std::string>& template_lines, uint64_t total_notes,
-                  uint64_t total_cc, uint16_t ppqn, const AssConfig& cfg,
-                  uint64_t total_ticks = 0);
