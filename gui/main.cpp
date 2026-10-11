@@ -729,7 +729,7 @@ static void draw_global_section() {
     ImGui::SetNextItemWidth(100);
     double delay_input = g_ui.s.start_delay;
     if (ImGui::InputDouble("##delay", &delay_input, 0, 0, "%.2f")) {
-        if (delay_input >= 0) { g_ui.s.start_delay = delay_input; mark_globals_dirty(); }
+        if (delay_input >= 0) { g_ui.s.start_delay = std::min(delay_input, k_max_delay); mark_globals_dirty(); }
     }
 
     ImGui::Text("End delay (seconds): ");
@@ -737,7 +737,7 @@ static void draw_global_section() {
     ImGui::SetNextItemWidth(100);
     double edelay_input = g_ui.s.end_delay;
     if (ImGui::InputDouble("##edelay", &edelay_input, 0, 0, "%.2f")) {
-        if (edelay_input >= 0) { g_ui.s.end_delay = edelay_input; mark_globals_dirty(); }
+        if (edelay_input >= 0) { g_ui.s.end_delay = std::min(edelay_input, k_max_delay); mark_globals_dirty(); }
     }
 
     if (ImGui::Checkbox("Vel-0 as Note-Off", &g_ui.s.vel0_note_off)) mark_globals_dirty();
@@ -770,7 +770,7 @@ static void draw_global_section() {
     ImGui::SetNextItemWidth(120);
     double fps_input = g_ui.s.fps;
     if (ImGui::InputDouble("##fps", &fps_input, 0, 0, "%.1f")) {
-        if (fps_input > 0) { g_ui.s.fps = fps_input; mark_globals_dirty(); }
+        if (fps_input > 0) { g_ui.s.fps = std::min(fps_input, k_max_fps); mark_globals_dirty(); }
     }
 
     ImGui::Text("Parsing threads");

@@ -231,10 +231,13 @@ void globals_from_ini(const std::string& text, GlobalSettings& out) {
     out.keyframe_seconds = get_dbl(kv, "keyframe_seconds", 2.0);
     if (!(out.keyframe_seconds >= 0.1 && out.keyframe_seconds <= 60.0)) out.keyframe_seconds = 2.0;
     if (out.fps <= 0) out.fps = 60.0;
+    if (out.fps > 1000.0) out.fps = 1000.0;           // k_max_fps (gui/app_state.h)
     if (out.width <= 0) out.width = 1920;
     if (out.height <= 0) out.height = 1080;
     if (out.start_delay < 0) out.start_delay = 0.0;
     if (out.end_delay   < 0) out.end_delay   = 0.0;
+    out.start_delay = std::min(out.start_delay, 3600.0);   // k_max_delay (gui/app_state.h)
+    out.end_delay   = std::min(out.end_delay, 3600.0);
     if (out.ffmpeg_threads < 0) out.ffmpeg_threads = 0;
     if (out.parse_threads  < 0) out.parse_threads  = 0;
 }

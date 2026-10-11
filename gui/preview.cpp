@@ -28,7 +28,6 @@ struct CanvasPreview {
     GLuint tex = 0;
     int tex_w = 0, tex_h = 0;
     std::string key;                       // settings the canvas was built with
-    std::vector<std::string> last_lines;
     bool ok = false;
     std::string err;
 };
@@ -60,7 +59,6 @@ void draw_canvas(const fmcg_text::PieceLines& pieces, const FrameTextSource& src
     const int W = std::max(16, g_app.vid_width), H = std::max(16, g_app.vid_height);
     if (key != g_cp.key) {
         g_cp.key = key;
-        g_cp.last_lines.clear();
         const fmcg_text::TextStyle st = app_text_style();
         fmcg_text::Placement pl = app_placement();
         pl.frame_w = W; pl.frame_h = H;
@@ -77,15 +75,8 @@ void draw_canvas(const fmcg_text::PieceLines& pieces, const FrameTextSource& src
                      g_cp.fr.canvas().px.data());
         g_cp.tex_w = W; g_cp.tex_h = H;
     }
-    std::vector<std::string> lines;   // change detection
-    for (const auto& line : pieces) {
-        std::string s;
-        for (const auto& pc : line) s += pc.text;
-        lines.push_back(std::move(s));
-    }
-    if (g_cp.ok && lines != g_cp.last_lines) {
+    if (g_cp.ok) {   // unchanged text: render_pieces draws nothing and dirty() is empty
         const fmcg_text::Canvas& c = g_cp.fr.render_pieces(pieces);
-        g_cp.last_lines = lines;
         const fmcg_text::Rect d = g_cp.fr.dirty().clipped(c.w, c.h);
         if (!d.empty()) {
             glBindTexture(GL_TEXTURE_2D, g_cp.tex);
@@ -163,14 +154,6 @@ void render_pattern_only_popup() {
             ImVec2 area0 = ImGui::GetContentRegionAvail();
             dl->AddRectFilled(wp0, ImVec2(wp0.x + area0.x, wp0.y + area0.y),
                               IM_COL32(24, 24, 24, 255));   // letterbox: the frame itself carries the video background
-        }
-
-        if (g_app.template_lines.empty()) {
-            g_app.template_lines.push_back("Time: {time-milli}/{time-milli-max}");
-            g_app.template_lines.push_back("Notes: {nc}/{nc-total}/{nc-rem}");
-            g_app.template_lines.push_back("NPS: {nps}/{nps-max}");
-            g_app.template_lines.push_back("Polyphony: {plph}/{plph-max}");
-            g_app.template_lines.push_back("BPM: {bpm}");
         }
 
         FrameStats zero_fs;

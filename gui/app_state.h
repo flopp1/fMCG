@@ -15,6 +15,10 @@
 #include <string>
 #include <vector>
 
+// Input limits: beyond these a typo makes trillions of frames.
+constexpr double k_max_fps = 1000.0;
+constexpr double k_max_delay = 3600.0;   // seconds (start and end delay)
+
 // Options snapshot handed to the processing worker thread.
 struct GuiSettings {
     std::string midi_file;

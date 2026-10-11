@@ -81,6 +81,11 @@ int main() {
         GlobalSettings s;
         globals_from_ini(globals_to_ini(r), s);
         CHECK(s.dedup_mode == 1 && s.x264_crf == 23 && s.x264_preset == "slow" && s.fps == 30);
+        GlobalSettings lim;   // limits: FPS <= 1000, delays <= 1 hour; nan/inf -> defaults
+        globals_from_ini("fps = 5000\nstart_delay = 99999\nend_delay = 7200\n", lim);
+        CHECK(lim.fps == 1000.0 && lim.start_delay == 3600.0 && lim.end_delay == 3600.0);
+        globals_from_ini("fps = nan\nstart_delay = inf\n", lim);
+        CHECK(lim.fps == 60.0 && lim.start_delay == 3.0);
     }
     std::printf("%s\n", fails ? "FAILED" : "ALL OK");
     return fails ? 1 : 0;
