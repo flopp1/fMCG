@@ -44,7 +44,7 @@ std::string canvas_key() {
     for (const std::string& f : g_app.typo.features()) k << ',' << f;
     // placement + everything the block spec (cell widths, fit) depends on
     k << '|' << g_app.frame_anchor << ',' << g_app.block_anchor << ',' << g_app.cells << ',' << g_app.cell_align
-      << '|' << g_app.frames_data.size() << ',' << g_app.total_notes << ',' << g_app.total_ticks << ','
+      << '|' << g_app.frames_epoch << ',' << g_app.frames_data.size() << ',' << g_app.total_notes << ',' << g_app.total_ticks << ','
       << g_app.ppqn << ',' << g_app.fps << ',' << g_app.start_delay << ',' << g_app.end_delay << '|'
       << g_app.preview_commas.notes << g_app.preview_commas.polyphony << g_app.preview_commas.nps
       << g_app.preview_commas.cc << g_app.preview_commas.ticks << g_app.preview_pad.enabled << g_app.preview_bpm.decimals;

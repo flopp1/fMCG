@@ -1234,6 +1234,13 @@ static void draw_frame(GLFWwindow* window) {
             ImGui::OpenPopup("Preview");
             snap_live_settings();   // the newest pattern / resolution / delay
 
+            if (g_ui.output_buf[0] == '\0') {   // same default as Process
+                const std::string def = g_app.midi_dir + g_app.midi_stem + "_fMCG"
+                    + fmcg_video::extension((fmcg_video::Format)g_ui.s.output_format);
+                strncpy(g_ui.output_buf, def.c_str(), sizeof(g_ui.output_buf) - 1);
+                g_ui.output_buf[sizeof(g_ui.output_buf) - 1] = '\0';
+                g_ui.s.output_video = def;
+            }
             RenderSettings rs;
             rs.output_video = g_ui.output_buf;
             rs.midi_dir = g_app.midi_dir;

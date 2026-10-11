@@ -119,6 +119,7 @@ struct AppState {
     uint64_t                  total_notes{0};
     uint64_t                  total_ticks{0};
     GuiSettings               processed_with;      // the settings the last Process ran with
+    uint64_t                  frames_epoch{0};     // bumped per completed Process (preview cache key)
 
     // ---- preview data ---------------------------------------------------------
     std::vector<FrameStats>   frames_data;

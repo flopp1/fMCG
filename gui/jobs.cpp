@@ -158,6 +158,7 @@ void run_process(GuiSettings s) {
 
     app.processed_with = s;
     app.frames_data = std::move(frames);
+    ++app.frames_epoch;
     app.template_lines = template_lines;
     app.text_colour_ass = text_color_ass;
     app.ass_alignment = ass_alignment;

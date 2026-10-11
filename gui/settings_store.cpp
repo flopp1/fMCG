@@ -11,6 +11,7 @@
 #include "../src/fmcg_video.h"    // k_presets / k_tunes
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -110,7 +111,10 @@ int    get_int(const KV& kv, const char* key, int def) {
 double get_dbl(const KV& kv, const char* key, double def) {
     std::string v = get_str(kv, key);
     if (v.empty()) return def;
-    try { return std::stod(v); } catch (...) { return def; }
+    try {
+        const double d = std::stod(v);
+        return std::isfinite(d) ? d : def;   // "nan"/"inf" would pass every range check
+    } catch (...) { return def; }
 }
 bool   get_bool(const KV& kv, const char* key, bool def) {
     std::string v = get_str(kv, key);

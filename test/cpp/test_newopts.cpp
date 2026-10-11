@@ -205,6 +205,25 @@ int main() {
             std::remove("_nps.mid");
             check("nps window literal 1s @59.94fps", std::to_string(frames.empty() ? -1 : (int)frames.back().peak_nps), "20");
         }
+        {   // Below 0.5 fps the current-NPS window is one frame (was round(fps) = 0
+            // frames: frame k read frame k's own, not yet written, entry).
+            const uint8_t trk[] = {0x00, 0x90,0x3C,0x40, 0x00, 0x3D,0x40,          // 2 notes at 0 s
+                                   0x87,0x68, 0x3E,0x40,                            // +1000 ticks: 1 note at 1.04 s
+                                   0x00, 0xFF,0x2F,0x00};
+            std::vector<uint8_t> mid = {'M','T','h','d', 0,0,0,6, 0,0, 0,1, 0x01,0xE0,
+                                        'M','T','r','k', 0,0,0,(uint8_t)sizeof trk};
+            mid.insert(mid.end(), trk, trk + sizeof trk);
+            std::ofstream mf("_lowfps.mid", std::ios::binary);
+            mf.write((const char*)mid.data(), (std::streamsize)mid.size());
+            mf.close();
+            uint16_t div = 0; uint64_t tn = 0, tt = 0;
+            auto frames = fmcg_stream::process_streaming("_lowfps.mid", 0.25, div, tn, true, tt, {});
+            std::remove("_lowfps.mid");
+            check("0.25 fps: notes", std::to_string(tn), "3");
+            check("0.25 fps: frame 0 nps = its notes", frames.empty() ? "none"
+                  : std::to_string((long long)frames[0].notes_per_second) + "/" +
+                    std::to_string(frames[0].cumulative_notes), "3/3");
+        }
     }
     {   // ASS colour (&HAABBGGRR, AA = transparency) -> renderer RGBA (0xRRGGBBAA).
         auto hex = [](uint32_t v) { char b[16]; std::snprintf(b, sizeof b, "0x%08X", v); return std::string(b); };

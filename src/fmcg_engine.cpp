@@ -19,13 +19,6 @@
 #include "archive.h"
 #include "archive_entry.h"
 
-// Shared 64KB I/O scratch. Several walk_layer / read_member / feeder frames
-// used to hold 64-256KB stack arrays; GCC inlines these into the walk lambda
-// so every recursion level carried hundreds of KB of frame and ___chkstk_ms
-// crashed at depth 3. Hoisted: all are transient fill/scan buffers never held
-// across a recursive walk.
-static thread_local std::vector<uint8_t> tls_io_scratch;
-
 #if defined(_WIN32)
 #include <windows.h>
 #elif defined(__unix__)
@@ -267,10 +260,9 @@ public:
 
         size_t fill_more() {
             if (inner_eof || done) return 0;
-            // PRIVATE scratch: the outer member scan reads source bytes into
-            // the shared tls_io_scratch, and a nested feeder's pull() may run
-            // while that buffer is live (it was aliased before -- corrupted
-            // decoded bytes fed to libarchive mid-member).
+            // PRIVATE scratch: a shared buffer was once aliased between the
+            // outer read and a nested feeder's pull() (corrupted decoded bytes
+            // fed to libarchive mid-member).
             tmp64.resize(1 << 16);
             uint8_t* tmp = tmp64.data();
             size_t n = inner->pull(tmp, tmp64.size());
@@ -1750,7 +1742,7 @@ std::vector<FrameStats> sweep_to_frames(TickData& td,
             td.dense_cc.resize((size_t)nticks, 0);   // dense_cc is sized to last-written tick only
     }
     const double inv = 1.0 / ((double)ppqn * 1e6);
-    const size_t W = (size_t)std::round(fps);
+    const size_t W = std::max<size_t>(1, (size_t)std::round(fps));   // >= 1 frame (fps < 0.5)
 
     std::vector<FrameStats> out;
     {   // Pre-size: song length from the tempo map + the tail (no regrowth copies).
@@ -2299,7 +2291,7 @@ std::vector<FrameStats> buckets_to_frames(FrameBuckets& fb, double fps,
     int64_t poly = 0, peak_poly = 0;
     double peak_nps = 0.0;
     size_t bpmw = 0;
-    const size_t W = (size_t)std::round(fps);
+    const size_t W = std::max<size_t>(1, (size_t)std::round(fps));   // >= 1 frame (fps < 0.5)
 
     // Sub-frame peaks from the fine-grid buckets -- same sliding window and
     // prefix sums as sweep_to_frames, so both engines agree.
