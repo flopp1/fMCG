@@ -65,9 +65,9 @@ static FrameTextSource make_source(const std::vector<FrameStats>& frames, double
     src.frames = &frames;
     src.template_lines = {"Notes {nc} / {nc-total}  Poly {plph}", "NPS {nps} max {nps-max}  BPM {bpm}",
                           "{time-milli} {tick} rem {sec-rem}s |"};
-    src.total_notes = frames.back().cumulative_notes;
-    src.total_cc = frames.back().cumulative_cc;
-    src.total_ticks = (uint64_t)frames.back().tick;
+    src.song.notes = frames.back().cumulative_notes;
+    src.song.cc = frames.back().cumulative_cc;
+    src.song.ticks = (uint64_t)frames.back().tick;
     src.fps = fps;
     src.start_delay = 2.0;
     return src;

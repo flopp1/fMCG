@@ -19,51 +19,14 @@
 constexpr double k_max_fps = 1000.0;
 constexpr double k_max_delay = 3600.0;   // seconds (start and end delay)
 
-// Options snapshot handed to the processing worker thread.
+// Every UI setting: the persisted globals, the pattern being edited and the
+// per-session paths. The Process worker gets a copy of it.
 struct GuiSettings {
-    std::string midi_file;
-    std::string output_video;
-    std::string layout_text;
-    std::string font_family;
-    std::string font_variant;   // subfamily/style within the family ("" = default)
-    int         font_bold = 0;
-    int         font_italic = 0;
-    int         font_size = 36;
-    int         alignment = 1;
-    int         width = 1920;
-    int         height = 1080;
-    double      fps = 60.0;
-    CommaOpts   commas;
-    PadOpts     pad;
-    BpmOpts     bpm;
-    double      start_delay = 3.0;
-    double      end_delay = 0.0;
-    // 0 = corner alignment dropdown, 1 = explicit x/y (top-left of text block)
-    int         pos_mode = 0;
-    int         pos_x = 30;
-    int         pos_y = 30;
-    int         frame_anchor = 0;     // custom position: frame point x,y is measured from (GUI 3x3 index, 0 = top-left)
-    int         block_anchor = 0;     // custom position: block point placed there (GUI 3x3 index)
-    bool        cells = false;        // fixed-width stat cells
-    int         cell_align = 2;       // 0 left, 1 centre, 2 right
-    bool        vel0_note_off = true;
-    bool        close_held_notes = false;   // release notes still held at a track's end (off = MIDI-spec ons - offs)
-    int         ffmpeg_threads = 0;   // encoder (x264) threads, 0 = auto; key name kept for saved settings
-    int         parse_threads = 0;    // 0 = all cores (bounded to hw_concurrency); 1 = sequential parse
-    int         dedup_mode = 0;       // 0 off, 1 track (traditional), 2 layered -- one at a time
-    bool        risky_dedup = false;  // risky fast dedup (needs layered); deliberately NOT saved across restarts
-    std::string text_color_aabbggrr = "&H00FFFFFF";
-    std::string bg_color_aabbggrr = "&H00000000";
-    bool        outline_enabled = true;      // pattern: text outline (in-built renderer)
-    double      outline_width = 1.0;
-    std::string outline_color_aabbggrr = "&H00000000";
-    fmcg_text::Typography typo;              // pattern: advanced typography
-    int         output_format = 0;           // global: 0 = MP4 (H.264), 1 = MOV (qtrle)
-    bool        transparent_bg = false;      // global: MOV only
-    int         x264_crf = 18;               // global encoder settings (MP4): CRF 0..51
-    std::string x264_preset = "veryfast";    // fmcg_video::k_presets
-    std::string x264_tune;                   // "" = none, else fmcg_video::k_tunes
-    double      keyframe_seconds = 2.0;      // both formats
+    std::string    midi_file;
+    std::string    output_video;
+    GlobalSettings global;            // saved in settings.ini
+    PatternData    pattern;           // the pattern being edited (layout_text = the editor's content)
+    bool           risky_dedup = false;   // risky fast dedup (needs layered); deliberately NOT saved
 };
 
 // Options snapshot handed to the render worker thread.
@@ -128,15 +91,11 @@ struct AppState {
 
     // ---- preview data ---------------------------------------------------------
     std::vector<FrameStats>   frames_data;
-    std::string               layout_text;         // template editor content (persistent)
+    // The overlay look the preview and the render draw with: the pattern the
+    // last Process ran with, updated from the live UI at each Render click
+    // (snap_live_settings). template_lines = layout_lines(pattern.layout_text).
+    PatternData               pattern;
     std::vector<std::string>  template_lines;
-    std::string               text_colour_ass{"&H00FFFFFF"};
-    int                       ass_alignment{7};
-    int                       font_size{36};       // video-resolution font size (ASS Fontsize)
-    std::string               font_family;         // family used for the last processed render
-    std::string               font_variant;        // subfamily/style, e.g. "Bold"
-    int                       font_bold = 0;
-    int                       font_italic = 0;
     bool                      show_preview{false};
     bool                      render_active{false};  // true while a render is in progress
     // The Preview popup was opened to watch a render (Render Video click, or
@@ -164,27 +123,8 @@ struct AppState {
     double                    preview_saved_pos{0.0};
     double                    start_delay{0.0};   // black lead-in before the song starts
     double                    end_delay{0.0};     // frozen-stats tail after the song ends
-    int                       pos_mode{0};        // 0 = corners, 1 = explicit x/y
-    int                       pos_x{30};
-    int                       pos_y{30};
-    int                       frame_anchor{0};    // GUI 3x3 indices (see GuiSettings)
-    int                       block_anchor{0};
-    bool                      cells{false};
-    int                       cell_align{2};
-    int                       alignment{1};       // corner dropdown (GUI index)
     double                    preview_start_time{0.0};
     double                    preview_start_pos{0.0};
-
-    // Preview mirror of the options the last Process ran with.
-    CommaOpts                 preview_commas;
-    PadOpts                   preview_pad;
-    BpmOpts                   preview_bpm;
-    std::string               bg_colour_ass{"&H00000000"};
-    // Text outline (pattern settings) for the in-built renderer / preview.
-    bool                      outline_enabled{true};
-    double                    outline_width{1.0};
-    std::string               outline_colour_ass{"&H00000000"};
-    fmcg_text::Typography     typo;            // advanced typography (pattern)
 
     // ---- async file dialog state ---------------------------------------------
     std::atomic<bool>         dialog_busy{false};
@@ -217,8 +157,7 @@ struct AppState {
 // colour editor and persistence layer can read/write it alongside the
 // settings widgets.
 struct UiState {
-    GuiSettings     s;              // snapshot handed to the Process worker
-    GlobalSettings  globals;        // non-pattern persistent settings
+    GuiSettings     s;              // every setting (globals, pattern, paths)
     bool            globals_dirty = false;      // autosave pending
     double          last_globals_save = 0.0;    // seconds (glfwGetTime)
 
@@ -267,7 +206,5 @@ fmcg_text::TextStyle app_text_style();
 fmcg_text::Placement app_placement();
 FrameTextSource app_text_source();
 
-// Recompute font_bold/font_italic from the variant's OS/2 metrics and refresh
-// the variant combo cache for `family`. Shared by the family combo and the
-// pattern loader.
-void apply_font_variant(GuiSettings& s, const std::string& family, const std::string& variant);
+// Set the preview / render look (g_app.pattern + its template lines).
+void set_app_pattern(const PatternData& p);

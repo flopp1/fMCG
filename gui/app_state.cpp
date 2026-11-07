@@ -28,18 +28,9 @@ int gui_alignment_to_ass(int idx) {
     }
 }
 
-void apply_font_variant(GuiSettings& s, const std::string& family, const std::string& variant) {
-    s.font_family = family;
-    s.font_variant = variant;
-    s.font_bold = 0;
-    s.font_italic = 0;
-    for (const auto& v : enumerate_font_variants(family)) {
-        if (v.style == variant) {
-            s.font_bold = (v.weight >= 600) ? 1 : 0;
-            s.font_italic = v.italic ? 1 : 0;
-            break;
-        }
-    }
+void set_app_pattern(const PatternData& p) {
+    g_app.pattern = p;
+    g_app.template_lines = layout_lines(p.layout_text);
 }
 
 // ---------------------------------------------------------------------------
@@ -118,13 +109,13 @@ float AppState::display_progress() {
 
 fmcg_text::TextStyle app_text_style() {
     fmcg_text::TextStyle st;
-    st.font_file = find_font_file_for_variant(g_app.font_family, g_app.font_variant, &st.face_index);
-    st.size = g_app.font_size;
-    st.colour = fmcg_text::from_ass_colour(g_app.text_colour_ass);
-    st.outline = g_app.outline_enabled && g_app.outline_width > 0.0;
-    st.outline_width = g_app.outline_width;
-    st.outline_colour = fmcg_text::from_ass_colour(g_app.outline_colour_ass);
-    g_app.typo.apply(st);
+    st.font_file = find_font_file_for_variant(g_app.pattern.font_family, g_app.pattern.font_variant, &st.face_index);
+    st.size = g_app.pattern.font_size;
+    st.colour = fmcg_text::from_ass_colour(g_app.pattern.text_color_aabbggrr);
+    st.outline = g_app.pattern.outline_enabled && g_app.pattern.outline_width > 0.0;
+    st.outline_width = g_app.pattern.outline_width;
+    st.outline_colour = fmcg_text::from_ass_colour(g_app.pattern.outline_color_aabbggrr);
+    g_app.pattern.typo.apply(st);
     return st;
 }
 
@@ -132,14 +123,14 @@ fmcg_text::Placement app_placement() {
     fmcg_text::Placement pl;
     pl.frame_w = std::max(16, g_app.vid_width);
     pl.frame_h = std::max(16, g_app.vid_height);
-    pl.pos_mode = g_app.pos_mode;
-    pl.pos_x = g_app.pos_x;
-    pl.pos_y = g_app.pos_y;
-    pl.frame_anchor = gui_anchor_to_numpad(g_app.frame_anchor);
-    pl.block_anchor = gui_anchor_to_numpad(g_app.block_anchor);
-    pl.cells = g_app.cells;
-    pl.cell_align = g_app.cell_align;
-    pl.alignment = g_app.ass_alignment;
+    pl.pos_mode = g_app.pattern.pos_mode;
+    pl.pos_x = g_app.pattern.pos_x;
+    pl.pos_y = g_app.pattern.pos_y;
+    pl.frame_anchor = gui_anchor_to_numpad(g_app.pattern.frame_anchor);
+    pl.block_anchor = gui_anchor_to_numpad(g_app.pattern.block_anchor);
+    pl.cells = g_app.pattern.cells;
+    pl.cell_align = g_app.pattern.cell_align;
+    pl.alignment = gui_alignment_to_ass(g_app.pattern.alignment);
     return pl;
 }
 
@@ -147,16 +138,14 @@ FrameTextSource app_text_source() {
     FrameTextSource src;
     src.frames = &g_app.frames_data;
     src.template_lines = g_app.template_lines;
-    src.total_notes = g_app.total_notes;
-    src.total_cc = g_app.frames_data.empty() ? 0 : g_app.frames_data.back().cumulative_cc;
-    src.total_ticks = g_app.total_ticks;
-    src.meter = g_app.meter;
-    src.ppqn = g_app.ppqn;
+    src.song.notes = g_app.total_notes;
+    src.song.cc = g_app.frames_data.empty() ? 0 : g_app.frames_data.back().cumulative_cc;
+    src.song.ticks = g_app.total_ticks;
+    src.song.meter = g_app.meter;
+    src.song.ppqn = g_app.ppqn;
     src.fps = g_app.fps > 0 ? g_app.fps : 60.0;
     src.start_delay = g_app.start_delay;
     src.end_delay = g_app.end_delay;
-    src.commas = g_app.preview_commas;
-    src.pad = g_app.preview_pad;
-    src.bpm = g_app.preview_bpm;
+    src.fmt = g_app.pattern.format_opts();
     return src;
 }

@@ -172,14 +172,16 @@ std::string patterns_dir() {
     return path_to_utf8(path_from_utf8(base) / "patterns");
 }
 
-const char* k_default_layout =
+
+
+} // namespace
+
+const char* const k_default_layout =
     "Time: {time-milli}/{time-milli-max}\n"
     "Notes: {nc}/{nc-total}/{nc-rem}\n"
     "NPS: {nps}/{nps-max}\n"
     "Polyphony: {plph}/{plph-max}\n"
     "BPM: {bpm}";
-
-} // namespace
 
 // ---------------------------------------------------------------------------
 // Global settings
@@ -474,4 +476,15 @@ void ensure_default_pattern() {
     PatternData p;   // struct defaults == the shipped default look
     p.layout_text = k_default_layout;
     save_pattern("Default", p);
+}
+
+std::vector<std::string> layout_lines(const std::string& text) {
+    std::vector<std::string> out;
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        while (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty()) out.push_back(line);
+    }
+    return out.empty() && text != k_default_layout ? layout_lines(k_default_layout) : out;
 }

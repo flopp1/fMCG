@@ -51,16 +51,9 @@ struct PatternData {
                bg_color_aabbggrr == o.bg_color_aabbggrr &&
                outline_enabled == o.outline_enabled && outline_width == o.outline_width &&
                outline_color_aabbggrr == o.outline_color_aabbggrr && typo == o.typo &&
-               memcmp_commas(o) && pad.enabled == o.pad.enabled &&
-               bpm.decimals == o.bpm.decimals;
+               commas == o.commas && pad == o.pad && bpm == o.bpm;
     }
-private:
-    bool memcmp_commas(const PatternData& o) const {
-        return commas.notes == o.commas.notes && commas.polyphony == o.commas.polyphony &&
-               commas.nps == o.commas.nps && commas.cc == o.commas.cc && commas.ticks == o.commas.ticks &&
-               commas.beats == o.commas.beats;
-    }
-public:
+    FormatOpts format_opts() const { return FormatOpts{commas, pad, bpm}; }
 };
 
 // Non-pattern, program-wide settings.
@@ -106,6 +99,12 @@ std::string pattern_to_ini(const std::string& name, const PatternData& p);
 bool save_pattern(const std::string& name, const PatternData& p);   // overwrite allowed
 bool delete_pattern(const std::string& name);
 bool pattern_exists(const std::string& name);
+
+// The built-in layout (Default pattern, "Reset to default", empty layouts).
+extern const char* const k_default_layout;
+// Layout text -> overlay template lines: one per non-empty line ('\r'
+// stripped); an empty layout gives the default layout's lines.
+std::vector<std::string> layout_lines(const std::string& text);
 
 // Ensure the shipped "Default" pattern exists on first run.
 void ensure_default_pattern();

@@ -41,38 +41,13 @@ static const char* k_alignment_items[] = {
 };
 static const int k_alignment_count = 6;
 
-static const char* k_default_layout =
-    "Time: {time-milli}/{time-milli-max}\n"
-    "Notes: {nc}/{nc-total}/{nc-rem}\n"
-    "NPS: {nps}/{nps-max}\n"
-    "Polyphony: {plph}/{plph-max}\n"
-    "BPM: {bpm}";
-
 // --- persistence glue -------------------------------------------------------
 
+// The widgets edit g_ui.s.global directly, so saving writes it as is.
 static void save_globals_now() {
-    // Pull the live UI values into the store first: the checkboxes/fields bind
-    // to g_ui.s, and without this sync every save would re-write the values
-    // captured at startup (silently reverting CC/vel-0/delay across restarts).
-    g_ui.globals.width = g_ui.s.width;
-    g_ui.globals.height = g_ui.s.height;
-    g_ui.globals.fps = g_ui.s.fps;
-    g_ui.globals.vel0_note_off = g_ui.s.vel0_note_off;
-    g_ui.globals.close_held_notes = g_ui.s.close_held_notes;
-    g_ui.globals.start_delay = g_ui.s.start_delay;
-    g_ui.globals.end_delay = g_ui.s.end_delay;
-    g_ui.globals.ffmpeg_threads = g_ui.s.ffmpeg_threads;
-    g_ui.globals.parse_threads  = g_ui.s.parse_threads;
-    g_ui.globals.dedup_mode     = g_ui.s.dedup_mode;
-    g_ui.globals.output_format  = g_ui.s.output_format;
-    g_ui.globals.transparent_bg = g_ui.s.transparent_bg;
-    g_ui.globals.x264_crf       = g_ui.s.x264_crf;
-    g_ui.globals.x264_preset    = g_ui.s.x264_preset;
-    g_ui.globals.x264_tune      = g_ui.s.x264_tune;
-    g_ui.globals.keyframe_seconds = g_ui.s.keyframe_seconds;
     g_ui.globals_dirty = false;
     g_ui.last_globals_save = ImGui::GetTime();
-    save_global_settings(g_ui.globals);
+    save_global_settings(g_ui.s.global);
 }
 
 // Globals autosave: debounced to at most one write/second while dragging.
@@ -84,59 +59,22 @@ static void maybe_autosave_globals() {
 
 static void mark_globals_dirty() { g_ui.globals_dirty = true; }
 
-// Copy the current pattern-defining fields into a PatternData snapshot.
+// The pattern being edited: g_ui.s.pattern with the layout editor's text.
 static PatternData current_pattern_from_ui() {
-    PatternData p;
+    PatternData p = g_ui.s.pattern;
     p.layout_text = g_ui.layout_buf;
-    p.alignment = g_ui.s.alignment;
-    p.pos_mode = g_ui.s.pos_mode;
-    p.pos_x = g_ui.s.pos_x;
-    p.pos_y = g_ui.s.pos_y;
-    p.frame_anchor = g_ui.s.frame_anchor;
-    p.block_anchor = g_ui.s.block_anchor;
-    p.cells = g_ui.s.cells;
-    p.cell_align = g_ui.s.cell_align;
-    p.font_family = g_ui.s.font_family;
-    p.font_variant = g_ui.s.font_variant;
-    p.font_size = g_ui.s.font_size;
-    p.text_color_aabbggrr = g_ui.s.text_color_aabbggrr;
-    p.bg_color_aabbggrr = g_ui.s.bg_color_aabbggrr;
-    p.outline_enabled = g_ui.s.outline_enabled;
-    p.outline_width = g_ui.s.outline_width;
-    p.outline_color_aabbggrr = g_ui.s.outline_color_aabbggrr;
-    p.typo = g_ui.s.typo;
-    p.commas = g_ui.s.commas;
-    p.pad = g_ui.s.pad;
-    p.bpm = g_ui.s.bpm;
     return p;
 }
 
 static void apply_pattern_to_ui(const PatternData& p) {
+    g_ui.s.pattern = p;
     strncpy(g_ui.layout_buf, p.layout_text.c_str(), sizeof(g_ui.layout_buf) - 1);
     g_ui.layout_buf[sizeof(g_ui.layout_buf) - 1] = '\0';
-    g_ui.s.alignment = p.alignment;
-    if (g_ui.s.alignment < 0 || g_ui.s.alignment >= k_alignment_count) g_ui.s.alignment = 0;
-    g_ui.alignment_idx = g_ui.s.alignment;
-    g_ui.s.pos_mode = p.pos_mode;
-    g_ui.s.pos_x = p.pos_x;
-    g_ui.s.pos_y = p.pos_y;
-    g_ui.s.frame_anchor = p.frame_anchor;
-    g_ui.s.block_anchor = p.block_anchor;
-    g_ui.s.cells = p.cells;
-    g_ui.s.cell_align = p.cell_align;
-    g_ui.s.font_size = p.font_size;
-    g_ui.s.text_color_aabbggrr = p.text_color_aabbggrr;
-    g_ui.s.bg_color_aabbggrr = p.bg_color_aabbggrr;
-    g_ui.s.outline_enabled = p.outline_enabled;
-    g_ui.s.outline_width = p.outline_width;
-    g_ui.s.outline_color_aabbggrr = p.outline_color_aabbggrr;
-    g_ui.s.typo = p.typo;
-    g_ui.s.commas = p.commas;
-    g_ui.s.pad = p.pad;
-    g_ui.s.bpm = p.bpm;
+    if (g_ui.s.pattern.alignment < 0 || g_ui.s.pattern.alignment >= k_alignment_count) g_ui.s.pattern.alignment = 0;
+    g_ui.alignment_idx = g_ui.s.pattern.alignment;
+    g_ui.variants_for.clear();   // the style combo re-reads the family's styles
     // Family: prefer an exact match in the enumerated list; else keep the name
     // (custom-input fallback path still renders it if the file exists).
-    apply_font_variant(g_ui.s, p.font_family, p.font_variant);
     int idx = -1;
     for (size_t i = 0; i < g_ui.system_fonts.size(); ++i)
         if (g_ui.system_fonts[i] == p.font_family) { idx = (int)i; break; }
@@ -178,17 +116,17 @@ static bool font_list_loaded = false;   // font-list lazy-init (set at startup)
 // (HarfBuzz ignores them, so they are harmless but do nothing).
 static void draw_typography_options() {
     if (!ImGui::TreeNode("Advanced typography")) return;
-    fmcg_text::Typography& t = g_ui.s.typo;
+    fmcg_text::Typography& t = g_ui.s.pattern.typo;
     const float k_ty_label = 150.0f;   // label column inside the indented tree
 
     // Features of the selected font, re-read only when the family/style changes.
     static std::string feats_for;
     static std::vector<fmcg_text::FontFeature> feats;
-    const std::string fkey = g_ui.s.font_family + "|" + g_ui.s.font_variant;
+    const std::string fkey = g_ui.s.pattern.font_family + "|" + g_ui.s.pattern.font_variant;
     if (fkey != feats_for) {
         feats_for = fkey;
         int face = 0;
-        const std::string file = find_font_file_for_variant(g_ui.s.font_family, g_ui.s.font_variant, &face);
+        const std::string file = find_font_file_for_variant(g_ui.s.pattern.font_family, g_ui.s.pattern.font_variant, &face);
         feats = fmcg_text::font_features(file, face);
     }
     auto has = [&](const std::string& tag) {
@@ -533,14 +471,14 @@ static void draw_pattern_section() {
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 130);
         if (ImGui::Combo("##font", &g_ui.selected_font_idx, g_ui.font_cstrs.data(), (int)g_ui.font_cstrs.size()))
             fam_changed = true;
-        if (fam_changed) g_ui.s.font_family = g_ui.system_fonts[g_ui.selected_font_idx];
+        if (fam_changed) g_ui.s.pattern.font_family = g_ui.system_fonts[g_ui.selected_font_idx];
     } else {
         char font_buf[256];
-        strncpy(font_buf, g_ui.s.font_family.c_str(), sizeof(font_buf) - 1);
+        strncpy(font_buf, g_ui.s.pattern.font_family.c_str(), sizeof(font_buf) - 1);
         font_buf[sizeof(font_buf) - 1] = '\0';
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 130);
         if (ImGui::InputText("##font_custom", font_buf, sizeof(font_buf))) {
-            g_ui.s.font_family = font_buf;
+            g_ui.s.pattern.font_family = font_buf;
             fam_changed = true;
         }
     }
@@ -549,14 +487,14 @@ static void draw_pattern_section() {
     // The cstr array is rebuilt here, right before Combo consumes it, so it
     // can never point at freed std::string heap (dangling c_str() caching
     // made the dropdown show garbage from other allocations).
-    if (fam_changed || g_ui.variants_for != g_ui.s.font_family) {
-        g_ui.variants_for = g_ui.s.font_family;
+    if (fam_changed || g_ui.variants_for != g_ui.s.pattern.font_family) {
+        g_ui.variants_for = g_ui.s.pattern.font_family;
         g_ui.variant_names.clear();
-        for (const auto& v : enumerate_font_variants(g_ui.s.font_family))
+        for (const auto& v : enumerate_font_variants(g_ui.s.pattern.font_family))
             g_ui.variant_names.push_back(v.style);
         g_ui.variant_idx = 0;
         for (size_t i = 0; i < g_ui.variant_names.size(); ++i)
-            if (g_ui.variant_names[i] == g_ui.s.font_variant) g_ui.variant_idx = (int)i;
+            if (g_ui.variant_names[i] == g_ui.s.pattern.font_variant) g_ui.variant_idx = (int)i;
     }
     ImGui::SameLine();
     float style_w = 125.0f;
@@ -570,14 +508,14 @@ static void draw_pattern_section() {
         for (const auto& n : g_ui.variant_names) variant_cstrs.push_back(n.c_str());
         ImGui::SetNextItemWidth(style_w);
         if (ImGui::Combo("##fstyle", &g_ui.variant_idx, variant_cstrs.data(), (int)variant_cstrs.size()))
-            apply_font_variant(g_ui.s, g_ui.s.font_family, g_ui.variant_names[g_ui.variant_idx]);
+            g_ui.s.pattern.font_variant = g_ui.variant_names[g_ui.variant_idx];
     }
 
     ImGui::Text("Font Size");
     ImGui::SameLine(120);
     ImGui::SetNextItemWidth(120);
-    ImGui::InputInt("##fsize", &g_ui.s.font_size, 1, 10);
-    g_ui.s.font_size = std::max(1, std::min(2000, g_ui.s.font_size));
+    ImGui::InputInt("##fsize", &g_ui.s.pattern.font_size, 1, 10);
+    g_ui.s.pattern.font_size = std::max(1, std::min(2000, g_ui.s.pattern.font_size));
 
     draw_typography_options();
 
@@ -665,85 +603,85 @@ static void draw_pattern_section() {
     // --- Colours: swatch + RGB-slider popup, live preview (pattern-saved) --
     {
         std::string rgb;
-        if (fmcg_ui::ass_to_rrggbb(g_ui.s.text_color_aabbggrr, rgb)) {
+        if (fmcg_ui::ass_to_rrggbb(g_ui.s.pattern.text_color_aabbggrr, rgb)) {
             ImGui::Text("Text Colour");
             ImGui::SameLine(120);
             if (fmcg_ui::EditColour("##textcol", rgb))
-                g_ui.s.text_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
+                g_ui.s.pattern.text_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
         }
-        if (fmcg_ui::ass_to_rrggbb(g_ui.s.bg_color_aabbggrr, rgb)) {
+        if (fmcg_ui::ass_to_rrggbb(g_ui.s.pattern.bg_color_aabbggrr, rgb)) {
             ImGui::Text("Background");
             ImGui::SameLine(120);
             if (fmcg_ui::EditColour("##bgcol", rgb))
-                g_ui.s.bg_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
+                g_ui.s.pattern.bg_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
         }
         // Text outline (pattern setting; off by default).
-        ImGui::Checkbox("Outline##ol", &g_ui.s.outline_enabled);
+        ImGui::Checkbox("Outline##ol", &g_ui.s.pattern.outline_enabled);
         ImGui::SameLine(120);
-        if (!g_ui.s.outline_enabled) ImGui::BeginDisabled();
+        if (!g_ui.s.pattern.outline_enabled) ImGui::BeginDisabled();
         ImGui::SetNextItemWidth(90);
-        float ow = (float)g_ui.s.outline_width;
+        float ow = (float)g_ui.s.pattern.outline_width;
         if (ImGui::InputFloat("px##olw", &ow, 0.0f, 0.0f, "%.1f")) {
             if (ow < 0.0f) ow = 0.0f;
             if (ow > 20.0f) ow = 20.0f;
-            g_ui.s.outline_width = ow;
+            g_ui.s.pattern.outline_width = ow;
         }
         ImGui::SameLine();
-        if (fmcg_ui::ass_to_rrggbb(g_ui.s.outline_color_aabbggrr, rgb) && fmcg_ui::EditColour("##olcol", rgb))
-            g_ui.s.outline_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
-        if (!g_ui.s.outline_enabled) ImGui::EndDisabled();
+        if (fmcg_ui::ass_to_rrggbb(g_ui.s.pattern.outline_color_aabbggrr, rgb) && fmcg_ui::EditColour("##olcol", rgb))
+            g_ui.s.pattern.outline_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
+        if (!g_ui.s.pattern.outline_enabled) ImGui::EndDisabled();
     }
 
     ImGui::Text("Comma separators:");
     ImGui::SameLine();
-    ImGui::Checkbox("Notes##c", &g_ui.s.commas.notes);
+    ImGui::Checkbox("Notes##c", &g_ui.s.pattern.commas.notes);
     ImGui::SameLine();
-    ImGui::Checkbox("Poly##c", &g_ui.s.commas.polyphony);
+    ImGui::Checkbox("Poly##c", &g_ui.s.pattern.commas.polyphony);
     ImGui::SameLine();
-    ImGui::Checkbox("NPS##c", &g_ui.s.commas.nps);
+    ImGui::Checkbox("NPS##c", &g_ui.s.pattern.commas.nps);
     ImGui::SameLine();
-    ImGui::Checkbox("Ticks##c", &g_ui.s.commas.ticks);
+    ImGui::Checkbox("Ticks##c", &g_ui.s.pattern.commas.ticks);
     ImGui::SameLine();
-    ImGui::Checkbox("CC##c", &g_ui.s.commas.cc);
+    ImGui::Checkbox("CC##c", &g_ui.s.pattern.commas.cc);
     ImGui::SameLine();
-    ImGui::Checkbox("Beats##c", &g_ui.s.commas.beats);
+    ImGui::Checkbox("Beats##c", &g_ui.s.pattern.commas.beats);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("{beat*} and {measure*} stats");
-    ImGui::Checkbox("Leading zeros (pad each stat to its own maximum)", &g_ui.s.pad.enabled);
-    ImGui::Checkbox("Fixed-width stats", &g_ui.s.cells);
+    ImGui::Checkbox("Leading zeros (pad each stat to its own maximum)", &g_ui.s.pattern.pad.enabled);
+    ImGui::Checkbox("Fixed-width stats", &g_ui.s.pattern.cells);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Each stat gets a cell as wide as its widest value in this video\n"
                           "(measured in the chosen font), so text after it and the line's\n"
                           "width stay put while digits change.");
     ImGui::SameLine();
-    if (!g_ui.s.cells) ImGui::BeginDisabled();
+    if (!g_ui.s.pattern.cells) ImGui::BeginDisabled();
     ImGui::Text("align");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(100);
     static const char* k_cell_align[] = {"Left", "Center", "Right"};
-    ImGui::Combo("##cellalign", &g_ui.s.cell_align, k_cell_align, 3);
+    ImGui::Combo("##cellalign", &g_ui.s.pattern.cell_align, k_cell_align, 3);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Where a value sits inside its cell (Right lines numbers up by their last digit).");
-    if (!g_ui.s.cells) ImGui::EndDisabled();
+    if (!g_ui.s.pattern.cells) ImGui::EndDisabled();
 
     ImGui::Text("BPM decimals:");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(70);
-    int bdec = g_ui.s.bpm.decimals;
+    int bdec = g_ui.s.pattern.bpm.decimals;
     if (ImGui::InputInt("##bpmdec", &bdec, 0, 0)) {
         if (bdec < 0) bdec = 0;
         if (bdec > 6) bdec = 6;   // beyond 6 is display noise
-        g_ui.s.bpm.decimals = bdec;
+        g_ui.s.pattern.bpm.decimals = bdec;
     }
 
     ImGui::Text("Counter position:");
     ImGui::SameLine();
-    if (ImGui::RadioButton("Corners##pm", g_ui.s.pos_mode == 0)) g_ui.s.pos_mode = 0;
+    if (ImGui::RadioButton("Corners##pm", g_ui.s.pattern.pos_mode == 0)) g_ui.s.pattern.pos_mode = 0;
     ImGui::SameLine();
-    if (ImGui::RadioButton("Custom x,y##pm", g_ui.s.pos_mode == 1)) g_ui.s.pos_mode = 1;
-    if (g_ui.s.pos_mode == 0) {
+    if (ImGui::RadioButton("Custom x,y##pm", g_ui.s.pattern.pos_mode == 1)) g_ui.s.pattern.pos_mode = 1;
+    if (g_ui.s.pattern.pos_mode == 0) {
         ImGui::SetNextItemWidth(160);
         if (ImGui::Combo("##align", &g_ui.alignment_idx, k_alignment_items, k_alignment_count)) {
-            g_ui.s.alignment = g_ui.alignment_idx;
+            g_ui.s.pattern.alignment = g_ui.alignment_idx;
         }
     } else {
         // Custom position: x,y measured from a point of the frame, and the
@@ -754,7 +692,7 @@ static void draw_pattern_section() {
         ImGui::Text("Measured from");
         ImGui::SameLine(130);
         ImGui::SetNextItemWidth(150);
-        ImGui::Combo("##fanchor", &g_ui.s.frame_anchor, k_anchor_items, 9);
+        ImGui::Combo("##fanchor", &g_ui.s.pattern.frame_anchor, k_anchor_items, 9);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("The point of the FRAME that x,y count from.\n"
                               "From an edge, x,y count inward (from the right edge +x moves left,\n"
@@ -764,25 +702,25 @@ static void draw_pattern_section() {
         ImGui::Text("Block anchor");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(150);
-        ImGui::Combo("##banchor", &g_ui.s.block_anchor, k_anchor_items, 9);
+        ImGui::Combo("##banchor", &g_ui.s.pattern.block_anchor, k_anchor_items, 9);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("The point of the TEXT BLOCK that sits at the position.\n"
                               "Lines align to its side (left, centre or right).");
         // Ranges: 0..size from an edge, -size/2..size/2 from a centre line.
-        const bool cx = g_ui.s.frame_anchor % 3 == 1, cy = g_ui.s.frame_anchor / 3 == 1;
-        const int min_x = cx ? -g_ui.s.width / 2 : 0, max_x = cx ? g_ui.s.width / 2 : g_ui.s.width;
-        const int min_y = cy ? -g_ui.s.height / 2 : 0, max_y = cy ? g_ui.s.height / 2 : g_ui.s.height;
+        const bool cx = g_ui.s.pattern.frame_anchor % 3 == 1, cy = g_ui.s.pattern.frame_anchor / 3 == 1;
+        const int min_x = cx ? -g_ui.s.global.width / 2 : 0, max_x = cx ? g_ui.s.global.width / 2 : g_ui.s.global.width;
+        const int min_y = cy ? -g_ui.s.global.height / 2 : 0, max_y = cy ? g_ui.s.global.height / 2 : g_ui.s.global.height;
         ImGui::Text("x");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(90);
-        int xin = g_ui.s.pos_x;
-        if (ImGui::InputInt("##posx", &xin, 0, 0)) g_ui.s.pos_x = std::max(min_x, std::min(max_x, xin));
+        int xin = g_ui.s.pattern.pos_x;
+        if (ImGui::InputInt("##posx", &xin, 0, 0)) g_ui.s.pattern.pos_x = std::max(min_x, std::min(max_x, xin));
         ImGui::SameLine();
         ImGui::Text("y");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(90);
-        int yin = g_ui.s.pos_y;
-        if (ImGui::InputInt("##posy", &yin, 0, 0)) g_ui.s.pos_y = std::max(min_y, std::min(max_y, yin));
+        int yin = g_ui.s.pattern.pos_y;
+        if (ImGui::InputInt("##posy", &yin, 0, 0)) g_ui.s.pattern.pos_y = std::max(min_y, std::min(max_y, yin));
         ImGui::SameLine();
         ImGui::TextDisabled("x: %d..%d  y: %d..%d  (the block always stays fully on screen)", min_x, max_x, min_y, max_y);
     }
@@ -798,22 +736,22 @@ static void draw_global_section() {
     ImGui::Text("Start delay (seconds): ");
     ImGui::SameLine(170);
     ImGui::SetNextItemWidth(100);
-    double delay_input = g_ui.s.start_delay;
+    double delay_input = g_ui.s.global.start_delay;
     if (ImGui::InputDouble("##delay", &delay_input, 0, 0, "%.2f")) {
-        if (delay_input >= 0) { g_ui.s.start_delay = std::min(delay_input, k_max_delay); mark_globals_dirty(); }
+        if (delay_input >= 0) { g_ui.s.global.start_delay = std::min(delay_input, k_max_delay); mark_globals_dirty(); }
     }
 
     ImGui::Text("End delay (seconds): ");
     ImGui::SameLine(170);
     ImGui::SetNextItemWidth(100);
-    double edelay_input = g_ui.s.end_delay;
+    double edelay_input = g_ui.s.global.end_delay;
     if (ImGui::InputDouble("##edelay", &edelay_input, 0, 0, "%.2f")) {
-        if (edelay_input >= 0) { g_ui.s.end_delay = std::min(edelay_input, k_max_delay); mark_globals_dirty(); }
+        if (edelay_input >= 0) { g_ui.s.global.end_delay = std::min(edelay_input, k_max_delay); mark_globals_dirty(); }
     }
 
-    if (ImGui::Checkbox("Vel-0 as Note-Off", &g_ui.s.vel0_note_off)) mark_globals_dirty();
+    if (ImGui::Checkbox("Vel-0 as Note-Off", &g_ui.s.global.vel0_note_off)) mark_globals_dirty();
     ImGui::SameLine();
-    if (ImGui::Checkbox("Close held notes", &g_ui.s.close_held_notes)) mark_globals_dirty();
+    if (ImGui::Checkbox("Close held notes", &g_ui.s.global.close_held_notes)) mark_globals_dirty();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Release notes that are still held when their track ends.\n"
                           "Off (default): polyphony is note-ons minus note-offs, as the MIDI spec defines it.\n"
@@ -822,16 +760,16 @@ static void draw_global_section() {
     ImGui::Text("Resolution");
     ImGui::SameLine(120);
     ImGui::SetNextItemWidth(100);
-    if (ImGui::InputInt("##w", &g_ui.s.width, 0, 0)) { mark_globals_dirty(); }
+    if (ImGui::InputInt("##w", &g_ui.s.global.width, 0, 0)) { mark_globals_dirty(); }
     ImGui::SameLine();
     ImGui::Text("x");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(100);
-    if (ImGui::InputInt("##h", &g_ui.s.height, 0, 0)) { mark_globals_dirty(); }
+    if (ImGui::InputInt("##h", &g_ui.s.global.height, 0, 0)) { mark_globals_dirty(); }
     // Encoder limits: 16..16384 px; H.264 (4:2:0) also needs even sizes.
-    g_ui.s.width = std::max(16, std::min(16384, g_ui.s.width));
-    g_ui.s.height = std::max(16, std::min(16384, g_ui.s.height));
-    if (g_ui.s.output_format == 0 && ((g_ui.s.width | g_ui.s.height) & 1)) {
+    g_ui.s.global.width = std::max(16, std::min(16384, g_ui.s.global.width));
+    g_ui.s.global.height = std::max(16, std::min(16384, g_ui.s.global.height));
+    if (g_ui.s.global.output_format == 0 && ((g_ui.s.global.width | g_ui.s.global.height) & 1)) {
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "MP4 needs an even width and height");
     }
@@ -839,21 +777,21 @@ static void draw_global_section() {
     ImGui::Text("FPS");
     ImGui::SameLine(120);
     ImGui::SetNextItemWidth(120);
-    double fps_input = g_ui.s.fps;
+    double fps_input = g_ui.s.global.fps;
     if (ImGui::InputDouble("##fps", &fps_input, 0, 0, "%.1f")) {
-        if (fps_input > 0) { g_ui.s.fps = std::min(fps_input, k_max_fps); mark_globals_dirty(); }
+        if (fps_input > 0) { g_ui.s.global.fps = std::min(fps_input, k_max_fps); mark_globals_dirty(); }
     }
 
     ImGui::Text("Parsing threads");
     ImGui::SameLine(120);
     ImGui::SetNextItemWidth(120);
-    int par_input = g_ui.s.parse_threads;
+    int par_input = g_ui.s.global.parse_threads;
     if (ImGui::InputInt("##parthreads", &par_input, 0, 0)) {
         // 0 = all cores; 1 = sequential (historic behaviour); negative makes no sense.
         if (par_input < 0) par_input = 0;
         if (par_input > 64) par_input = 64;
-        if (par_input != g_ui.s.parse_threads) {
-            g_ui.s.parse_threads = par_input;
+        if (par_input != g_ui.s.global.parse_threads) {
+            g_ui.s.global.parse_threads = par_input;
             mark_globals_dirty();
         }
     }
@@ -862,10 +800,10 @@ static void draw_global_section() {
 
     // Track and layered dedup are exclusive: ticking one greys the other out.
     {
-        bool track = g_ui.s.dedup_mode == 1, layered = g_ui.s.dedup_mode == 2;
+        bool track = g_ui.s.global.dedup_mode == 1, layered = g_ui.s.global.dedup_mode == 2;
         if (layered) ImGui::BeginDisabled();
         if (ImGui::Checkbox("Track dedup", &track)) {
-            g_ui.s.dedup_mode = track ? 1 : 0;
+            g_ui.s.global.dedup_mode = track ? 1 : 0;
             mark_globals_dirty();
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -877,7 +815,7 @@ static void draw_global_section() {
         ImGui::SameLine();
         if (track) ImGui::BeginDisabled();
         if (ImGui::Checkbox("Layered dedup", &layered)) {
-            g_ui.s.dedup_mode = layered ? 2 : 0;
+            g_ui.s.global.dedup_mode = layered ? 2 : 0;
             mark_globals_dirty();
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -888,7 +826,7 @@ static void draw_global_section() {
         if (track) ImGui::EndDisabled();
     }
     ImGui::SameLine();
-    if (g_ui.s.dedup_mode != 2) ImGui::BeginDisabled();
+    if (g_ui.s.global.dedup_mode != 2) ImGui::BeginDisabled();
     ImGui::Checkbox("Risky fast dedup", &g_ui.s.risky_dedup);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Layered (xz-in-xz) files only, needs Layered dedup.\n"
@@ -898,21 +836,21 @@ static void draw_global_section() {
                           "WRONG (silently) if that part of the layer is made of different tiles whose\n"
                           "sizes happen to add up -- only use it on files where that cannot happen.\n"
                           "The log lists every assumption applied. Not saved: off at every start.");
-    if (g_ui.s.dedup_mode != 2) ImGui::EndDisabled();
-    if (g_ui.s.dedup_mode == 2 && g_ui.s.risky_dedup)
+    if (g_ui.s.global.dedup_mode != 2) ImGui::EndDisabled();
+    if (g_ui.s.global.dedup_mode == 2 && g_ui.s.risky_dedup)
         ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f),
                            "Risky: counts are wrong if a layer's rest is other tiles of matching size.");
 
     ImGui::Text("Encoder threads");
     ImGui::SameLine(120);
     ImGui::SetNextItemWidth(120);
-    int thr_input = g_ui.s.ffmpeg_threads;
+    int thr_input = g_ui.s.global.ffmpeg_threads;
     if (ImGui::InputInt("##threads", &thr_input, 0, 0)) {
         // 0 = auto (x264 picks); negative makes no sense.
         if (thr_input < 0) thr_input = 0;
         if (thr_input > 64) thr_input = 64;
-        if (thr_input != g_ui.s.ffmpeg_threads) {
-            g_ui.s.ffmpeg_threads = thr_input;
+        if (thr_input != g_ui.s.global.ffmpeg_threads) {
+            g_ui.s.global.ffmpeg_threads = thr_input;
             mark_globals_dirty();
         }
     }
@@ -925,9 +863,9 @@ static void draw_global_section() {
     ImGui::SetNextItemWidth(300);
     {
         static const char* k_formats[] = {"MP4 (H.264)", "MOV (QuickTime Animation, lossless)"};
-        int fmt = g_ui.s.output_format;
-        if (ImGui::Combo("##format", &fmt, k_formats, 2) && fmt != g_ui.s.output_format) {
-            g_ui.s.output_format = fmt;
+        int fmt = g_ui.s.global.output_format;
+        if (ImGui::Combo("##format", &fmt, k_formats, 2) && fmt != g_ui.s.global.output_format) {
+            g_ui.s.global.output_format = fmt;
             std::string out = g_ui.output_buf;
             const std::string want = fmcg_video::extension((fmcg_video::Format)fmt);
             const size_t dot = out.find_last_of('.');
@@ -944,9 +882,9 @@ static void draw_global_section() {
                               "MOV: QuickTime Animation, lossless and fast, for video editors;\n"
                               "supports a transparent background. Not playable in browsers.");
         ImGui::SameLine();
-        const bool mov = g_ui.s.output_format == 1;
+        const bool mov = g_ui.s.global.output_format == 1;
         if (!mov) ImGui::BeginDisabled();
-        if (ImGui::Checkbox("Transparent background", &g_ui.s.transparent_bg)) mark_globals_dirty();
+        if (ImGui::Checkbox("Transparent background", &g_ui.s.global.transparent_bg)) mark_globals_dirty();
         if (!mov) ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip("MOV only: the background is fully transparent (alpha 0),\n"
@@ -956,14 +894,14 @@ static void draw_global_section() {
     // Encoder settings (global). CRF / preset / tune are H.264 only; the
     // keyframe interval applies to both formats.
     if (ImGui::TreeNode("Encoder settings")) {
-        const bool mp4 = g_ui.s.output_format == 0;
+        const bool mp4 = g_ui.s.global.output_format == 0;
         if (!mp4) ImGui::BeginDisabled();
         ImGui::Text("Quality (CRF)");
         ImGui::SameLine(170);
         ImGui::SetNextItemWidth(160);
-        int crf = g_ui.s.x264_crf;
-        if (ImGui::SliderInt("##crf", &crf, 0, 51, "%d", ImGuiSliderFlags_AlwaysClamp) && crf != g_ui.s.x264_crf) {
-            g_ui.s.x264_crf = crf;
+        int crf = g_ui.s.global.x264_crf;
+        if (ImGui::SliderInt("##crf", &crf, 0, 51, "%d", ImGuiSliderFlags_AlwaysClamp) && crf != g_ui.s.global.x264_crf) {
+            g_ui.s.global.x264_crf = crf;
             mark_globals_dirty();
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -978,10 +916,10 @@ static void draw_global_section() {
             const int np = (int)(sizeof(fmcg_video::k_presets) / sizeof(fmcg_video::k_presets[0]));
             int idx = 2;
             for (int i = 0; i < np; ++i)
-                if (g_ui.s.x264_preset == fmcg_video::k_presets[i]) idx = i;
+                if (g_ui.s.global.x264_preset == fmcg_video::k_presets[i]) idx = i;
             if (ImGui::Combo("##preset", &idx, fmcg_video::k_presets, np)
-                && g_ui.s.x264_preset != fmcg_video::k_presets[idx]) {
-                g_ui.s.x264_preset = fmcg_video::k_presets[idx];
+                && g_ui.s.global.x264_preset != fmcg_video::k_presets[idx]) {
+                g_ui.s.global.x264_preset = fmcg_video::k_presets[idx];
                 mark_globals_dirty();
             }
         }
@@ -997,10 +935,10 @@ static void draw_global_section() {
             const int nt = (int)(sizeof(fmcg_video::k_tunes) / sizeof(fmcg_video::k_tunes[0]));
             int idx = 0;
             for (int i = 0; i < nt; ++i)
-                if (g_ui.s.x264_tune == fmcg_video::k_tunes[i]) idx = i + 1;
+                if (g_ui.s.global.x264_tune == fmcg_video::k_tunes[i]) idx = i + 1;
             if (ImGui::Combo("##tune", &idx, k_tune_labels, nt + 1)) {
                 const std::string t = idx == 0 ? "" : fmcg_video::k_tunes[idx - 1];
-                if (t != g_ui.s.x264_tune) { g_ui.s.x264_tune = t; mark_globals_dirty(); }
+                if (t != g_ui.s.global.x264_tune) { g_ui.s.global.x264_tune = t; mark_globals_dirty(); }
             }
         }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
@@ -1010,11 +948,11 @@ static void draw_global_section() {
         ImGui::Text("Keyframe every");
         ImGui::SameLine(170);
         ImGui::SetNextItemWidth(100);
-        double kf = g_ui.s.keyframe_seconds;
+        double kf = g_ui.s.global.keyframe_seconds;
         if (ImGui::InputDouble("##keyint", &kf, 0, 0, "%.2f")) {
             if (kf < 0.1) kf = 0.1;
             if (kf > 60.0) kf = 60.0;
-            if (kf != g_ui.s.keyframe_seconds) { g_ui.s.keyframe_seconds = kf; mark_globals_dirty(); }
+            if (kf != g_ui.s.global.keyframe_seconds) { g_ui.s.global.keyframe_seconds = kf; mark_globals_dirty(); }
         }
         ImGui::SameLine();
         ImGui::Text("seconds");
@@ -1022,10 +960,10 @@ static void draw_global_section() {
             ImGui::SetTooltip("Maximum distance between keyframes (0.1..60 s), both formats.\n"
                               "Shorter = faster seeking in editors, slightly bigger files.");
         if (ImGui::Button("Reset encoder defaults")) {
-            g_ui.s.x264_crf = 18;
-            g_ui.s.x264_preset = "veryfast";
-            g_ui.s.x264_tune.clear();
-            g_ui.s.keyframe_seconds = 2.0;
+            g_ui.s.global.x264_crf = 18;
+            g_ui.s.global.x264_preset = "veryfast";
+            g_ui.s.global.x264_tune.clear();
+            g_ui.s.global.keyframe_seconds = 2.0;
             mark_globals_dirty();
         }
         ImGui::TreePop();
@@ -1043,7 +981,7 @@ static void draw_global_section() {
             std::string cmd;
             // The filter follows the chosen format: a fixed MP4 filter made the
             // dialog append ".mp4" to QuickTime (MOV) output.
-            const bool mov_out = g_ui.s.output_format == 1;
+            const bool mov_out = g_ui.s.global.output_format == 1;
 #if defined(_WIN32)
             cmd = std::string("powershell -NoProfile -Command \""
                   "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "   // UTF-8 path on stdout
@@ -1083,44 +1021,10 @@ static void draw_global_section() {
 // settings. FPS, end delay and the scan options are baked into the processed
 // frames; render_stale_note() reports when those changed since Process.
 static void snap_live_settings() {
-    g_app.template_lines.clear();
-    {
-        std::istringstream tstream(g_ui.layout_buf);
-        std::string ln;
-        while (std::getline(tstream, ln)) {
-            while (!ln.empty() && ln.back() == '\r') ln.pop_back();
-            if (!ln.empty()) g_app.template_lines.push_back(ln);
-        }
-    }
-    if (g_app.template_lines.empty())   // same fallback as Process
-        g_app.template_lines = {"Time: {time-milli}/{time-milli-max}", "Notes: {nc}/{nc-total}/{nc-rem}",
-                                "NPS: {nps}/{nps-max}", "Polyphony: {plph}/{plph-max}", "BPM: {bpm}"};
-    g_app.preview_commas = g_ui.s.commas;
-    g_app.preview_pad = g_ui.s.pad;
-    g_app.preview_bpm = g_ui.s.bpm;
-    g_app.text_colour_ass = g_ui.s.text_color_aabbggrr;
-    g_app.bg_colour_ass = g_ui.s.bg_color_aabbggrr;
-    g_app.outline_enabled = g_ui.s.outline_enabled;
-    g_app.outline_width = g_ui.s.outline_width;
-    g_app.outline_colour_ass = g_ui.s.outline_color_aabbggrr;
-    g_app.typo = g_ui.s.typo;
-    g_app.font_size = g_ui.s.font_size;
-    g_app.font_family = g_ui.s.font_family;
-    g_app.font_variant = g_ui.s.font_variant;
-    g_app.font_bold = g_ui.s.font_bold;
-    g_app.font_italic = g_ui.s.font_italic;
-    g_app.pos_mode = g_ui.s.pos_mode;
-    g_app.pos_x = g_ui.s.pos_x;
-    g_app.pos_y = g_ui.s.pos_y;
-    g_app.frame_anchor = g_ui.s.frame_anchor;
-    g_app.block_anchor = g_ui.s.block_anchor;
-    g_app.cells = g_ui.s.cells;
-    g_app.cell_align = g_ui.s.cell_align;
-    g_app.alignment = g_ui.s.alignment;
-    g_app.ass_alignment = gui_alignment_to_ass(g_ui.s.alignment);
-    g_app.vid_width = g_ui.s.width;
-    g_app.vid_height = g_ui.s.height;
-    g_app.start_delay = g_ui.s.start_delay;
+    set_app_pattern(current_pattern_from_ui());
+    g_app.vid_width = g_ui.s.global.width;
+    g_app.vid_height = g_ui.s.global.height;
+    g_app.start_delay = g_ui.s.global.start_delay;
     // end_delay stays as processed: the tail frames were built with it.
 }
 
@@ -1133,11 +1037,12 @@ static std::string render_stale_note() {
         if (changed) what += (what.empty() ? "" : ", ") + std::string(name);
     };
     add(std::string(g_ui.midi_buf) != p.midi_file, "MIDI file");
-    add(s.fps != p.fps, "FPS");
-    add(s.end_delay != p.end_delay, "end delay");
-    add(s.vel0_note_off != p.vel0_note_off, "velocity-0 handling");
-    add(s.close_held_notes != p.close_held_notes, "close held notes");
-    add(s.dedup_mode != p.dedup_mode || (s.dedup_mode == 2 && s.risky_dedup != p.risky_dedup), "dedup");
+    add(s.global.fps != p.global.fps, "FPS");
+    add(s.global.end_delay != p.global.end_delay, "end delay");
+    add(s.global.vel0_note_off != p.global.vel0_note_off, "velocity-0 handling");
+    add(s.global.close_held_notes != p.global.close_held_notes, "close held notes");
+    add(s.global.dedup_mode != p.global.dedup_mode ||
+            (s.global.dedup_mode == 2 && s.risky_dedup != p.risky_dedup), "dedup");
     if (what.empty()) return what;
     return "Note: " + what + " changed since Process; the video uses the processed values. "
            "Press Process again to apply them.";
@@ -1198,9 +1103,9 @@ static void draw_frame(GLFWwindow* window) {
                 strncpy(g_ui.midi_buf, result.c_str(), sizeof(g_ui.midi_buf) - 1);
                 std::string dir = extract_dir(result);
                 std::string stem = extract_stem(result);
-                g_ui.s.output_video = dir + stem + "_fMCG" + fmcg_video::extension((fmcg_video::Format)g_ui.s.output_format);
+                g_ui.s.output_video = dir + stem + "_fMCG" + fmcg_video::extension((fmcg_video::Format)g_ui.s.global.output_format);
                 strncpy(g_ui.output_buf, g_ui.s.output_video.c_str(), sizeof(g_ui.output_buf) - 1);
-                g_ui.globals.midi_dir = dir;
+                g_ui.s.global.midi_dir = dir;
                 mark_globals_dirty();
             }
         }
@@ -1241,7 +1146,7 @@ static void draw_frame(GLFWwindow* window) {
         if (ImGui::Button("Process", ImVec2(140, 30)) && can_process) {
             g_ui.s.midi_file = g_ui.midi_buf;
             g_ui.s.output_video = g_ui.output_buf;
-            g_ui.s.layout_text = g_ui.layout_buf;
+            g_ui.s.pattern.layout_text = g_ui.layout_buf;
             g_app.processed = false;
             g_app.done = false;
             g_app.log_lines.clear();
@@ -1307,7 +1212,7 @@ static void draw_frame(GLFWwindow* window) {
 
             if (g_ui.output_buf[0] == '\0') {   // same default as Process
                 const std::string def = g_app.midi_dir + g_app.midi_stem + "_fMCG"
-                    + fmcg_video::extension((fmcg_video::Format)g_ui.s.output_format);
+                    + fmcg_video::extension((fmcg_video::Format)g_ui.s.global.output_format);
                 strncpy(g_ui.output_buf, def.c_str(), sizeof(g_ui.output_buf) - 1);
                 g_ui.output_buf[sizeof(g_ui.output_buf) - 1] = '\0';
                 g_ui.s.output_video = def;
@@ -1324,14 +1229,14 @@ static void draw_frame(GLFWwindow* window) {
             // ALREADY includes the end-delay tail (the engine extends the
             // frames through it). Adding end_delay here again would make
             // ffmpeg's -d run past the last ASS dialogue -> black tail.
-            rs.ffmpeg_threads = g_ui.s.ffmpeg_threads;
-            rs.bg_color_aabbggrr = g_app.bg_colour_ass;
-            rs.output_format = g_ui.s.output_format;
-            rs.transparent_bg = g_ui.s.transparent_bg;
-            rs.x264_crf = g_ui.s.x264_crf;
-            rs.x264_preset = g_ui.s.x264_preset;
-            rs.x264_tune = g_ui.s.x264_tune;
-            rs.keyframe_seconds = g_ui.s.keyframe_seconds;
+            rs.ffmpeg_threads = g_ui.s.global.ffmpeg_threads;
+            rs.bg_color_aabbggrr = g_app.pattern.bg_color_aabbggrr;
+            rs.output_format = g_ui.s.global.output_format;
+            rs.transparent_bg = g_ui.s.global.transparent_bg;
+            rs.x264_crf = g_ui.s.global.x264_crf;
+            rs.x264_preset = g_ui.s.global.x264_preset;
+            rs.x264_tune = g_ui.s.global.x264_tune;
+            rs.keyframe_seconds = g_ui.s.global.keyframe_seconds;
             // Built here, on the UI thread: a Preview click mid-render rewrites
             // the g_app mirror the worker would otherwise read.
             rs.text_source = app_text_source();
@@ -1675,7 +1580,7 @@ int main() {
     });
 
     // --- persistent state -----------------------------------------------------
-    load_global_settings(g_ui.globals);
+    load_global_settings(g_ui.s.global);
     ensure_default_pattern();
 
     g_ui.system_fonts = enumerate_system_fonts();
@@ -1692,37 +1597,6 @@ int main() {
             g_ui.pattern_baseline = p;
         }
     }
-    g_ui.s.width = g_ui.globals.width;
-    g_ui.s.height = g_ui.globals.height;
-    g_ui.s.fps = g_ui.globals.fps;
-    g_ui.s.vel0_note_off = g_ui.globals.vel0_note_off;
-    g_ui.s.close_held_notes = g_ui.globals.close_held_notes;
-    g_ui.s.start_delay = g_ui.globals.start_delay;
-    g_ui.s.end_delay = g_ui.globals.end_delay;
-    g_ui.s.ffmpeg_threads = g_ui.globals.ffmpeg_threads;
-    g_ui.s.parse_threads  = g_ui.globals.parse_threads;
-    g_ui.s.dedup_mode     = g_ui.globals.dedup_mode;
-    g_ui.s.output_format  = g_ui.globals.output_format;
-    g_ui.s.transparent_bg = g_ui.globals.transparent_bg;
-    g_ui.s.x264_crf       = g_ui.globals.x264_crf;
-    g_ui.s.x264_preset    = g_ui.globals.x264_preset;
-    g_ui.s.x264_tune      = g_ui.globals.x264_tune;
-    g_ui.s.keyframe_seconds = g_ui.globals.keyframe_seconds;
-
-    // Refresh the variant cache for the bootstrapped family.
-    g_ui.variants_for = g_ui.s.font_family;
-    g_ui.variant_names.clear();
-    for (const auto& v : enumerate_font_variants(g_ui.s.font_family))
-        g_ui.variant_names.push_back(v.style);
-    g_ui.variant_idx = 0;
-    for (size_t i = 0; i < g_ui.variant_names.size(); ++i)
-        if (g_ui.variant_names[i] == g_ui.s.font_variant) g_ui.variant_idx = (int)i;
-
-    // Restore last MIDI/output paths if the files still exist.
-    if (!g_ui.globals.midi_dir.empty()) {
-        // stored as a directory hint only; the file itself is picked per-session
-    }
-
     font_list_loaded = !g_ui.font_cstrs.empty();   // draw_frame()'s lazy-init flag
 
     while (!glfwWindowShouldClose(window)) {

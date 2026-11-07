@@ -4,6 +4,7 @@
 #include "fmcg_midi.h"
 #include "fmcg_text.h"   // TextPiece / TextBlockSpec (plain structs; no renderer dependency)
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -15,66 +16,91 @@ struct CommaOpts {
     bool cc        = false;  // {cc} {cc-total} {cc-rem}
     bool ticks     = true;   // {tick} {tick-total} {tick-rem}
     bool beats     = true;   // {beat*} {measure*}
+    bool operator==(const CommaOpts& o) const {
+        return notes == o.notes && polyphony == o.polyphony && nps == o.nps && cc == o.cc &&
+               ticks == o.ticks && beats == o.beats;
+    }
+    bool operator!=(const CommaOpts& o) const { return !(*this == o); }
 };
 
 // Padding: a single "pad with leading zeros" checkbox. When on, each numeric
 // stat is padded to the digit width of ITS OWN maximum (notes -> total notes,
 // polyphony -> peak polyphony, NPS -> peak NPS, CC -> total CC, seconds ->
-// total seconds), so every value of a stat lines up without a user-set width.
+// total seconds, beats -> total beats ...), so every value of a stat lines up
+// without a user-set width.
 struct PadOpts {
     bool enabled = false;
+    bool operator==(const PadOpts& o) const { return enabled == o.enabled; }
+    bool operator!=(const PadOpts& o) const { return !(*this == o); }
 };
 
 // {bpm} formatting: number of decimal places, 0..6 (clamped). 0 renders a
 // whole number ("120"), the default 2 matches the long-standing output.
 struct BpmOpts {
     int decimals = 2;
+    bool operator==(const BpmOpts& o) const { return decimals == o.decimals; }
+    bool operator!=(const BpmOpts& o) const { return !(*this == o); }
 };
 
-// A layout template line split into literal text and stat tokens ({nc} ->
-// token "nc"). Unknown {names} stay literal text.
-struct TemplateSegment { std::string text; bool token = false; };
+// Every number-formatting option of a pattern.
+struct FormatOpts {
+    CommaOpts commas;
+    PadOpts   pad;
+    BpmOpts   bpm;
+    bool operator==(const FormatOpts& o) const { return commas == o.commas && pad == o.pad && bpm == o.bpm; }
+    bool operator!=(const FormatOpts& o) const { return !(*this == o); }
+};
+
+// Song-wide values the per-frame stats are formatted against (totals,
+// remaining values, padding widths).
+struct SongTotals {
+    uint64_t  notes = 0, cc = 0, ticks = 0;
+    double    duration = 0.0;   // song length in seconds ({time-max}, {sec-max})
+    uint16_t  ppqn = 480;
+    SongMeter meter;
+};
+
+// Every layout token; Stat::Literal marks plain text.
+enum class Stat : uint8_t {
+    Literal,
+    Notes, NotesTotal, NotesRem, Cc, CcTotal, CcRem, Tick, TickTotal, TickRem,
+    Sec, SecMax, SecRem, Time, TimeMax, TimeRem, TimeMilli, TimeMilliMax, TimeMilliRem,
+    Bpm, Ppqn, Poly, PolyMax, Nps, NpsMax,
+    Beat, BeatTotal, BeatRem, Measure, MeasureTotal, MeasureRem, MeasureBeat, TimeSig,
+};
+
+// A layout template line split into literal text and stat tokens ("{nc}" ->
+// Stat::Notes), resolved once so formatting a frame does no name lookups.
+// Unknown {names} stay literal text.
+struct TemplateSegment {
+    std::string text;            // the literal text (empty for a stat)
+    Stat stat = Stat::Literal;
+    bool is_stat() const { return stat != Stat::Literal; }
+};
 std::vector<TemplateSegment> parse_template_line(const std::string& line);
 
 // One formatted line as pieces: literal text (cell -1) and stat values
-// (cell = index of the stat on its line, 0, 1, ...). Concatenated, it is
-// exactly ProcessTemplateLine's result.
-// Same, from a line already split by parse_template_line (no re-parse per frame).
+// (cell = index of the stat on its line, 0, 1, ...).
 std::vector<fmcg_text::TextPiece> format_template_segments(const std::vector<TemplateSegment>& segs,
-                                                           const FrameStats& fs, uint64_t total_notes,
-                                                           uint64_t total_cc_events, double max_time_sec,
-                                                           uint16_t ppqn, const CommaOpts& commas, PadOpts pad,
-                                                           BpmOpts bpm, uint64_t total_ticks,
-                                                           const SongMeter& meter = {});
+                                                           const FrameStats& fs, const SongTotals& song,
+                                                           const FormatOpts& fmt);
 std::vector<fmcg_text::TextPiece> format_template_line(const std::string& line, const FrameStats& fs,
-                                                       uint64_t total_notes, uint64_t total_cc_events,
-                                                       double max_time_sec, uint16_t ppqn,
-                                                       const CommaOpts& commas = {}, PadOpts pad = {},
-                                                       BpmOpts bpm = {}, uint64_t total_ticks = 0,
-                                                       const SongMeter& meter = {});
+                                                       const SongTotals& song, const FormatOpts& fmt = {});
+// The same line as one string.
+std::string format_line(const std::string& line, const FrameStats& fs, const SongTotals& song,
+                        const FormatOpts& fmt = {});
 
-std::string ProcessTemplateLine(const std::string& line, const FrameStats& fs,
-                                uint64_t total_notes, uint64_t total_cc_events,
-                                double max_time_sec, uint16_t ppqn,
-                                const CommaOpts& commas = {}, PadOpts pad = {},
-                                BpmOpts bpm = {}, uint64_t total_ticks = 0,
-                                const SongMeter& meter = {});
-
-// Overlay text for every VIDEO frame -- shared by the ASS writer, the preview
-// and the in-built renderer so they can never disagree. Video frame k is a
+// Overlay text for every VIDEO frame -- shared by the preview and the
+// in-built renderer so they can never disagree. Video frame k is a
 // start-delay lead-in frame (k < lead_in_frames(): zero stats, negative
 // time/ticks, starting BPM) or song frame k - lead_in_frames() (the engine's
 // frames already include the end-delay tail).
 struct FrameTextSource {
     const std::vector<FrameStats>* frames = nullptr;
     std::vector<std::string> template_lines;
-    uint64_t total_notes = 0, total_cc = 0, total_ticks = 0;
-    SongMeter meter;                            // beat / measure totals
-    uint16_t ppqn = 480;
+    SongTotals song;                            // song.duration is ignored: see song_duration()
+    FormatOpts fmt;
     double fps = 60.0, start_delay = 0.0, end_delay = 0.0;
-    CommaOpts commas;
-    PadOpts pad;
-    BpmOpts bpm;
 
     size_t lead_in_frames() const;              // ceil(start_delay * fps), 0 without frames
     size_t frame_count() const;                 // lead-in + song frames

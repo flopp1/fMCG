@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <thread>
 #include <chrono>
-#include <chrono>
 #include <atomic>
 #include <cstring>
 #if defined(_WIN32)
@@ -36,35 +35,11 @@ void run_process(GuiSettings s) {
     app.processed = false;
     app.cancel = false;   // clearing here too: a previous cancelled op must not abort this scan
 
-    int ass_alignment = gui_alignment_to_ass(s.alignment);
-
-    std::string text_color_ass = s.text_color_aabbggrr;
-
     std::string midi_dir = extract_dir(s.midi_file);
     std::string midi_stem = extract_stem(s.midi_file);
 
     if (s.output_video.empty())
-        s.output_video = midi_dir + midi_stem + "_fMCG" + fmcg_video::extension((fmcg_video::Format)s.output_format);
-
-    std::vector<std::string> template_lines;
-    {
-        std::istringstream tstream(s.layout_text);
-        std::string line;
-        while (std::getline(tstream, line)) {
-            while (!line.empty() && (line.back() == '\r')) line.pop_back();
-            if (!line.empty()) template_lines.push_back(line);
-        }
-    }
-    if (template_lines.empty()) {
-        template_lines = {
-            "Time: {time-milli}/{time-milli-max}",
-            "Notes: {nc}/{nc-total}/{nc-rem}",
-            "NPS: {nps}/{nps-max}",
-            "Polyphony: {plph}/{plph-max}",
-            "BPM: {bpm}"
-        };
-    }
-
+        s.output_video = midi_dir + midi_stem + "_fMCG" + fmcg_video::extension((fmcg_video::Format)s.global.output_format);
 
     ProgressCallbacks cb;
     cb.on_progress = [](const char* pass, int percent) { g_app.gui_progress(pass, percent); };
@@ -106,15 +81,16 @@ void run_process(GuiSettings s) {
 
     app.gui_log(("Processing MIDI: " + s.midi_file + "...").c_str(), false);
 
-    fmcg_stream::set_close_held_notes(s.close_held_notes);
+    const GlobalSettings& g = s.global;
+    fmcg_stream::set_close_held_notes(g.close_held_notes);
     fmcg_stream::ScanOptions opt;
-    opt.fps = s.fps;
-    opt.vel0_as_note_off = s.vel0_note_off;
-    opt.end_delay = s.end_delay;
-    opt.parse_threads = s.parse_threads;
-    opt.track_dedup = s.dedup_mode == 1;
-    opt.layered_dedup = s.dedup_mode == 2;
-    opt.risky_dedup = s.dedup_mode == 2 && s.risky_dedup;
+    opt.fps = g.fps;
+    opt.vel0_as_note_off = g.vel0_note_off;
+    opt.end_delay = g.end_delay;
+    opt.parse_threads = g.parse_threads;
+    opt.track_dedup = g.dedup_mode == 1;
+    opt.layered_dedup = g.dedup_mode == 2;
+    opt.risky_dedup = g.dedup_mode == 2 && s.risky_dedup;
     fmcg_stream::ScanResult scan = fmcg_stream::process_streaming(s.midi_file, opt, cb);
     std::vector<FrameStats>& frames = scan.frames;
     if (spec_prompt_used) {
@@ -133,48 +109,22 @@ void run_process(GuiSettings s) {
 
     app.progress.store(0.90f);
 
-    double total_duration = frames.back().timestamp_sec;
-    uint64_t total_cc = frames.back().cumulative_cc;
     app.midi_dir = midi_dir;
     app.midi_stem = midi_stem;
-    app.total_duration = total_duration;
-    app.fps = s.fps;
-    app.vid_width = s.width;
-    app.vid_height = s.height;
+    app.total_duration = frames.back().timestamp_sec;
+    app.fps = g.fps;
+    app.vid_width = g.width;
+    app.vid_height = g.height;
     app.ppqn = scan.ppqn;
     app.total_notes = scan.total_notes;
     app.total_ticks = scan.total_ticks;
     app.meter = scan.meter;
-    app.start_delay = s.start_delay;
-    app.end_delay = s.end_delay;
-    app.preview_commas = s.commas;
-    app.preview_pad = s.pad;
-    app.preview_bpm = s.bpm;
-    app.bg_colour_ass = s.bg_color_aabbggrr;
-    app.pos_mode = s.pos_mode;
-    app.pos_x = s.pos_x;
-    app.pos_y = s.pos_y;
-    app.frame_anchor = s.frame_anchor;
-    app.block_anchor = s.block_anchor;
-    app.cells = s.cells;
-    app.cell_align = s.cell_align;
-    app.alignment = s.alignment;
-
+    app.start_delay = g.start_delay;
+    app.end_delay = g.end_delay;
+    set_app_pattern(s.pattern);
     app.processed_with = s;
     app.frames_data = std::move(frames);
     ++app.frames_epoch;
-    app.template_lines = template_lines;
-    app.text_colour_ass = text_color_ass;
-    app.ass_alignment = ass_alignment;
-    app.font_size = s.font_size;
-    app.font_family = s.font_family;
-    app.font_variant = s.font_variant;
-    app.font_bold = s.font_bold;
-    app.font_italic = s.font_italic;
-    app.outline_enabled = s.outline_enabled;
-    app.outline_width = s.outline_width;
-    app.outline_colour_ass = s.outline_color_aabbggrr;
-    app.typo = s.typo;
 
     app.gui_log("Processing complete. Ready for preview/render.", false);
     app.processed = true;

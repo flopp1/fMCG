@@ -35,22 +35,15 @@ CanvasPreview g_cp;
 
 std::string canvas_key() {
     std::ostringstream k;
-    k << g_app.font_family << '|' << g_app.font_variant << '|' << g_app.font_size << '|'
-      << g_app.text_colour_ass << '|' << g_app.bg_colour_ass << '|' << g_app.vid_width << 'x'
-      << g_app.vid_height << '|' << g_app.pos_mode << '|' << g_app.pos_x << ',' << g_app.pos_y << '|'
-      << g_app.ass_alignment << '|' << g_app.outline_enabled << ',' << g_app.outline_width << ','
-      << g_app.outline_colour_ass << '|' << g_app.typo.letter_spacing << ',' << g_app.typo.line_spacing;
-    for (const std::string& f : g_app.typo.features()) k << ',' << f;
-    // placement + everything the block spec (cell widths, fit) depends on
-    k << '|' << g_app.frame_anchor << ',' << g_app.block_anchor << ',' << g_app.cells << ',' << g_app.cell_align
-      << '|' << g_app.frames_epoch << ',' << g_app.frames_data.size() << ',' << g_app.total_notes << ',' << g_app.total_ticks << ','
-      << g_app.meter.beats << ',' << g_app.meter.measures << ',' << (int)g_app.meter.max_num << ','
-      << g_app.ppqn << ',' << g_app.fps << ',' << g_app.start_delay << ',' << g_app.end_delay << '|'
-      << g_app.preview_commas.notes << g_app.preview_commas.polyphony << g_app.preview_commas.nps
-      << g_app.preview_commas.cc << g_app.preview_commas.ticks << g_app.preview_commas.beats
-      << g_app.preview_pad.enabled << g_app.preview_bpm.decimals;
+    // Every pattern setting (layout, font, colours, placement, typography,
+    // number formats) plus the frame size and everything the block spec
+    // (cell widths, fit) depends on.
+    k << pattern_to_ini("", g_app.pattern) << '|' << g_app.vid_width << 'x' << g_app.vid_height << '|'
+      << g_app.frames_epoch << ',' << g_app.frames_data.size() << ',' << g_app.total_notes << ','
+      << g_app.total_ticks << ',' << g_app.meter.beats << ',' << g_app.meter.measures << ','
+      << (int)g_app.meter.max_num << ',' << g_app.ppqn << ',' << g_app.fps << ',' << g_app.start_delay << ','
+      << g_app.end_delay;
     if (!g_app.frames_data.empty()) k << ',' << g_app.frames_data.back().timestamp_sec << ',' << g_app.frames_data.back().cumulative_cc;
-    for (const std::string& t : g_app.template_lines) k << '|' << t;
     return k.str();
 }
 
@@ -64,7 +57,7 @@ void draw_canvas(const fmcg_text::PieceLines& pieces, const FrameTextSource& src
         const fmcg_text::TextStyle st = app_text_style();
         fmcg_text::Placement pl = app_placement();
         pl.frame_w = W; pl.frame_h = H;
-        const fmcg_text::RGBA bg = fmcg_text::from_ass_colour(g_app.bg_colour_ass) | 0xFFu;   // opaque video bg
+        const fmcg_text::RGBA bg = fmcg_text::from_ass_colour(g_app.pattern.bg_color_aabbggrr) | 0xFFu;   // opaque video bg
         g_cp.err.clear();
         g_cp.ok = g_cp.fr.init(st, pl, bg, src.block_spec(), &g_cp.err);
         if (!g_cp.tex) glGenTextures(1, &g_cp.tex);
@@ -101,7 +94,7 @@ void draw_canvas(const fmcg_text::PieceLines& pieces, const FrameTextSource& src
         ImGui::SetCursorPos(ImVec2(cur.x + 8, cur.y + area.y - ImGui::GetTextLineHeightWithSpacing()));
         ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f),
                            "Text scaled to %.0f%% (%d -> %.1f px) so the largest counter fits the %dx%d frame",
-                           g_cp.fr.scale() * 100.0, g_app.font_size, g_cp.fr.font_size(), g_cp.tex_w, g_cp.tex_h);
+                           g_cp.fr.scale() * 100.0, g_app.pattern.font_size, g_cp.fr.font_size(), g_cp.tex_w, g_cp.tex_h);
     }
 }
 

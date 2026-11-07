@@ -47,10 +47,10 @@ int main(int argc, char** argv) {
     FrameTextSource src;
     src.frames = &frames;
     src.template_lines = {"Notes: {nc}/{nc-total}", "NPS {nps}  Poly {plph}/{plph-max}", "{time-milli} {bpm} BPM"};
-    src.total_notes = notes;
-    src.total_cc = frames.back().cumulative_cc;
-    src.total_ticks = ticks;
-    src.ppqn = ppqn;
+    src.song.notes = notes;
+    src.song.cc = frames.back().cumulative_cc;
+    src.song.ticks = ticks;
+    src.song.ppqn = ppqn;
     src.fps = fps;
     src.start_delay = 1.0;
     src.end_delay = 0.5;

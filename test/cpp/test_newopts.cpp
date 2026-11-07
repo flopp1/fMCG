@@ -22,74 +22,72 @@ int main() {
     {   // Baseline: commas everywhere, no padding.
         FrameStats fs; fs.cumulative_notes = 1234; fs.cumulative_cc = 5;
         fs.peak_polyphony = 300; fs.peak_nps = 987; fs.bpm = 120;
-        auto out = ProcessTemplateLine("N:{nc}/{nc-total} P:{plph-max} S:{nps-max}",
-                                       fs, 678901, 0, tmax, ppqn, c, p0);
+        auto out = format_line("N:{nc}/{nc-total} P:{plph-max} S:{nps-max}", fs, SongTotals{678901, 0, 0, tmax, ppqn}, FormatOpts{c, p0, {}});
         check("commas-on baseline", out, "N:1,234/678,901 P:300 S:987");
     }
     {   // Commas off for a stat -> plain digits.
         CommaOpts c2 = c; c2.notes = false;
         FrameStats fs; fs.cumulative_notes = 1234;
-        auto out = ProcessTemplateLine("N:{nc}/{nc-total}", fs, 678901, 0, tmax, ppqn, c2, p0);
+        auto out = format_line("N:{nc}/{nc-total}", fs, SongTotals{678901, 0, 0, tmax, ppqn}, FormatOpts{c2, p0, {}});
         check("notes commas off", out, "N:1234/678901");
     }
     {   // Auto-pad: notes pad to total-notes width, poly to peak width.
         FrameStats fs; fs.cumulative_notes = 34; fs.polyphony = 7; fs.peak_polyphony = 912;
-        auto out = ProcessTemplateLine("N:{nc}/{nc-total} P:{plph}/{plph-max}",
-                                       fs, 678901, 0, tmax, ppqn, c, p1);
+        auto out = format_line("N:{nc}/{nc-total} P:{plph}/{plph-max}", fs, SongTotals{678901, 0, 0, tmax, ppqn}, FormatOpts{c, p1, {}});
         check("auto-pad to own max", out, "N:000,034/678,901 P:007/912");
     }
     {   // Auto-pad respects commas: comma groups are stripped before counting digits.
         CommaOpts c3 = c; c3.notes = false;
         FrameStats fs; fs.cumulative_notes = 34;
-        auto out = ProcessTemplateLine("N:{nc}/{nc-total}", fs, 678901, 0, tmax, ppqn, c3, p1);
+        auto out = format_line("N:{nc}/{nc-total}", fs, SongTotals{678901, 0, 0, tmax, ppqn}, FormatOpts{c3, p1, {}});
         check("auto-pad no-comma", out, "N:000034/678901");
     }
     {   // CC tokens: on/off, remainder, commas, auto-pad to total-CC width.
         FrameStats fs; fs.cumulative_cc = 7;
-        auto out = ProcessTemplateLine("C:{cc}/{cc-total}/{cc-rem}", fs, 0, 1205, tmax, ppqn, c, p0);
+        auto out = format_line("C:{cc}/{cc-total}/{cc-rem}", fs, SongTotals{0, 1205, 0, tmax, ppqn}, FormatOpts{c, p0, {}});
         check("cc commas off (default)", out, "C:7/1205/1198");
         CommaOpts c4 = c; c4.cc = true;
-        auto out2 = ProcessTemplateLine("C:{cc}/{cc-total}/{cc-rem}", fs, 0, 1205000, tmax, ppqn, c4, p0);
+        auto out2 = format_line("C:{cc}/{cc-total}/{cc-rem}", fs, SongTotals{0, 1205000, 0, tmax, ppqn}, FormatOpts{c4, p0, {}});
         check("cc commas on", out2, "C:7/1,205,000/1,204,993");
-        auto out3 = ProcessTemplateLine("C:{cc}/{cc-total}", fs, 0, 1205, tmax, ppqn, c4, p1);
+        auto out3 = format_line("C:{cc}/{cc-total}", fs, SongTotals{0, 1205, 0, tmax, ppqn}, FormatOpts{c4, p1, {}});
         check("cc auto-pad", out3, "C:0,007/1,205");
     }
     {   // BPM decimals: 0..6, default 2; out-of-range input is clamped by the caller.
         FrameStats fs; fs.bpm = 123.456789;
         auto b = [&](int d) {
             BpmOpts bo; bo.decimals = d;
-            return ProcessTemplateLine("B:{bpm}", fs, 0, 0, tmax, ppqn, c, p0, bo);
+            return format_line("B:{bpm}", fs, SongTotals{0, 0, 0, tmax, ppqn}, FormatOpts{c, p0, bo});
         };
         check("bpm 0 decimals", b(0), "B:123");
         check("bpm 2 decimals (default)", b(2), "B:123.46");
         check("bpm 4 decimals", b(4), "B:123.4568");
         check("bpm 6 decimals (cap)", b(6), "B:123.456789");
         BpmOpts bover; bover.decimals = 99;   // formatting layer clamps too
-        auto outb = ProcessTemplateLine("B:{bpm}", fs, 0, 0, tmax, ppqn, c, p0, bover);
+        auto outb = format_line("B:{bpm}", fs, SongTotals{0, 0, 0, tmax, ppqn}, FormatOpts{c, p0, bover});
         check("bpm clamped to 6", outb, "B:123.456789");
     }
     {   // Start-delay countdown: negative times truncate toward zero and count UP.
         FrameStats z; z.bpm = 150; z.timestamp_sec = -2.5;
-        auto out = ProcessTemplateLine("T:{time-milli} S:{sec}", z, 0, 0, tmax, ppqn, c, p0);
+        auto out = format_line("T:{time-milli} S:{sec}", z, SongTotals{0, 0, 0, tmax, ppqn}, FormatOpts{c, p0, {}});
         check("negative countdown", out, "T:-00:02.500 S:-2");
         z.timestamp_sec = -0.2;
-        auto out2 = ProcessTemplateLine("T:{time-milli}", z, 0, 0, tmax, ppqn, c, p0);
+        auto out2 = format_line("T:{time-milli}", z, SongTotals{0, 0, 0, tmax, ppqn}, FormatOpts{c, p0, {}});
         check("countdown near zero", out2, "T:-00:00.200");
         z.timestamp_sec = 0.0;
-        auto out3 = ProcessTemplateLine("T:{time-milli}", z, 0, 0, tmax, ppqn, c, p0);
+        auto out3 = format_line("T:{time-milli}", z, SongTotals{0, 0, 0, tmax, ppqn}, FormatOpts{c, p0, {}});
         check("countdown at zero", out3, "T:00:00.000");
         z.timestamp_sec = 3725.25;   // one hour on: h:mm:ss
-        check("time over an hour", ProcessTemplateLine("{time} {time-milli}", z, 0, 0, tmax, ppqn, c, p0),
+        check("time over an hour", format_line("{time} {time-milli}", z, SongTotals{0, 0, 0, tmax, ppqn}, FormatOpts{c, p0, {}}),
               "1:02:05 1:02:05.250");
         z.timestamp_sec = 3599.0;
-        check("time just under an hour", ProcessTemplateLine("{time}", z, 0, 0, tmax, ppqn, c, p0), "59:59");
+        check("time just under an hour", format_line("{time}", z, SongTotals{0, 0, 0, tmax, ppqn}, FormatOpts{c, p0, {}}), "59:59");
         z.timestamp_sec = -3600.5;
-        check("negative time over an hour", ProcessTemplateLine("{time-milli}", z, 0, 0, tmax, ppqn, c, p0),
+        check("negative time over an hour", format_line("{time-milli}", z, SongTotals{0, 0, 0, tmax, ppqn}, FormatOpts{c, p0, {}}),
               "-1:00:00.500");
     }
     {   // Zero-stats block (delay lead-in) shows 0 counters, starting BPM.
         FrameStats z; z.bpm = 150.0;
-        auto out = ProcessTemplateLine("N:{nc} T:{time-milli} B:{bpm}", z, 5000, 0, tmax, ppqn, c, p0);
+        auto out = format_line("N:{nc} T:{time-milli} B:{bpm}", z, SongTotals{5000, 0, 0, tmax, ppqn}, FormatOpts{c, p0, {}});
         check("delay zero block", out, "N:0 T:00:00.000 B:150.00");
     }
     {   // Start-delay lead-in frames exist and carry the negative first frame.
@@ -98,7 +96,7 @@ int main() {
         FrameTextSource src;
         src.frames = &frames;
         src.template_lines = {"T:{time-milli}"};
-        src.total_notes = 10;
+        src.song.notes = 10;
         src.start_delay = 2.0;
         check("delay lead-in present", src.lines(0)[0], "T:-00:02.000");
         check("lead-in frame count", std::to_string(src.frame_count()), "122");   // 2s delay x 60fps + 2 song frames
@@ -144,8 +142,8 @@ int main() {
             FrameTextSource src;
             src.frames = &frames;
             src.template_lines = {"T:{time} / {time-max} R:{time-rem}"};
-            src.total_notes = tn;
-            src.total_ticks = tt;
+            src.song.notes = tn;
+            src.song.ticks = tt;
             src.fps = 10.0;
             src.end_delay = 1.5;
             check("time-max is MIDI horizon", src.lines(0)[0], "T:00:00 / 00:02 R:00:02");
@@ -367,17 +365,17 @@ int main() {
         check("meter tail = last tick", bm(fr[7]), "16 4 6 6/8");
         FrameTextSource src;
         src.frames = &fr;
-        src.meter = m;
+        src.song.meter = m;
         src.template_lines = {"{beat}/{beat-total} {measure}/{measure-total} {measure-beat} {timesig} r{beat-rem},{measure-rem}"};
         check("meter tokens", src.lines(5)[0], "11/16 4/4 1 6/8 r5,0");
-        src.pad.enabled = true;
+        src.fmt.pad.enabled = true;
         check("meter tokens padded", src.lines(1)[0], "01/16 1/4 1 4/4 r15,3");
         std::vector<FrameStats> none;
         check("meter without time signatures", std::to_string(fmcg_stream::apply_meter(none, {}, 480, 1921).beats), "5");
         check("meter empty song", std::to_string(fmcg_stream::apply_meter(none, {}, 480, 0).measures), "1");
         FrameStats big; big.beat = 1234567;
         SongMeter bmeter; bmeter.beats = 2345678;
-        check("meter commas", ProcessTemplateLine("{beat}/{beat-total}", big, 0, 0, 1, 480, {}, {}, {}, 0, bmeter),
+        check("meter commas", format_line("{beat}/{beat-total}", big, SongTotals{0, 0, 0, 1, 480, bmeter}, FormatOpts{{}, {}, {}}),
               "1,234,567/2,345,678");
     }
     printf("\n%s (%d failures)\n", fails ? "FAILURES" : "ALL OK", fails);
