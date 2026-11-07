@@ -140,12 +140,12 @@ if "!NEED_HB!"=="1" (
 
 echo [2/2] Building fMCG (GUI)...
 set FAILED=0
-for %%f in (fmcg_path fmcg_util fmcg_midi fmcg_engine fmcg_layered fmcg_cjcmcg fmcg_format fmcg_fonts fmcg_text fmcg_video) do call :compile_core %%f
+for %%f in (fmcg_path fmcg_util fmcg_midi fmcg_engine fmcg_sweep fmcg_parallel fmcg_layered fmcg_cjcmcg fmcg_format fmcg_fonts fmcg_text fmcg_video) do call :compile_core %%f
 if "!FAILED!"=="1" (
     echo Build FAILED during core compilation.
     exit /b 1
 )
-for %%f in (app_state dialogs jobs preview main colour_edit settings_store) do call :compile_gui %%f
+for %%f in (app_state dialogs jobs preview main panels pattern_panel global_panel colour_edit settings_store) do call :compile_gui %%f
 if "!FAILED!"=="1" (
     echo Build FAILED during GUI compilation.
     exit /b 1
@@ -157,7 +157,7 @@ if not exist fMCG.exe (
     set NEED_LINK=1
     goto do_link
 )
-for %%o in (lib\gui\app_state.o lib\gui\dialogs.o lib\gui\jobs.o lib\gui\preview.o lib\gui\main.o lib\gui\colour_edit.o lib\gui\settings_store.o lib\src\fmcg_path.o lib\src\fmcg_util.o lib\src\fmcg_midi.o lib\src\fmcg_engine.o lib\src\fmcg_layered.o lib\src\fmcg_cjcmcg.o lib\src\fmcg_format.o lib\src\fmcg_fonts.o lib\src\fmcg_text.o lib\src\fmcg_video.o lib\harfbuzz.o lib\libimgui.a vendor\libarchive\lib\libarchive.a) do (
+for %%o in (lib\gui\app_state.o lib\gui\dialogs.o lib\gui\jobs.o lib\gui\preview.o lib\gui\main.o lib\gui\panels.o lib\gui\pattern_panel.o lib\gui\global_panel.o lib\gui\colour_edit.o lib\gui\settings_store.o lib\src\fmcg_path.o lib\src\fmcg_util.o lib\src\fmcg_midi.o lib\src\fmcg_engine.o lib\src\fmcg_sweep.o lib\src\fmcg_parallel.o lib\src\fmcg_layered.o lib\src\fmcg_cjcmcg.o lib\src\fmcg_format.o lib\src\fmcg_fonts.o lib\src\fmcg_text.o lib\src\fmcg_video.o lib\harfbuzz.o lib\libimgui.a vendor\libarchive\lib\libarchive.a) do (
     for /f %%c in ('echo F ^| xcopy /D /L /Y "%%o" "fMCG.exe" 2^>nul ^| findstr /C:"1 File"') do set NEED_LINK=1
 )
 if "!NEED_LINK!"=="0" (
@@ -165,7 +165,7 @@ if "!NEED_LINK!"=="0" (
     goto link_done
 )
 :do_link
-g++ -std=c++17 -O3 -o fMCG.exe lib\gui\app_state.o lib\gui\dialogs.o lib\gui\jobs.o lib\gui\preview.o lib\gui\main.o lib\gui\colour_edit.o lib\gui\settings_store.o lib\src\fmcg_path.o lib\src\fmcg_util.o lib\src\fmcg_midi.o lib\src\fmcg_engine.o lib\src\fmcg_layered.o lib\src\fmcg_cjcmcg.o lib\src\fmcg_format.o lib\src\fmcg_fonts.o lib\src\fmcg_text.o lib\src\fmcg_video.o lib\harfbuzz.o -Ivendor\imgui -Ivendor\imgui\backends -Ivendor\GLFW -I. -Isrc -Igui -Ivendor\libarchive -Lvendor\GLFW -Lvendor\libarchive\lib lib\libimgui.a vendor\libarchive\lib\libarchive.a vendor\libarchive\lib\libzstd.a vendor\libarchive\lib\liblzma.a vendor\libarchive\lib\liblz4.a vendor\libarchive\lib\libbz2.a vendor\libarchive\lib\libzs.a vendor\x264\lib\libx264.a -lglfw3 -lbcrypt -lopengl32 -lgdi32 -luser32 -lkernel32 -lpthread -Wl,--stack,0x1000000 %CONSOLE_FLAG%
+g++ -std=c++17 -O3 -o fMCG.exe lib\gui\app_state.o lib\gui\dialogs.o lib\gui\jobs.o lib\gui\preview.o lib\gui\main.o lib\gui\panels.o lib\gui\pattern_panel.o lib\gui\global_panel.o lib\gui\colour_edit.o lib\gui\settings_store.o lib\src\fmcg_path.o lib\src\fmcg_util.o lib\src\fmcg_midi.o lib\src\fmcg_engine.o lib\src\fmcg_sweep.o lib\src\fmcg_parallel.o lib\src\fmcg_layered.o lib\src\fmcg_cjcmcg.o lib\src\fmcg_format.o lib\src\fmcg_fonts.o lib\src\fmcg_text.o lib\src\fmcg_video.o lib\harfbuzz.o -Ivendor\imgui -Ivendor\imgui\backends -Ivendor\GLFW -I. -Isrc -Igui -Ivendor\libarchive -Lvendor\GLFW -Lvendor\libarchive\lib lib\libimgui.a vendor\libarchive\lib\libarchive.a vendor\libarchive\lib\libzstd.a vendor\libarchive\lib\liblzma.a vendor\libarchive\lib\liblz4.a vendor\libarchive\lib\libbz2.a vendor\libarchive\lib\libzs.a vendor\x264\lib\libx264.a -lglfw3 -lbcrypt -lopengl32 -lgdi32 -luser32 -lkernel32 -lpthread -Wl,--stack,0x1000000 %CONSOLE_FLAG%
 if errorlevel 1 (
     echo GUI build FAILED.
     exit /b 1
