@@ -2,6 +2,7 @@
 
 #include <sstream>
 #include <iomanip>
+#include <cerrno>
 #include <cstring>
 #include <algorithm>
 #include <cmath>
@@ -9,6 +10,7 @@
 #include <deque>
 #include <memory>
 #include <unordered_set>
+#include <thread>
 #include <unordered_map>
 
 #include "fmcg_util.h"
@@ -16,6 +18,7 @@
 
 #include "archive.h"
 #include "archive_entry.h"
+#include <lzma.h>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -86,6 +89,118 @@ public:
     }
 };
 
+// ---- multi-threaded xz input ------------------------------------------------------
+//
+// libarchive decodes xz on the thread that also runs the inner format (a RAR
+// or 7z inside the .xz, or the MIDI parse feed), one block after another.
+// xz files written with several blocks (xz -T) can be decoded in parallel:
+// for those, libarchive reads the file through liblzma's multi-threaded
+// decoder instead (archive_read_open with this reader as the callback), so
+// the xz layer runs on its own threads and the libarchive thread is left
+// with the inner format. The decoded bytes are the same; libarchive then
+// detects the inner format / filters on them exactly as before.
+
+// Number of blocks in the file's last xz stream, from its index (reads the
+// footer and the index only). 0 = not an xz file (or unreadable).
+// 64-bit seek; returns the new position, -1 on error.
+static int64_t file_seek(FILE* f, int64_t off, int whence) {
+#if defined(_WIN32)
+    return _fseeki64(f, off, whence) == 0 ? _ftelli64(f) : -1;
+#else
+    return fseeko(f, (off_t)off, whence) == 0 ? (int64_t)ftello(f) : -1;
+#endif
+}
+
+static uint64_t xz_block_count(const std::string& path) {
+    FILE* f = fopen_utf8(path, "rb");
+    if (!f) return 0;
+    uint64_t blocks = 0;
+    uint8_t head[6] = {};
+    static const uint8_t magic[6] = {0xFD, '7', 'z', 'X', 'Z', 0x00};
+    if (std::fread(head, 1, 6, f) == 6 && std::memcmp(head, magic, 6) == 0) {
+        int64_t end = file_seek(f, 0, SEEK_END);
+        uint8_t w[4];
+        // skip stream padding (4-byte zero words) after the last stream
+        while (end >= 12 && file_seek(f, end - 4, SEEK_SET) >= 0 && std::fread(w, 1, 4, f) == 4 &&
+               !(w[0] | w[1] | w[2] | w[3]))
+            end -= 4;
+        uint8_t foot[12];
+        if (end >= 12 + 12 && file_seek(f, end - 12, SEEK_SET) >= 0 && std::fread(foot, 1, 12, f) == 12 &&
+            foot[10] == 'Y' && foot[11] == 'Z') {
+            const uint64_t isize = ((uint64_t)foot[4] | (uint64_t)foot[5] << 8 | (uint64_t)foot[6] << 16 |
+                                    (uint64_t)foot[7] << 24) * 4 + 4;   // backward size
+            uint8_t idx[16] = {};   // indicator + number-of-records VLI
+            if ((int64_t)isize + 12 <= end && file_seek(f, end - 12 - (int64_t)isize, SEEK_SET) >= 0 &&
+                std::fread(idx, 1, sizeof idx, f) >= 2 && idx[0] == 0) {
+                for (int i = 1, sh = 0; i < 10 && sh < 63; ++i, sh += 7) {
+                    blocks |= (uint64_t)(idx[i] & 0x7F) << sh;
+                    if (!(idx[i] & 0x80)) break;
+                }
+            }
+        }
+    }
+    std::fclose(f);
+    return blocks;
+}
+
+// libarchive read callback over liblzma's multi-threaded stream decoder.
+class XzMtInput {
+public:
+    ~XzMtInput() {
+        lzma_end(&s_);
+        if (f_) std::fclose(f_);
+    }
+    bool open(const std::string& path, uint32_t threads) {
+        f_ = fopen_utf8(path, "rb");
+        if (!f_) return false;
+        lzma_mt mt{};
+        mt.flags = LZMA_CONCATENATED;   // every stream of the file, like libarchive
+        mt.threads = threads;
+        // Each thread holds a whole block's output; past this budget liblzma
+        // uses fewer threads (single-threaded at worst), it never fails.
+        mt.memlimit_threading = std::max<uint64_t>(lzma_physmem() / 4, (uint64_t)256 << 20);
+        mt.memlimit_stop = UINT64_MAX;
+        return lzma_stream_decoder_mt(&s_, &mt) == LZMA_OK;
+    }
+    static la_ssize_t read_cb(struct archive* a, void* self, const void** out) {
+        return static_cast<XzMtInput*>(self)->read(a, out);
+    }
+
+private:
+    la_ssize_t read(struct archive* a, const void** out) {
+        *out = obuf_.data();
+        if (done_) return 0;
+        s_.next_out = obuf_.data();
+        s_.avail_out = obuf_.size();
+        while (s_.avail_out == obuf_.size()) {   // until some output (or the end)
+            if (s_.avail_in == 0 && !in_eof_) {
+                const size_t n = std::fread(ibuf_.data(), 1, ibuf_.size(), f_);
+                s_.next_in = ibuf_.data();
+                s_.avail_in = n;
+                if (n == 0) in_eof_ = true;
+            }
+            const lzma_ret r = lzma_code(&s_, in_eof_ ? LZMA_FINISH : LZMA_RUN);
+            if (r == LZMA_STREAM_END) { done_ = true; break; }
+            if (r != LZMA_OK) {
+                archive_set_error(a, EIO, "xz decoding failed (liblzma error %d)", (int)r);
+                return -1;
+            }
+        }
+        return (la_ssize_t)(obuf_.size() - s_.avail_out);
+    }
+    FILE* f_ = nullptr;
+    lzma_stream s_ = LZMA_STREAM_INIT;
+    std::vector<uint8_t> ibuf_ = std::vector<uint8_t>(1 << 20), obuf_ = std::vector<uint8_t>(1 << 20);
+    bool in_eof_ = false, done_ = false;
+};
+
+// Decoder threads for a multi-block .xz input; 0 = let libarchive decode it.
+static uint32_t xz_mt_threads(const std::string& path) {
+    if (xz_block_count(path) < 2) return 0;   // one block: nothing to split
+    const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
+    return std::max(2u, std::min(4u, hw / 2));
+}
+
 class ArchiveSrc : public DataSrc {
 public:
     // One layer of the decode stack. An ArchiveFeeder reads entries out of a
@@ -114,7 +229,7 @@ public:
         size_t blk_n = 0, s_lo = 0;       // place, valid until the next data_block call
         bool saw_error = false;
 
-        explicit ArchiveFeeder(const std::string& path) : path_(path) {
+        explicit ArchiveFeeder(const std::string& path) : path_(path), xz_threads_(xz_mt_threads(path)) {
             open_container();
         }
         ~ArchiveFeeder() override {
@@ -173,6 +288,22 @@ public:
         struct archive_entry* entry = nullptr;
         bool raw_mode = false;          // serving filter-decoded bytes only
         FILE* pf = nullptr;
+        uint32_t xz_threads_ = 0;       // > 0: the file is a multi-block .xz, read via XzMtInput
+        std::unique_ptr<XzMtInput> xz_; // the input of `a` (freed after it)
+
+        // Opens `a` on the file: through the multi-threaded xz decoder when it
+        // applies (libarchive then sees the decoded stream), else directly.
+        int open_input() {
+            xz_.reset();
+            if (xz_threads_) {
+                std::unique_ptr<XzMtInput> x(new XzMtInput);
+                if (x->open(path_, xz_threads_)) {
+                    xz_ = std::move(x);
+                    return archive_read_open(a, xz_.get(), nullptr, XzMtInput::read_cb, nullptr);
+                }
+            }
+            return archive_open_utf8(a, path_, 10240);
+        }
 
         void open_container() {
             if (a) { archive_read_free(a); a = nullptr; }
@@ -181,7 +312,7 @@ public:
             archive_read_support_filter_all(a);
             archive_read_support_format_all(a);
             archive_read_support_format_raw(a);   // bare filter-compressed files
-            if (archive_open_utf8(a, path_, 10240) != ARCHIVE_OK) {
+            if (open_input() != ARCHIVE_OK) {
                 archive_read_free(a); a = nullptr; return;
             }
             // First header; skip directory entries.
@@ -204,7 +335,7 @@ public:
             a = archive_read_new();
             archive_read_support_filter_all(a);
             archive_read_support_format_raw(a);
-            if (archive_open_utf8(a, path_, 10240) != ARCHIVE_OK ||
+            if (open_input() != ARCHIVE_OK ||
                 archive_read_next_header(a, &entry) != ARCHIVE_OK) {
                 archive_read_free(a); a = nullptr;
                 pf = fopen_utf8(path_, "rb");   // last resort: copy the file verbatim

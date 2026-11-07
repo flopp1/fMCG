@@ -76,7 +76,9 @@ REM --- 4b. libarchive + compression codecs, from source, static ---------------
 REM Pinned SHA-256 (cross-checked against the projects' published checksums /
 REM GitHub release digests). The five codec stages only extract; the
 REM libarchive stage builds everything (build_deps.sh, CMake) into vendor\.
-set "LA_MARK=vendor\libarchive\lib\libarchive.a"
+REM The mark is liblzma's header (fMCG uses liblzma's multi-threaded xz decoder
+REM directly), so setups bootstrapped before it was installed rebuild once.
+set "LA_MARK=vendor\libarchive\lzma.h"
 call :get_src zlib https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.xz zlib-1.3.2.tar.xz d7a0654783a4da529d1bb793b7ad9c3318020af77667bcae35f95d0e42a792f3 %LA_MARK%
 if !ERRORLEVEL! NEQ 0 exit /b 1
 call :get_src bzip2 https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz bzip2-1.0.8.tar.gz ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269 %LA_MARK%
@@ -249,6 +251,8 @@ if not exist vendor\libarchive\lib      mkdir vendor\libarchive\lib
 if not exist vendor\libarchive\licenses mkdir vendor\libarchive\licenses
 copy /y "%CACHE%\deps-prefix\include\archive.h"       vendor\libarchive\ >nul
 copy /y "%CACHE%\deps-prefix\include\archive_entry.h" vendor\libarchive\ >nul
+if not exist vendor\libarchive\lzma mkdir vendor\libarchive\lzma
+copy /y "%CACHE%\deps-prefix\include\lzma\*.h"       vendor\libarchive\lzma\ >nul
 for %%l in (zstd lzma lz4 bz2 zs archive) do copy /y "%CACHE%\deps-prefix\lib\lib%%l.a" vendor\libarchive\lib\ >nul
 copy /y "%CACHE%\deps-src\libarchive-3.8.9\COPYING" vendor\libarchive\licenses\libarchive.txt >nul
 copy /y "%CACHE%\deps-src\zlib-1.3.2\LICENSE"       vendor\libarchive\licenses\zlib.txt >nul
@@ -256,6 +260,8 @@ copy /y "%CACHE%\deps-src\bzip2-1.0.8\LICENSE"      vendor\libarchive\licenses\b
 copy /y "%CACHE%\deps-src\xz-5.8.4\COPYING"         vendor\libarchive\licenses\xz.txt >nul
 copy /y "%CACHE%\deps-src\zstd-1.5.7\LICENSE"       vendor\libarchive\licenses\zstd.txt >nul
 copy /y "%CACHE%\deps-src\lz4-1.10.0\lib\LICENSE"   vendor\libarchive\licenses\lz4.txt >nul
+REM last: lzma.h is the stage's completion mark (LA_MARK)
+copy /y "%CACHE%\deps-prefix\include\lzma.h"          vendor\libarchive\ >nul
 exit /b 0
 
 :stage_src_nasm

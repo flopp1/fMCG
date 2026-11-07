@@ -28,9 +28,9 @@ GLFW, libarchive, HarfBuzz and x264 come from your package manager via pkg-confi
 
 ```bash
 # Debian/Ubuntu
-sudo apt install build-essential pkg-config git libglfw3-dev libarchive-dev libharfbuzz-dev libx264-dev libgl1-mesa-dev
+sudo apt install build-essential pkg-config git libglfw3-dev libarchive-dev liblzma-dev libharfbuzz-dev libx264-dev libgl1-mesa-dev
 # Fedora
-sudo dnf install gcc-c++ make pkgconf-pkg-config git glfw-devel libarchive-devel harfbuzz-devel x264-devel mesa-libGL-devel   # x264-devel: RPM Fusion
+sudo dnf install gcc-c++ make pkgconf-pkg-config git glfw-devel libarchive-devel xz-devel harfbuzz-devel x264-devel mesa-libGL-devel   # x264-devel: RPM Fusion
 # Arch
 sudo pacman -S base-devel pkgconf git glfw libarchive harfbuzz x264 mesa
 
@@ -59,7 +59,7 @@ The Linux release binary is built on Ubuntu in WSL. It links GLFW, libarchive, H
 
 ```bash
 # Debian/Ubuntu
-sudo apt install libglfw3 libarchive13 libharfbuzz0b libx264-165 libgl1   # libx264-NNN: your distro's x264 ABI
+sudo apt install libglfw3 libarchive13 liblzma5 libharfbuzz0b libx264-165 libgl1   # libx264-NNN: your distro's x264 ABI
 # Fedora
 sudo dnf install glfw libarchive harfbuzz x264-libs mesa-libGL   # x264-libs: RPM Fusion
 # Arch
@@ -109,7 +109,7 @@ wsl --install
 Then, inside the distribution (Debian/Ubuntu):
 
 ```bash
-sudo apt install build-essential pkg-config libglfw3-dev libarchive-dev libharfbuzz-dev libx264-dev libgl1-mesa-dev
+sudo apt install build-essential pkg-config libglfw3-dev libarchive-dev liblzma-dev libharfbuzz-dev libx264-dev libgl1-mesa-dev
 ```
 
 - Without WSL, or with packages missing, the Windows release is still produced, and `release.bat` reports the Linux step as an error that says what to install.

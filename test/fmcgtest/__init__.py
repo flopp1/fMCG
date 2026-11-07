@@ -60,7 +60,7 @@ if IS_WIN:
             "vendor/x264/lib/libx264.a", "-lshell32", "-lpthread", "-Wl,--stack,0x10000000"]
 else:
     CFLAGS = _pkg(["--cflags"])
-    LIBS = ["-larchive"] + _pkg(["--libs"]) + ["-lpthread"]
+    LIBS = ["-larchive", "-llzma"] + _pkg(["--libs"]) + ["-lpthread"]
 
 
 BUILD_TIMES = {}   # name -> seconds spent compiling/linking (this run)

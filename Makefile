@@ -3,10 +3,10 @@
 # Resolves dependencies through pkg-config, so libraries installed by your
 # system package manager are picked up automatically:
 #
-#   Debian/Ubuntu : sudo apt install build-essential pkg-config libglfw3-dev libarchive-dev libgl1-mesa-dev
-#   Fedora        : sudo dnf install gcc-c++ make pkgconf-pkg-config glfw-devel libarchive-devel mesa-libGL-devel
+#   Debian/Ubuntu : sudo apt install build-essential pkg-config libglfw3-dev libarchive-dev liblzma-dev libgl1-mesa-dev
+#   Fedora        : sudo dnf install gcc-c++ make pkgconf-pkg-config glfw-devel libarchive-devel xz-devel mesa-libGL-devel
 #   Arch          : sudo pacman -S base-devel pkgconf glfw libarchive mesa
-#   openSUSE      : sudo zypper install gcc-c++ make pkgconf-pkg-config glfw-devel libarchive-devel Mesa-libGL-devel
+#   openSUSE      : sudo zypper install gcc-c++ make pkgconf-pkg-config glfw-devel libarchive-devel xz-devel Mesa-libGL-devel
 #
 # Dear ImGui is a git submodule at vendor/imgui (fetch it with
 # `git submodule update --init`), or point IMGUI_CFLAGS at a system copy:
@@ -53,17 +53,17 @@ GLFW_CFLAGS := $(shell $(PKG) --cflags $(GLFW_PC))
 GLFW_LIBS   := $(shell $(PKG) --libs $(GLFW_PC))
 endif
 
-# --- libarchive ----------------------------------------------------------------
-ifeq ($(shell $(PKG) --exists libarchive 2>/dev/null && echo y),y)
-ARCH_CFLAGS := $(shell $(PKG) --cflags libarchive)
-ARCH_LIBS   := $(shell $(PKG) --libs libarchive)
+# --- libarchive + liblzma (multi-threaded xz decoding) ----------------------------
+ifeq ($(shell $(PKG) --exists libarchive liblzma 2>/dev/null && echo y),y)
+ARCH_CFLAGS := $(shell $(PKG) --cflags libarchive liblzma)
+ARCH_LIBS   := $(shell $(PKG) --libs libarchive liblzma)
 else
-$(warning pkg-config cannot find libarchive. Install the development package:)
-$(warning   Debian/Ubuntu: sudo apt install libarchive-dev)
-$(warning   Fedora:        sudo dnf install libarchive-devel)
-$(warning   Arch:          sudo pacman -S libarchive)
+$(warning pkg-config cannot find libarchive / liblzma. Install the development packages:)
+$(warning   Debian/Ubuntu: sudo apt install libarchive-dev liblzma-dev)
+$(warning   Fedora:        sudo dnf install libarchive-devel xz-devel)
+$(warning   Arch:          sudo pacman -S libarchive xz)
 ARCH_CFLAGS :=
-ARCH_LIBS   := -larchive
+ARCH_LIBS   := -larchive -llzma
 endif
 
 # --- HarfBuzz (text shaping) + x264 (H.264 encoder): in-built renderer ---------
