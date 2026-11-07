@@ -122,6 +122,7 @@ struct AppState {
     uint16_t                  ppqn{480};
     uint64_t                  total_notes{0};
     uint64_t                  total_ticks{0};
+    SongMeter                 meter;               // beat / measure totals
     GuiSettings               processed_with;      // the settings the last Process ran with
     uint64_t                  frames_epoch{0};     // bumped per completed Process (preview cache key)
 

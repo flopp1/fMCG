@@ -29,7 +29,7 @@ struct TrackSummary {
     // commit them -- ons drive nps/cumulative counts, delta drives polyphony.
     std::vector<std::pair<uint64_t, std::pair<uint64_t, int64_t>>> cells;   // 64-bit: one tick can hold > 2^32 events
     std::vector<std::pair<uint64_t, uint64_t>> ccs;     // (tick, cc count)
-    std::vector<std::pair<uint64_t, uint32_t>> tempos;  // (tick, us_per_quarter)
+    std::vector<TempoChange> tempos;    // tempo + time-signature records, file order
 };
 
 struct TrackDataDedup {

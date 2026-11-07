@@ -14,6 +14,7 @@ struct CommaOpts {
     bool nps       = true;   // {nps} {nps-max}
     bool cc        = false;  // {cc} {cc-total} {cc-rem}
     bool ticks     = true;   // {tick} {tick-total} {tick-rem}
+    bool beats     = true;   // {beat*} {measure*}
 };
 
 // Padding: a single "pad with leading zeros" checkbox. When on, each numeric
@@ -43,18 +44,21 @@ std::vector<fmcg_text::TextPiece> format_template_segments(const std::vector<Tem
                                                            const FrameStats& fs, uint64_t total_notes,
                                                            uint64_t total_cc_events, double max_time_sec,
                                                            uint16_t ppqn, const CommaOpts& commas, PadOpts pad,
-                                                           BpmOpts bpm, uint64_t total_ticks);
+                                                           BpmOpts bpm, uint64_t total_ticks,
+                                                           const SongMeter& meter = {});
 std::vector<fmcg_text::TextPiece> format_template_line(const std::string& line, const FrameStats& fs,
                                                        uint64_t total_notes, uint64_t total_cc_events,
                                                        double max_time_sec, uint16_t ppqn,
                                                        const CommaOpts& commas = {}, PadOpts pad = {},
-                                                       BpmOpts bpm = {}, uint64_t total_ticks = 0);
+                                                       BpmOpts bpm = {}, uint64_t total_ticks = 0,
+                                                       const SongMeter& meter = {});
 
 std::string ProcessTemplateLine(const std::string& line, const FrameStats& fs,
                                 uint64_t total_notes, uint64_t total_cc_events,
                                 double max_time_sec, uint16_t ppqn,
                                 const CommaOpts& commas = {}, PadOpts pad = {},
-                                BpmOpts bpm = {}, uint64_t total_ticks = 0);
+                                BpmOpts bpm = {}, uint64_t total_ticks = 0,
+                                const SongMeter& meter = {});
 
 // Overlay text for every VIDEO frame -- shared by the ASS writer, the preview
 // and the in-built renderer so they can never disagree. Video frame k is a
@@ -65,6 +69,7 @@ struct FrameTextSource {
     const std::vector<FrameStats>* frames = nullptr;
     std::vector<std::string> template_lines;
     uint64_t total_notes = 0, total_cc = 0, total_ticks = 0;
+    SongMeter meter;                            // beat / measure totals
     uint16_t ppqn = 480;
     double fps = 60.0, start_delay = 0.0, end_delay = 0.0;
     CommaOpts commas;

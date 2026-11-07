@@ -12,7 +12,8 @@ REM   fMCG.exe              the application -- self-contained: libarchive and
 REM                             its codecs, HarfBuzz and x264 are linked statically
 REM   LICENSE                   fMCG's own GPL-3.0 licence
 REM   THIRD_PARTY_LICENSES.txt  required notices for the bundled libraries
-REM   README.md                 quick-start / build-from-source instructions
+REM   README.md                 quick start, features, layout tokens, settings
+REM   docs\                     OPTIONS.md (settings in detail), BUILDING.md
 REM
 REM Usage:  release.bat            -> dist\fMCG-windows\
 REM         release.bat MyName     -> dist\fMCG-MyName-windows\
@@ -39,9 +40,11 @@ copy /y fMCG.exe             "%DIST%\" >nul
 copy /y LICENSE                  "%DIST%\" >nul
 copy /y THIRD_PARTY_LICENSES.txt "%DIST%\" >nul
 copy /y README.md                "%DIST%\" >nul
+mkdir "%DIST%\docs" 2>nul
+copy /y docs\*.md                "%DIST%\docs\" >nul
 
 REM --- 3. sanity: everything the exe needs is present -------------------------
-for %%f in (fMCG.exe LICENSE THIRD_PARTY_LICENSES.txt README.md) do (
+for %%f in (fMCG.exe LICENSE THIRD_PARTY_LICENSES.txt README.md docs\OPTIONS.md docs\BUILDING.md) do (
     if not exist "%DIST%\%%f" (
         echo ERROR: %DIST%\%%f missing; packaging incomplete.
         exit /b 1

@@ -44,9 +44,11 @@ std::string canvas_key() {
     // placement + everything the block spec (cell widths, fit) depends on
     k << '|' << g_app.frame_anchor << ',' << g_app.block_anchor << ',' << g_app.cells << ',' << g_app.cell_align
       << '|' << g_app.frames_epoch << ',' << g_app.frames_data.size() << ',' << g_app.total_notes << ',' << g_app.total_ticks << ','
+      << g_app.meter.beats << ',' << g_app.meter.measures << ',' << (int)g_app.meter.max_num << ','
       << g_app.ppqn << ',' << g_app.fps << ',' << g_app.start_delay << ',' << g_app.end_delay << '|'
       << g_app.preview_commas.notes << g_app.preview_commas.polyphony << g_app.preview_commas.nps
-      << g_app.preview_commas.cc << g_app.preview_commas.ticks << g_app.preview_pad.enabled << g_app.preview_bpm.decimals;
+      << g_app.preview_commas.cc << g_app.preview_commas.ticks << g_app.preview_commas.beats
+      << g_app.preview_pad.enabled << g_app.preview_bpm.decimals;
     if (!g_app.frames_data.empty()) k << ',' << g_app.frames_data.back().timestamp_sec << ',' << g_app.frames_data.back().cumulative_cc;
     for (const std::string& t : g_app.template_lines) k << '|' << t;
     return k.str();

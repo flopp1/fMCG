@@ -305,6 +305,55 @@ int main() {
         check("ass colour malformed -> white", hex(fmcg_text::from_ass_colour("&H00GG0000")), "0xFFFFFFFF");
         check("ass colour malformed alpha -> white", hex(fmcg_text::from_ass_colour("&HZZ000000")), "0xFFFFFFFF");
     }
+    {   // Meter: 4/4 (default) -> 3/4 at a bar line -> 6/8 mid-beat, plus a
+        // restatement, a same-tick conflict (last wins = restatement) and an
+        // invalid numerator. ppqn 480, song ends at tick 6000.
+        //   0..3840  4/4: 8 beats, 2 measures
+        //   3840..4560 3/4: 720 ticks = 1.5 beats -> 2, half a measure -> 1
+        //   4560..6000 6/8: 1440 ticks = 6 eighths, 1 measure  => 16 beats, 4 measures
+        std::vector<TempoChange> raw = {
+            TempoChange::time_sig(100, 0, 2),     // invalid: ignored
+            {0, 0.0, 500000, 120.0},              // tempo records are skipped
+            TempoChange::time_sig(3840, 3, 2),
+            TempoChange::time_sig(4560, 6, 3),
+            TempoChange::time_sig(5000, 6, 3),    // restatement
+            TempoChange::time_sig(5500, 7, 3),    // same tick: the later one wins ...
+            TempoChange::time_sig(5500, 6, 3),    // ... and restates 6/8
+        };
+        const int64_t ticks[] = {-5, 0, 2000, 4000, 4400, 4560, 5999, 7000};
+        std::vector<FrameStats> fr;
+        for (int64_t t : ticks) { FrameStats f; f.tick = t; fr.push_back(f); }
+        const SongMeter m = fmcg_stream::apply_meter(fr, raw, 480, 6000);
+        check("meter total beats", std::to_string(m.beats), "16");
+        check("meter total measures", std::to_string(m.measures), "4");
+        check("meter max numerator", std::to_string(m.max_num), "6");
+        auto bm = [](const FrameStats& f) {
+            return std::to_string(f.beat) + " " + std::to_string(f.measure) + " " + std::to_string(f.measure_beat)
+                 + " " + std::to_string(f.ts_num) + "/" + std::to_string(1 << f.ts_dd);
+        };
+        check("meter before start = tick 0", bm(fr[0]), "1 1 1 4/4");
+        check("meter tick 0", bm(fr[1]), "1 1 1 4/4");
+        check("meter 4/4 bar 2", bm(fr[2]), "5 2 1 4/4");
+        check("meter 3/4 starts bar 3", bm(fr[3]), "9 3 1 3/4");
+        check("meter 3/4 beat 2", bm(fr[4]), "10 3 2 3/4");
+        check("meter mid-beat 6/8 = new bar", bm(fr[5]), "11 4 1 6/8");
+        check("meter last tick", bm(fr[6]), "16 4 6 6/8");
+        check("meter tail = last tick", bm(fr[7]), "16 4 6 6/8");
+        FrameTextSource src;
+        src.frames = &fr;
+        src.meter = m;
+        src.template_lines = {"{beat}/{beat-total} {measure}/{measure-total} {measure-beat} {timesig} r{beat-rem},{measure-rem}"};
+        check("meter tokens", src.lines(5)[0], "11/16 4/4 1 6/8 r5,0");
+        src.pad.enabled = true;
+        check("meter tokens padded", src.lines(1)[0], "01/16 1/4 1 4/4 r15,3");
+        std::vector<FrameStats> none;
+        check("meter without time signatures", std::to_string(fmcg_stream::apply_meter(none, {}, 480, 1921).beats), "5");
+        check("meter empty song", std::to_string(fmcg_stream::apply_meter(none, {}, 480, 0).measures), "1");
+        FrameStats big; big.beat = 1234567;
+        SongMeter bmeter; bmeter.beats = 2345678;
+        check("meter commas", ProcessTemplateLine("{beat}/{beat-total}", big, 0, 0, 1, 480, {}, {}, {}, 0, bmeter),
+              "1,234,567/2,345,678");
+    }
     printf("\n%s (%d failures)\n", fails ? "FAILURES" : "ALL OK", fails);
     return fails ? 1 : 0;
 }

@@ -164,9 +164,11 @@ test:
 clean:
 	rm -rf fMCG $(CORE_OBJECTS) $(GUI_OBJECTS) build/test dist .build_mode
 
-# Assemble a ready-to-share release: binary + licences + README.
+# Assemble a ready-to-share release: binary + licences + README + docs.
 release: all test
 	@mkdir -p dist/fMCG-linux
 	cp fMCG LICENSE THIRD_PARTY_LICENSES.txt README.md dist/fMCG-linux/
+	@mkdir -p dist/fMCG-linux/docs
+	cp docs/*.md dist/fMCG-linux/docs/
 	tar -czf dist/fMCG-linux.tar.gz -C dist fMCG-linux
 	@echo "Release ready: dist/fMCG-linux.tar.gz"

@@ -973,8 +973,7 @@ static void replay_track_summary(const TrackSummary& s, TickData& td,
         if (td.dense_cc.size() < td.cells.size()) td.dense_cc.resize(td.cells.size(), 0);
         td.dense_cc[c.first] += c.second;
     }
-    for (const auto& tc : s.tempos)
-        tempo_raw.push_back({tc.first, 0.0, tc.second, 60000000.0 / tc.second});
+    tempo_raw.insert(tempo_raw.end(), s.tempos.begin(), s.tempos.end());
     td.total_ons += s.ons;
     td.total_cc  += s.cc;
     if (s.max_tick > td.max_tick) td.max_tick = s.max_tick;
@@ -1242,7 +1241,16 @@ static uint64_t parse_track_body(StreamT& bs, bool accumulate, bool vel0_as_note
                         : ((uint32_t)b0 << 16) | ((uint32_t)b1 << 8) | (uint32_t)b2;
                     if (us > 0) {
                         tempo_raw.push_back({tick, 0.0, us, 60000000.0 / us});
-                        if (sum) rec.tempos.push_back({tick, us});
+                        if (sum) rec.tempos.push_back(tempo_raw.back());
+                    }
+                } else if (type == 0x58 && mlen == 4) {
+                    // Time signature nn dd cc bb (only nn / dd matter); like a
+                    // tempo, applied only when all 4 bytes are in the track.
+                    const int nn = bs.get(), dd = bs.get(), cc = bs.get(), bb = bs.get();
+                    (void)cc;
+                    if (bb >= 0) {
+                        tempo_raw.push_back(TempoChange::time_sig(tick, (uint8_t)nn, (uint8_t)dd));
+                        if (sum) rec.tempos.push_back(tempo_raw.back());
                     }
                 } else {
                     bs.skip((size_t)mlen);
@@ -1719,6 +1727,83 @@ static std::vector<TempoChange> build_tempo_map(const std::vector<TempoChange>& 
                        + (double)dtk * (double)tm[i - 1].us_per_quarter / ((double)ppqn * 1e6);
     }
     return tm;
+}
+
+// ---- meter (time signatures -> beat / measure numbers) ------------------------
+//
+// Time-signature records (TempoChange::is_time_sig) are applied like tempo:
+// stable-sorted by tick, the last one at a tick wins; default 4/4 from tick 0.
+// A record that restates the signature in force changes nothing (black MIDIs
+// repeat them in every copied track). A real change starts a new measure: a
+// measure (or beat) cut short by it still counts as one. Numerators of 0 and
+// denominators past 2^32 are ignored as garbage.
+//
+// The song covers ticks [0, end_tick): a frame at or past end_tick (the final
+// frame, the end-delay tail) shows the last tick's values, so the totals and
+// the final frame agree. Beat and measure numbers are 1-based.
+namespace {
+struct MeterSeg { uint64_t tick; uint8_t num, dd; uint64_t beats0, measures0; };
+using u128m = unsigned __int128;
+inline uint64_t sat64(u128m v) { return v > (u128m)UINT64_MAX ? UINT64_MAX : (uint64_t)v; }
+// floor / ceil of dt ticks in beats (per = 1) or measures (per = numerator):
+// dt * 2^dd / (4 * ppqn * per).
+inline u128m meter_units(uint64_t dt, uint8_t dd, uint16_t ppqn, uint64_t per, bool ceil) {
+    const u128m num = (u128m)dt << dd, den = (u128m)4 * ppqn * per;
+    return ceil ? (num + den - 1) / den : num / den;
+}
+} // namespace
+
+SongMeter apply_meter(std::vector<FrameStats>& frames, const std::vector<TempoChange>& tempo_raw,
+                      uint16_t ppqn, uint64_t end_tick) {
+    if (ppqn == 0) ppqn = 480;
+    std::vector<TempoChange> ts;
+    for (const TempoChange& t : tempo_raw)
+        if (t.is_time_sig() && t.ts_dd <= 32) ts.push_back(t);
+    std::stable_sort(ts.begin(), ts.end(),
+                     [](const TempoChange& a, const TempoChange& b) { return a.tick < b.tick; });
+    std::vector<MeterSeg> segs{{0, 4, 2, 0, 0}};
+    for (size_t i = 0; i < ts.size(); ++i) {
+        if (i + 1 < ts.size() && ts[i + 1].tick == ts[i].tick) continue;   // last one at a tick wins
+        MeterSeg& b = segs.back();
+        if (ts[i].ts_num == b.num && ts[i].ts_dd == b.dd) continue;         // restatement
+        if (ts[i].tick == b.tick) { b.num = ts[i].ts_num; b.dd = ts[i].ts_dd; continue; }   // only at tick 0
+        const uint64_t len = ts[i].tick - b.tick;
+        const MeterSeg n{ts[i].tick, ts[i].ts_num, ts[i].ts_dd,
+                         sat64(b.beats0 + meter_units(len, b.dd, ppqn, 1, true)),
+                         sat64(b.measures0 + meter_units(len, b.dd, ppqn, b.num, true))};
+        segs.push_back(n);
+    }
+    auto seg_of = [&](uint64_t t) -> const MeterSeg& {   // the segment holding tick t
+        size_t lo = 0, hi = segs.size();
+        while (hi - lo > 1) {
+            const size_t m = (lo + hi) / 2;
+            if (segs[m].tick <= t) lo = m; else hi = m;
+        }
+        return segs[lo];
+    };
+    SongMeter out;
+    const uint64_t last = end_tick > 0 ? end_tick - 1 : 0;   // last tick inside the song
+    {
+        const MeterSeg& g = seg_of(last);
+        const uint64_t span = end_tick > g.tick ? end_tick - g.tick : 0;
+        out.beats = std::max<uint64_t>(1, sat64(g.beats0 + meter_units(span, g.dd, ppqn, 1, true)));
+        out.measures = std::max<uint64_t>(1, sat64(g.measures0 + meter_units(span, g.dd, ppqn, g.num, true)));
+        out.max_num = 0;
+        for (const MeterSeg& m : segs)
+            if (m.tick <= last && m.num > out.max_num) out.max_num = m.num;
+    }
+    for (FrameStats& f : frames) {
+        const uint64_t t = std::min<uint64_t>(f.tick > 0 ? (uint64_t)f.tick : 0, last);
+        const MeterSeg& g = seg_of(t);
+        const uint64_t b = sat64(meter_units(t - g.tick, g.dd, ppqn, 1, false));
+        const uint64_t m = sat64(meter_units(t - g.tick, g.dd, ppqn, g.num, false));
+        f.beat = std::min(out.beats, g.beats0 + b + 1);
+        f.measure = std::min(out.measures, g.measures0 + m + 1);
+        f.measure_beat = (uint32_t)(b - m * g.num + 1);
+        f.ts_num = g.num;
+        f.ts_dd = g.dd;
+    }
+    return out;
 }
 
 std::vector<FrameStats> sweep_to_frames(TickData& td,
@@ -2900,9 +2985,10 @@ std::vector<FrameStats> process_streaming(
     const std::string& filename, double fps, uint16_t& out_division,
     uint64_t& out_total_notes, bool vel0_as_note_off, uint64_t& out_total_ticks,
     const ProgressCallbacks& cb, double end_delay, int parse_threads,
-    bool track_dedup, bool layered_dedup, bool risky_dedup)
+    bool track_dedup, bool layered_dedup, bool risky_dedup, SongMeter* out_meter)
 {
     using clock = std::chrono::steady_clock;
+    if (out_meter) *out_meter = SongMeter{};
     out_total_notes = 0;
     out_total_ticks = 0;
     const bool compressed = is_compressed_file(filename);
@@ -3204,6 +3290,8 @@ std::vector<FrameStats> process_streaming(
         }
         st << ", " << std::setprecision(2) << t_sweep_s << "s sweep\n";
         emit(cb, st.str());
+        const SongMeter meter = apply_meter(frames, tempo_raw, out_division, out_total_ticks);
+        if (out_meter) *out_meter = meter;
         return frames;
     } catch (const ScanCancelled&) {
         // Cancel fired inside the layered walk / scan / sweep. Without this

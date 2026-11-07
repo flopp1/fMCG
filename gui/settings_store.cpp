@@ -352,6 +352,7 @@ std::string pattern_to_ini(const std::string& name, const PatternData& p) {
     ss << "comma_nps = " << (p.commas.nps ? 1 : 0) << "\n";
     ss << "comma_cc = " << (p.commas.cc ? 1 : 0) << "\n";
     ss << "comma_ticks = " << (p.commas.ticks ? 1 : 0) << "\n";
+    ss << "comma_beats = " << (p.commas.beats ? 1 : 0) << "\n";
     ss << "pad_enabled = " << (p.pad.enabled ? 1 : 0) << "\n";
     int bpm_dec = p.bpm.decimals;
     if (bpm_dec < 0) bpm_dec = 0;
@@ -424,6 +425,7 @@ void pattern_from_ini(const std::string& text, PatternData& out) {
     out.commas.nps           = get_bool(kv, "comma_nps", true);
     out.commas.cc            = get_bool(kv, "comma_cc", false);
     out.commas.ticks         = get_bool(kv, "comma_ticks", true);
+    out.commas.beats         = get_bool(kv, "comma_beats", true);
     out.pad.enabled          = get_bool(kv, "pad_enabled", false);
     out.bpm.decimals         = get_int(kv, "bpm_decimals", 2);
     if (out.bpm.decimals < 0) out.bpm.decimals = 0;

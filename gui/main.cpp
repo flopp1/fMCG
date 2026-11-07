@@ -599,6 +599,10 @@ static void draw_pattern_section() {
             "Ticks",   "{tick} / {tick-total} / {tick-rem}",
             "Polyphony", "{plph} / {plph-max}",
             "BPM",     "{bpm}",
+            "Beats",   "{beat} / {beat-total} / {beat-rem}",
+            "Measures", "{measure} / {measure-total} / {measure-rem}",
+            "Beat in measure", "{measure-beat}",
+            "Time signature", "{timesig}",
             "PPQN",    "{ppqn}",
         };
         ImGui::TextDisabled("Usable tokens (current / total / remaining where shown):");
@@ -701,6 +705,9 @@ static void draw_pattern_section() {
     ImGui::Checkbox("Ticks##c", &g_ui.s.commas.ticks);
     ImGui::SameLine();
     ImGui::Checkbox("CC##c", &g_ui.s.commas.cc);
+    ImGui::SameLine();
+    ImGui::Checkbox("Beats##c", &g_ui.s.commas.beats);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("{beat*} and {measure*} stats");
     ImGui::Checkbox("Leading zeros (pad each stat to its own maximum)", &g_ui.s.pad.enabled);
     ImGui::Checkbox("Fixed-width stats", &g_ui.s.cells);
     if (ImGui::IsItemHovered())
@@ -1465,6 +1472,8 @@ static void draw_frame(GLFWwindow* window) {
             g_app.frames_data.clear();
             g_app.template_lines.clear();
             g_app.total_notes = 0;
+            g_app.total_ticks = 0;
+            g_app.meter = SongMeter{};
             g_app.total_duration = 0.0;
             g_app.preview_playing = false;
             g_app.preview_time = 0.0;

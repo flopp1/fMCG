@@ -68,6 +68,7 @@ void run_process(GuiSettings s) {
     uint16_t ppqn = 480;
     uint64_t total_notes = 0;
     uint64_t total_ticks = 0;
+    SongMeter meter;
 
     ProgressCallbacks cb;
     cb.on_progress = [](const char* pass, int percent) { g_app.gui_progress(pass, percent); };
@@ -113,7 +114,8 @@ void run_process(GuiSettings s) {
     auto frames = ScaleMidiProcessor::process_midi(s.midi_file, s.fps, ppqn, total_notes,
                                                     s.vel0_note_off, total_ticks, cb, s.end_delay,
                                                     s.parse_threads, s.dedup_mode == 1,
-                                                    s.dedup_mode == 2, s.dedup_mode == 2 && s.risky_dedup);
+                                                    s.dedup_mode == 2, s.dedup_mode == 2 && s.risky_dedup,
+                                                    &meter);
     if (spec_prompt_used) {
         app.spec_prompt_open.store(false);
         app.spec_choice.store(-1);
@@ -141,6 +143,7 @@ void run_process(GuiSettings s) {
     app.ppqn = ppqn;
     app.total_notes = total_notes;
     app.total_ticks = total_ticks;
+    app.meter = meter;
     app.start_delay = s.start_delay;
     app.end_delay = s.end_delay;
     app.preview_commas = s.commas;

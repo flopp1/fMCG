@@ -150,6 +150,7 @@ FrameTextSource app_text_source() {
     src.total_notes = g_app.total_notes;
     src.total_cc = g_app.frames_data.empty() ? 0 : g_app.frames_data.back().cumulative_cc;
     src.total_ticks = g_app.total_ticks;
+    src.meter = g_app.meter;
     src.ppqn = g_app.ppqn;
     src.fps = g_app.fps > 0 ? g_app.fps : 60.0;
     src.start_delay = g_app.start_delay;

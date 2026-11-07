@@ -253,7 +253,7 @@ struct Node {
 // ============================================================================
 
 enum : uint8_t { M_HDR, M_HDR_SKIP, M_TAG, M_LEN, M_SKIPCHUNK, M_BODY, M_ERR };
-enum : uint8_t { E_TOP, E_VLQ, E_STATUS, E_META_TYPE, E_META_LEN, E_TEMPO, E_SYSEX_LEN, E_SKIP, E_DATA };
+enum : uint8_t { E_TOP, E_VLQ, E_STATUS, E_META_TYPE, E_META_LEN, E_TEMPO, E_SYSEX_LEN, E_SKIP, E_DATA, E_TIMESIG };
 enum : uint8_t { REL = 0, ABS = 1 };
 
 // Everything in the parser state except the affine parts (tick, remaining
@@ -263,7 +263,7 @@ enum : uint8_t { REL = 0, ABS = 1 };
 struct Shape {
     uint8_t mode = M_HDR, sub = E_TOP, k = 0, running = 0;
     uint8_t status = 0, mt_split = 0, mtype = 0, n1 = 0;
-    uint32_t acc = 0;    // tag / length / VLQ / tempo accumulator
+    uint32_t acc = 0;    // tag / length / VLQ / tempo / time-signature accumulator
     uint32_t tag = 0;    // completed chunk tag while the length is read
     uint8_t hdr[14] = {};
     bool operator==(const Shape& o) const {
@@ -342,7 +342,11 @@ struct ItemKeyHash {
     }
 };
 
-struct TempoEv { uint8_t frame; uint64_t tick; uint32_t us; };
+// Tempo (us > 0) or time signature (us == 0, ts = numerator << 8 | log2 denominator).
+struct TempoEv {
+    uint8_t frame; uint64_t tick; uint32_t us; uint16_t ts = 0;
+    TempoEv at(uint8_t f, uint64_t t) const { return {f, t, us, ts}; }
+};
 struct KeyFx { uint16_t key; int64_t d, net; };
 
 struct Effect {
@@ -676,8 +680,10 @@ private:
                 if (b < 0x80 || ++s_.k == 4) {
                     const uint32_t L = s_.acc;
                     const bool tempo = s_.sub == E_META_LEN && s_.mtype == 0x51 && L == 3;
+                    const bool tsig = s_.sub == E_META_LEN && s_.mtype == 0x58 && L == 4;
                     s_.k = 0; s_.acc = 0; s_.mtype = 0;
                     if (tempo) s_.sub = E_TEMPO;
+                    else if (tsig) s_.sub = E_TIMESIG;
                     else start_skip(L);
                 }
                 break;
@@ -687,6 +693,14 @@ private:
                 if (++s_.k == 3) {
                     const uint32_t us = s_.acc;
                     if (us) e_.tempos.push_back({frame_, tick_, us});
+                    event_done();
+                }
+                break;
+            case E_TIMESIG:   // nn dd cc bb: keep nn, dd (applied like the engine: all 4 bytes present)
+                ++i;
+                s_.acc = (s_.acc << 8) | b;
+                if (++s_.k == 4) {
+                    e_.tempos.push_back({frame_, tick_, 0, (uint16_t)(s_.acc >> 16)});
                     event_done();
                 }
                 break;
@@ -929,7 +943,7 @@ void Composer::apply(const Effect& c) {
         else add_item(it);
     }
     for (const TempoEv& t : c.tempos)
-        e_.tempos.push_back(t.frame == REL ? TempoEv{relf, t.tick + sh, t.us} : t);
+        e_.tempos.push_back(t.frame == REL ? t.at(relf, t.tick + sh) : t);
 
     // c's initial track ended inside c (before its refcount effects apply)
     if (c.has_init_end) {
@@ -1057,7 +1071,7 @@ Effect power(Walk& W, const Effect& c, uint64_t k) {
         }
         p.tempos = c.tempos;   // copies 2..k repeat one identical list: last-wins needs one copy
         for (const TempoEv& t : c.tempos)
-            p.tempos.push_back(t.frame == REL ? TempoEv{ABS, t.tick + c.tick_val, t.us} : t);
+            p.tempos.push_back(t.frame == REL ? t.at(ABS, t.tick + c.tick_val) : t);
         if (c.has_init_end) {
             const uint64_t te = c.tick_val + c.init_end_rel;
             note_abs(te);
@@ -1096,7 +1110,7 @@ Effect power(Walk& W, const Effect& c, uint64_t k) {
                 throw WalkError{"layered walk: too many tempo events in tick-shifted repetition"};
             for (uint64_t j = 0; j < k; ++j)
                 for (const TempoEv& t : c.tempos)
-                    p.tempos.push_back(t.frame == REL ? TempoEv{REL, t.tick + j * D, t.us} : t);
+                    p.tempos.push_back(t.frame == REL ? t.at(REL, t.tick + j * D) : t);
         }
         for (const KeyFx& f : c.rc_init) {
             KeyFx g = f;
@@ -1634,7 +1648,8 @@ int scan_layered(const std::string& filename, bool vel0_as_note_off, TickData& t
         td.total_events_seen = e.events;
         tempo_raw.clear();
         for (const TempoEv& t : e.tempos)
-            tempo_raw.push_back({t.tick, 0.0, t.us, 60000000.0 / t.us});
+            tempo_raw.push_back(t.us ? TempoChange{t.tick, 0.0, t.us, 60000000.0 / t.us}
+                                     : TempoChange::time_sig(t.tick, (uint8_t)(t.ts >> 8), (uint8_t)t.ts));
         out_division = e.div_set ? e.division : 480;
 
         if (e.data_oor)

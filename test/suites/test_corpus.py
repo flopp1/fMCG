@@ -96,6 +96,7 @@ class FullLayered(unittest.TestCase):
                 self.assertTrue(os.path.exists(p), f"missing corpus file {p}")
                 got, line = T.run_probe(p, 1)
                 self.assertIsNotNone(got, line)
-                want = {k: e[k] for k in T.KEYS}
-                self.assertEqual({k: got[k] for k in T.KEYS}, want, line)
+                keys = [k for k in T.KEYS if k in e]   # verified values predate the meter stats
+                want = {k: e[k] for k in keys}
+                self.assertEqual({k: got[k] for k in keys}, want, line)
                 self.assertEqual(got.get("lossy"), 0, "walk reported uncounted data")

@@ -79,3 +79,4 @@ __pycache__/
 # (AGENTS.md, CLAUDE.md, DESIGN.md, ... stay on disk for local agents/notes)
 *.md
 !README.md
+!docs/*.md

@@ -14,6 +14,7 @@ const char* const k_tokens[] = {
     "nc", "nc-total", "nc-rem", "cc", "cc-total", "cc-rem", "tick", "tick-total", "tick-rem",
     "sec", "sec-max", "sec-rem", "time", "time-max", "time-rem", "time-milli", "time-milli-max",
     "time-milli-rem", "bpm", "ppqn", "plph", "plph-max", "nps", "nps-max",
+    "beat", "beat-total", "beat-rem", "measure", "measure-total", "measure-rem", "measure-beat", "timesig",
 };
 
 bool known_token(const std::string& name) {
@@ -31,11 +32,13 @@ struct StatFormatter {
     const CommaOpts& commas;
     int bdec;
     uint64_t total_ticks;
+    const SongMeter& meter;
     int w_notes = 0, w_cc = 0, w_poly = 0, w_nps = 0, w_sec = 0, w_tick = 0;
+    int w_beat = 0, w_measure = 0, w_mbeat = 0;
 
     StatFormatter(const FrameStats& f, uint64_t tn, uint64_t tc, double mt, uint16_t pq,
-                  const CommaOpts& c, PadOpts pad, BpmOpts bpm, uint64_t tt)
-        : fs(f), total_notes(tn), total_cc(tc), max_time(mt), ppqn(pq), commas(c), total_ticks(tt) {
+                  const CommaOpts& c, PadOpts pad, BpmOpts bpm, uint64_t tt, const SongMeter& m)
+        : fs(f), total_notes(tn), total_cc(tc), max_time(mt), ppqn(pq), commas(c), total_ticks(tt), meter(m) {
         bdec = std::max(0, std::min(6, bpm.decimals));   // cap: beyond 6 decimals is display noise
         if (pad.enabled) {   // each stat pads toward its own running maximum
             auto w = [](uint64_t v) { int n = 1; while (v >= 10) { v /= 10; ++n; } return n; };
@@ -45,6 +48,9 @@ struct StatFormatter {
             w_nps   = w(static_cast<uint64_t>(std::max<double>(0, std::round(fs.peak_nps))));
             w_sec   = w(static_cast<uint64_t>(std::max<double>(0, max_time)));
             w_tick  = w(total_ticks);
+            w_beat    = w(meter.beats);
+            w_measure = w(meter.measures);
+            w_mbeat   = w(meter.max_num);
         }
     }
 
@@ -112,6 +118,14 @@ struct StatFormatter {
         if (n == "plph-max") return fmt(commas.polyphony, static_cast<uint64_t>(std::max<int64_t>(0, fs.peak_polyphony)), w_poly);
         if (n == "nps") return fmt(commas.nps, static_cast<uint64_t>(std::round(std::max<double>(0, fs.notes_per_second))), w_nps);
         if (n == "nps-max") return fmt(commas.nps, static_cast<uint64_t>(std::round(std::max<double>(0, fs.peak_nps))), w_nps);
+        if (n == "beat") return fmt(commas.beats, fs.beat, w_beat);
+        if (n == "beat-total") return fmt(commas.beats, meter.beats, w_beat);
+        if (n == "beat-rem") return fmt(commas.beats, meter.beats > fs.beat ? meter.beats - fs.beat : 0, w_beat);
+        if (n == "measure") return fmt(commas.beats, fs.measure, w_measure);
+        if (n == "measure-total") return fmt(commas.beats, meter.measures, w_measure);
+        if (n == "measure-rem") return fmt(commas.beats, meter.measures > fs.measure ? meter.measures - fs.measure : 0, w_measure);
+        if (n == "measure-beat") return fmt(false, fs.measure_beat, w_mbeat);
+        if (n == "timesig") return std::to_string(fs.ts_num) + "/" + std::to_string((uint64_t)1 << std::min<int>(fs.ts_dd, 63));
         return "{" + n + "}";
     }
 };
@@ -145,17 +159,19 @@ std::vector<fmcg_text::TextPiece> format_template_line(const std::string& line, 
                                                        uint64_t total_notes, uint64_t total_cc_events,
                                                        double max_time_sec, uint16_t ppqn,
                                                        const CommaOpts& commas, PadOpts pad,
-                                                       BpmOpts bpm, uint64_t total_ticks) {
+                                                       BpmOpts bpm, uint64_t total_ticks,
+                                                       const SongMeter& meter) {
     return format_template_segments(parse_template_line(line), fs, total_notes, total_cc_events, max_time_sec,
-                                    ppqn, commas, pad, bpm, total_ticks);
+                                    ppqn, commas, pad, bpm, total_ticks, meter);
 }
 
 std::vector<fmcg_text::TextPiece> format_template_segments(const std::vector<TemplateSegment>& segs,
                                                            const FrameStats& fs, uint64_t total_notes,
                                                            uint64_t total_cc_events, double max_time_sec,
                                                            uint16_t ppqn, const CommaOpts& commas, PadOpts pad,
-                                                           BpmOpts bpm, uint64_t total_ticks) {
-    const StatFormatter f(fs, total_notes, total_cc_events, max_time_sec, ppqn, commas, pad, bpm, total_ticks);
+                                                           BpmOpts bpm, uint64_t total_ticks,
+                                                           const SongMeter& meter) {
+    const StatFormatter f(fs, total_notes, total_cc_events, max_time_sec, ppqn, commas, pad, bpm, total_ticks, meter);
     std::vector<fmcg_text::TextPiece> out;
     out.reserve(segs.size());
     int cell = 0;
@@ -168,10 +184,11 @@ std::string ProcessTemplateLine(const std::string& line, const FrameStats& fs,
                                 uint64_t total_notes, uint64_t total_cc_events,
                                 double max_time_sec, uint16_t ppqn,
                                 const CommaOpts& commas, PadOpts pad, BpmOpts bpm,
-                                uint64_t total_ticks) {
+                                uint64_t total_ticks, const SongMeter& meter) {
     std::string result;
     for (const fmcg_text::TextPiece& p : format_template_line(line, fs, total_notes, total_cc_events,
-                                                              max_time_sec, ppqn, commas, pad, bpm, total_ticks))
+                                                              max_time_sec, ppqn, commas, pad, bpm, total_ticks,
+                                                              meter))
         result += p.text;
     return result;
 }
@@ -207,6 +224,8 @@ FrameStats FrameTextSource::stats(size_t k) const {
     // to 0 at the song's first frame.
     FrameStats z;
     z.bpm = frames->front().bpm;                  // show the starting BPM, not 0
+    z.ts_num = frames->front().ts_num;            // and the starting time signature
+    z.ts_dd = frames->front().ts_dd;
     z.timestamp_sec = (double)k * (1.0 / fps) - start_delay;
     // Negative song ticks, counting up to 0: linear back-extrapolation at the
     // initial tempo from the song's first frame (safe even when the first
@@ -233,8 +252,9 @@ fmcg_text::PieceLines FrameTextSource::pieces_for(const FrameStats& fs, bool lea
     out.reserve(template_lines.size());
     for (const std::vector<TemplateSegment>& t : parsed())
         out.push_back(lead_in
-            ? format_template_segments(t, fs, total_notes, 0, max_time, ppqn, commas, pad, bpm, 0)
-            : format_template_segments(t, fs, total_notes, total_cc, max_time, ppqn, commas, pad, bpm, total_ticks));
+            ? format_template_segments(t, fs, total_notes, 0, max_time, ppqn, commas, pad, bpm, 0, meter)
+            : format_template_segments(t, fs, total_notes, total_cc, max_time, ppqn, commas, pad, bpm, total_ticks,
+                                       meter));
     return out;
 }
 
@@ -259,7 +279,8 @@ fmcg_text::TextBlockSpec FrameTextSource::block_spec() const {
     //  - the first song frame (largest *-rem),
     //  - the last frame (largest time/ticks/totals so far),
     //  - a synthetic frame with every running stat at its maximum (notes, CC,
-    //    polyphony, NPS, BPM).
+    //    polyphony, NPS, BPM, beat / measure numbers), once per time signature
+    //    the song uses ({timesig} and {measure-beat} change with it).
     // Each probe's text, with every digit replaced by each of 0..9, gives the
     // candidates; the renderer measures them in the actual font, so the
     // widest digit of that font (proportional or tabular) is covered.
@@ -281,7 +302,20 @@ fmcg_text::TextBlockSpec FrameTextSource::block_spec() const {
             mx.notes_per_second = std::max(mx.notes_per_second, f.peak_nps);
             mx.peak_nps = std::max(mx.peak_nps, f.peak_nps);
         }
-        probes.push_back({mx, false});
+        mx.beat = meter.beats;
+        mx.measure = meter.measures;
+        mx.measure_beat = meter.max_num;
+        std::vector<std::pair<uint8_t, uint8_t>> sigs;   // distinct time signatures, file order
+        for (const FrameStats& f : *frames)
+            if (sigs.size() < 64 && (sigs.empty() || sigs.back() != std::make_pair(f.ts_num, f.ts_dd)) &&
+                std::find(sigs.begin(), sigs.end(), std::make_pair(f.ts_num, f.ts_dd)) == sigs.end())
+                sigs.push_back({f.ts_num, f.ts_dd});
+        if (sigs.empty()) sigs.push_back({mx.ts_num, mx.ts_dd});
+        for (const auto& sg : sigs) {
+            mx.ts_num = sg.first;
+            mx.ts_dd = sg.second;
+            probes.push_back({mx, false});
+        }
     } else {   // pattern-only preview: zero stats, time from -start_delay to 0
         FrameStats z;
         z.timestamp_sec = -start_delay;

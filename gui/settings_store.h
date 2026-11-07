@@ -57,7 +57,8 @@ struct PatternData {
 private:
     bool memcmp_commas(const PatternData& o) const {
         return commas.notes == o.commas.notes && commas.polyphony == o.commas.polyphony &&
-               commas.nps == o.commas.nps && commas.cc == o.commas.cc && commas.ticks == o.commas.ticks;
+               commas.nps == o.commas.nps && commas.cc == o.commas.cc && commas.ticks == o.commas.ticks &&
+               commas.beats == o.commas.beats;
     }
 public:
 };

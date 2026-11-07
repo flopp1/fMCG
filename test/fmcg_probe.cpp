@@ -1,6 +1,7 @@
 // fmcg_probe -- non-interactive CLI over the engine, for oracle/property tests.
 // Prints one machine-parsable line:
 //   OK notes=<n> ticks=<n> ppqn=<n> peak_poly=<n> peak_nps=<n> frames=<n> lossy=<0|1> twopass=<0|1> assumed=<0|1>
+//      beats=<n> measures=<n>
 // or FAIL (empty result / cancelled / unsupported).
 // usage: fmcg_probe <file> [fps] [dedup 0/1] [threads] [close_held 0/1] [spec 0/1] [risky 0/1]
 //   risky (default 0): the opt-in risky fast dedup; assumed=1 when its
@@ -37,11 +38,14 @@ int main(int argc, char** argv) {
     if (spec_twopass)
         cb.on_spec_violation = [&twopass](uint64_t, size_t) -> int { twopass = true; return 1; };
     uint16_t ppqn = 0; uint64_t notes = 0, ticks = 0;
-    auto fr = fmcg_stream::process_streaming(argv[1], fps, ppqn, notes, true, ticks, cb, 0.0, threads, dedup == 2, dedup == 1, risky);
+    SongMeter meter;
+    auto fr = fmcg_stream::process_streaming(argv[1], fps, ppqn, notes, true, ticks, cb, 0.0, threads, dedup == 2,
+                                             dedup == 1, risky, &meter);
     if (fr.empty()) { printf("FAIL\n"); return 1; }
-    printf("OK notes=%llu ticks=%llu ppqn=%u peak_poly=%lld peak_nps=%.0f frames=%zu lossy=%d twopass=%d assumed=%d\n",
+    printf("OK notes=%llu ticks=%llu ppqn=%u peak_poly=%lld peak_nps=%.0f frames=%zu lossy=%d twopass=%d assumed=%d"
+           " beats=%llu measures=%llu\n",
            (unsigned long long)notes, (unsigned long long)ticks, (unsigned)ppqn,
            (long long)fr.back().peak_polyphony, fr.back().peak_nps, fr.size(), lossy ? 1 : 0, twopass ? 1 : 0,
-           assumed ? 1 : 0);
+           assumed ? 1 : 0, (unsigned long long)meter.beats, (unsigned long long)meter.measures);
     return 0;
 }

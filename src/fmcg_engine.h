@@ -53,11 +53,20 @@ bool close_held_notes();
 // stop decoding the layer. WRONG (silently) on files where the rest of a layer
 // is made of different tiles with a matching total size; the log states every
 // assumption applied. Off by default.
+//
+// out_meter (optional): song-wide beat / measure totals from the file's time
+// signatures (default 4/4); every frame's beat / measure fields are filled.
 std::vector<FrameStats> process_streaming(
     const std::string& filename, double fps, uint16_t& out_division,
     uint64_t& out_total_notes, bool vel0_as_note_off, uint64_t& out_total_ticks,
     const ProgressCallbacks& cb, double end_delay = 0.0,
     int parse_threads = 0, bool track_dedup = false, bool layered_dedup = false,
-    bool risky_dedup = false);
+    bool risky_dedup = false, SongMeter* out_meter = nullptr);
+
+// Fills every frame's beat / measure fields from the time-signature records
+// in tempo_raw (see fmcg_engine.cpp) and returns the song totals. Called by
+// process_streaming; public for tests.
+SongMeter apply_meter(std::vector<FrameStats>& frames, const std::vector<TempoChange>& tempo_raw,
+                      uint16_t ppqn, uint64_t end_tick);
 
 } // namespace fmcg_stream

@@ -28,7 +28,12 @@ Standard-scan rules mirrored here (keep in sync with the engine):
   * channel events read their data bytes whatever their value; note number is
     clamped & 0x7F; note-on vel 0 is an off when vel0_off; offs are refcounted per
     (channel, note) and only fire when the count is > 0;
-  * tempo meta (FF 51 03) is applied when its 3 bytes are inside the body;
+  * tempo meta (FF 51 03) is applied when its 3 bytes are inside the body; so is a
+    time signature (FF 58 04 nn dd cc bb), which shares the tempo list (file order,
+    last at a tick wins);
+  * meter: default 4/4; restatements change nothing, a change starts a new measure
+    (a cut-short beat / measure counts as one); nn == 0 or dd > 32 is ignored; the
+    song covers ticks [0, max_tick), totals are ceilings, at least 1;
   * peak NPS: closed 1-second window on exact integer time (tick x us/quarter).
 """
 import lzma
@@ -78,7 +83,7 @@ def _vlq(buf, i, end):
 
 
 def parse_track(body, vel0_off=True):
-    """Returns (cells{tick:[ons,delta,cc]}, tempos[(tick,us)], end_tick)."""
+    """Returns (cells{tick:[ons,delta,cc]}, metas[(tick,us,None)|(tick,0,(nn,dd))], end_tick)."""
     cells = defaultdict(lambda: [0, 0, 0])
     tempos = []
     rc = defaultdict(int)
@@ -112,8 +117,12 @@ def parse_track(body, vel0_off=True):
                 if i + 3 <= n:
                     us = int.from_bytes(body[i:i + 3], "big")
                     if us > 0:
-                        tempos.append((tick, us))
+                        tempos.append((tick, us, None))
                 i = min(n, i + 3)
+            elif typ == 0x58 and ln == 4:
+                if i + 4 <= n:
+                    tempos.append((tick, 0, (body[i], body[i + 1])))
+                i = min(n, i + 4)
             else:
                 i = min(n, i + ln)
             continue
@@ -211,7 +220,8 @@ def parse_flat(flat: bytes, vel0_off=True):
 
 
 def stats(flat: bytes):
-    cells, tempos, max_tick, div = parse_flat(flat)
+    cells, metas, max_tick, div = parse_flat(flat)
+    tempos = [(t, us) for t, us, ts in metas if ts is None]
     byt = {}
     for t, us in tempos:       # stable: later wins on equal tick
         byt[t] = us
@@ -250,7 +260,36 @@ def stats(flat: bytes):
             peak_nps = max(peak_nps, wsum)
         poly += d
         peak_poly = max(peak_poly, poly)
-    return dict(notes=notes, ticks=max_tick, ppqn=div, peak_poly=peak_poly, peak_nps=peak_nps)
+    beats, measures = meter_totals(metas, max_tick, div)
+    return dict(notes=notes, ticks=max_tick, ppqn=div, peak_poly=peak_poly, peak_nps=peak_nps,
+                beats=beats, measures=measures)
+
+
+def _ceil_div(a, b):
+    return -(-a // b)
+
+
+def meter_totals(metas, end_tick, div):
+    """(total beats, total measures) -- mirrors apply_meter in fmcg_engine.cpp."""
+    byt = {}
+    for t, _, ts in metas:     # stable: later wins on equal tick
+        if ts is not None and ts[0] > 0 and ts[1] <= 32:
+            byt[t] = ts
+    segs = [[0, 4, 2, 0, 0]]   # tick, nn, dd, beats before, measures before
+    for t in sorted(byt):
+        nn, dd = byt[t]
+        b = segs[-1]
+        if (nn, dd) == (b[1], b[2]):
+            continue
+        if t == b[0]:
+            b[1], b[2] = nn, dd
+            continue
+        ln = (t - b[0]) << b[2]
+        segs.append([t, nn, dd, b[3] + _ceil_div(ln, 4 * div), b[4] + _ceil_div(ln, 4 * div * b[1])])
+    last = max(end_tick - 1, 0)
+    g = [x for x in segs if x[0] <= last][-1]
+    span = max(end_tick - g[0], 0) << g[2]
+    return (max(1, g[3] + _ceil_div(span, 4 * div)), max(1, g[4] + _ceil_div(span, 4 * div * g[1])))
 
 
 def stats_of_file(blob: bytes):

@@ -262,6 +262,59 @@ def d_realtime(rng):
     return b"".join(members), "real-time bytes in running-status runs, arbitrary cuts"
 
 
+def _timesig(nn, dd):
+    return b"\xff\x58\x04" + bytes([nn, dd, 24, 8])
+
+
+def _meter_track(rng):
+    """Track with time signatures (changes, restatements, same-tick conflicts, invalid
+    nn=0 / dd>32) at small ticks, notes between them, sometimes a tempo."""
+    b, t = bytearray(), 0
+    for _ in range(rng.randrange(1, 5)):
+        dt = rng.choice([0, 0, 7, 120, 480, 1000, 1920])
+        nn = rng.choice([4, 4, 3, 6, 7, 5, 0, 1, 255])
+        dd = rng.choice([2, 2, 3, 1, 4, 0, 6, 40])
+        b += vlq(dt) + _timesig(nn, dd)
+        t += dt
+        if rng.random() < 0.3:
+            b += b"\x00\xff\x51\x03" + rng.choice([400000, 500000, 900000]).to_bytes(3, "big")
+        for _ in range(rng.randrange(0, 3)):
+            b += vlq(rng.choice([0, 5, 300])) + bytes([0x90, rng.randrange(128), rng.randrange(1, 128)])
+    if rng.random() < 0.3:
+        b += b"\x00\xff\x58\x03\x03\x02\x18"      # wrong length: skipped, not a time signature
+    b += vlq(rng.choice([1, 50, 2000, 5000])) + EOT
+    return mtrk(bytes(b))
+
+
+def d_meter(rng):
+    """Tiles with differing time signatures at shared ticks, interleaved, sometimes nested,
+    ending at varied ticks (beats / measures totals)."""
+    kinds = [xz(_meter_track(rng), rng.choice(CHECKS)) for _ in range(rng.randrange(2, 4))]
+    seq = b""
+    for _ in range(rng.randrange(2, 6)):
+        seq += tile(rng.choice(kinds), rng.randrange(1, 4))
+    cur = xz(mthd(rng.choice([480, 96, 1, 0xFFFF]), 1)) + seq
+    if rng.random() < 0.5:   # one more layer over everything (uniform depth: the standard scan reads it too)
+        cur = xz(cur)
+    return cur, "tiled tracks with time signatures"
+
+
+def d_meter_slices(rng):
+    """One track whose body repeats a unit with a time signature in it, cut into raw slices
+    (tick-shifted repetition inside a track; time signatures cut mid-meta)."""
+    unit = (vlq(rng.choice([96, 480, 700])) + _timesig(rng.choice([3, 4, 5]), rng.choice([2, 3]))
+            + b"\x00\x90" + bytes([rng.randrange(128), 100]))
+    body = unit * rng.randrange(4, 40) + vlq(rng.choice([0, 13])) + EOT
+    stream = mtrk(body)
+    sl = rng.choice([5, 9, 16, 33])
+    members, pos = [xz(mthd(480, 1))], 0
+    while pos < len(stream):
+        members.append(xz(stream[pos:pos + sl]))
+        pos += sl
+    cur = b"".join(members)
+    return cur, "time signatures in a sliced track"
+
+
 GENS = {k[2:]: v for k, v in globals().items() if k.startswith("d_")}
 
 

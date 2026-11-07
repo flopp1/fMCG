@@ -30,13 +30,34 @@ struct FrameStats {
     int64_t peak_polyphony = 0;
     double bpm = 120.0;
     int64_t tick = 0;                    // song tick at this frame ({tick} stat); negative during the start-delay countdown
+    // Meter (time signature) at this frame: 1-based beat and measure numbers
+    // counted from the song start, 1-based beat within the measure, and the
+    // time signature in force (numerator / log2 of the denominator). 0 = not
+    // started (start-delay lead-in). See apply_meter (fmcg_engine.cpp).
+    uint64_t beat = 0, measure = 0;
+    uint32_t measure_beat = 0;
+    uint8_t ts_num = 4, ts_dd = 2;
 };
 
+// One global meta event from the scan: a tempo change (us_per_quarter > 0)
+// or, with us_per_quarter == 0 and ts_num > 0, a time signature (FF 58:
+// ts_num beats of 1/2^ts_dd notes per measure). Both are global and, at equal
+// ticks, the last one in file order wins, so they share one ordered list.
 struct TempoChange {
     uint64_t tick;
     double time_sec;
     uint32_t us_per_quarter;
     double bpm;
+    uint8_t ts_num = 0, ts_dd = 0;
+    bool is_time_sig() const { return us_per_quarter == 0 && ts_num > 0; }
+    static TempoChange time_sig(uint64_t tick, uint8_t num, uint8_t dd) { return {tick, 0.0, 0, 0.0, num, dd}; }
+};
+
+// Song-wide meter totals ({beat-total}, {measure-total}) and the largest
+// time-signature numerator (pads {measure-beat}).
+struct SongMeter {
+    uint64_t beats = 1, measures = 1;
+    uint8_t max_num = 4;
 };
 
 // Compressed-format detection (magic bytes).
@@ -129,7 +150,7 @@ public:
         uint64_t& out_total_notes, bool vel0_as_note_off,
         uint64_t& out_total_ticks, const ProgressCallbacks& cb = {},
         double end_delay = 0.0, int parse_threads = 0, bool track_dedup = false,
-        bool layered_dedup = false, bool risky_dedup = false);
+        bool layered_dedup = false, bool risky_dedup = false, SongMeter* out_meter = nullptr);
     // Back-compat form used by tests/benchmarks (total ticks not reported).
     static std::vector<FrameStats> process_midi(
         const std::string& filename, double fps, uint16_t& out_division,
