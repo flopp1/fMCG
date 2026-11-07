@@ -162,7 +162,7 @@ void draw_global_section() {
         }
     }
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Video encoder threads (H.264). 0 = auto (recommended).\nApplies at render time.");
+        ImGui::SetTooltip("Video encoder threads (H.264 and MOV). 0 = auto (recommended).\nApplies at render time.");
 
     // Output format (global). Switching it swaps the output file extension.
     ImGui::Text("Format");

@@ -134,6 +134,66 @@ static void test_mov(const std::string& dir, bool transparent, bool ff) {
     std::remove(path.c_str());
 }
 
+// Frames big enough that qtrle splits its lines into several parts (one per
+// encoder thread): the file must be byte-identical to a one-thread encode and
+// decode bit-exactly. Patterned blocks give skips, repeats and literals.
+static void test_mov_parts(const std::string& dir, bool transparent) {
+    const int W2 = 1280, H2 = 720, N2 = 40, bpp = transparent ? 4 : 3;
+    const std::string tag = std::string(transparent ? "mov32" : "mov24") + " multi-part";
+    std::vector<Frame> frames;
+    Canvas c;
+    c.resize(W2, H2);
+    c.fill(transparent ? 0u : 0x000000FFu);
+    Rect last{};
+    for (int k = 0; k < N2; ++k) {
+        const Rect r{40 + k * 7, 60 + (k % 9) * 11, 900, 200 + (k * 13) % 380};
+        for (int y = r.y; y < r.y + r.h; ++y)
+            for (int x = r.x; x < r.x + r.w; ++x) {
+                uint8_t* p = c.row(y) + (size_t)x * 4;
+                const int band = (x / 5 + y / 3 + k) % 7;   // runs of 5 + changing literals
+                p[0] = (uint8_t)(band * 37);
+                p[1] = (uint8_t)((x * y + k) & (band < 3 ? 0x00 : 0xFF));
+                p[2] = (uint8_t)(k * 9);
+                p[3] = (uint8_t)(transparent ? (band * 40) : 255);
+            }
+        frames.push_back({c, last.united(r)});
+        last = r;
+    }
+    auto encode = [&](int threads) -> std::vector<uint8_t> {
+        const std::string path = dir + "/_test_video_parts" + std::to_string(threads) + ".mov";
+        fmcg_video::Options o;
+        o.format = fmcg_video::Format::MOV_QTRLE;
+        o.width = W2; o.height = H2; o.fps = FPS; o.transparent = transparent;
+        o.keyframe_seconds = 10.0 / FPS;   // a key frame every 10 frames
+        o.threads = threads;
+        std::string err;
+        auto w = fmcg_video::create_writer(path, o, &err);
+        bool ok = w != nullptr;
+        for (auto& f : frames) ok = ok && w->add_frame(f.c, f.dirty);
+        ok = ok && w->finish();
+        std::vector<uint8_t> file = ok ? slurp(path) : std::vector<uint8_t>{};
+        std::remove(path.c_str());
+        return file;
+    };
+    const std::vector<uint8_t> one = encode(1), many = encode(6);
+    check(tag + ": 6-thread file == 1-thread file", !one.empty() && one == many);
+    const Samples s = samples(many);
+    bool exact = s.ok && s.size.size() == (size_t)N2;
+    std::vector<uint8_t> img((size_t)W2 * H2 * bpp, 0);
+    for (int k = 0; k < N2 && exact; ++k) {
+        exact = qtrle_decode(many.data() + s.off[k], s.size[k], img, bpp, W2, H2);
+        for (int y = 0; y < H2 && exact; ++y)
+            for (int x = 0; x < W2 && exact; ++x) {
+                const uint8_t* p = frames[k].c.row(y) + (size_t)x * 4;
+                const uint8_t* q = img.data() + ((size_t)y * W2 + x) * bpp;
+                exact = bpp == 3 ? (q[0] == p[0] && q[1] == p[1] && q[2] == p[2])
+                                 : (q[0] == p[3] && q[1] == p[0] && q[2] == p[1] && q[3] == p[2]);
+            }
+        if (!exact) std::printf("  first mismatch at frame %d\n", k);
+    }
+    check(tag + ": independent decode is bit-exact for all frames", exact);
+}
+
 static void test_mp4(const std::string& dir, bool ff) {
     const std::string path = dir + "/_test_video.mp4";
     std::vector<Frame> frames = make_frames(false);
@@ -251,6 +311,8 @@ int main(int argc, char** argv) {
     std::printf("ffmpeg cross-check: %s\n", ff ? "yes" : "no (not on PATH)");
     test_mov(dir, false, ff);
     test_mov(dir, true, ff);
+    test_mov_parts(dir, false);
+    test_mov_parts(dir, true);
     test_mp4(dir, ff);
     test_mp4_options(dir);
     std::printf("\n%s (%d failures)\n", fails ? "FAILURES" : "ALL OK", fails);

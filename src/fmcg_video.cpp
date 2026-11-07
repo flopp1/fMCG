@@ -4,8 +4,14 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <deque>
+#include <functional>
+#include <mutex>
+#include <thread>
+#include <utility>
 #include <vector>
 
 extern "C" {
@@ -252,6 +258,132 @@ static uint32_t timescale_for(double fps) { return (uint32_t)std::max(1.0, std::
 
 // ---- QuickTime Animation (qtrle) ------------------------------------------------------
 
+// Runs fn(0) .. fn(n-1) for one frame: part 0 on the calling thread, the rest
+// on persistent workers (spawning threads per frame would cost more than the
+// work at small sizes). Parts must not throw.
+class PartPool {
+public:
+    explicit PartPool(int threads) {
+        for (int i = 1; i < threads; ++i) th_.emplace_back([this, i] { loop(i); });
+    }
+    ~PartPool() {
+        { std::lock_guard<std::mutex> l(m_); stop_ = true; }
+        wake_.notify_all();
+        for (std::thread& t : th_) t.join();
+    }
+    int size() const { return (int)th_.size() + 1; }
+    void run(int n, const std::function<void(int)>& fn) {
+        if (n <= 1) { if (n == 1) fn(0); return; }
+        {
+            std::lock_guard<std::mutex> l(m_);
+            fn_ = &fn; n_ = n; left_ = n - 1; ++gen_;
+        }
+        wake_.notify_all();
+        fn(0);
+        std::unique_lock<std::mutex> l(m_);
+        done_.wait(l, [&] { return left_ == 0; });
+        fn_ = nullptr;
+    }
+
+private:
+    void loop(int id) {
+        uint64_t seen = 0;
+        for (;;) {
+            const std::function<void(int)>* fn = nullptr;
+            {
+                std::unique_lock<std::mutex> l(m_);
+                wake_.wait(l, [&] { return stop_ || gen_ != seen; });
+                if (stop_) return;
+                seen = gen_;
+                if (id >= n_) continue;   // not needed for this frame
+                fn = fn_;
+            }
+            (*fn)(id);
+            std::lock_guard<std::mutex> l(m_);
+            if (--left_ == 0) done_.notify_one();
+        }
+    }
+    std::vector<std::thread> th_;
+    std::mutex m_;
+    std::condition_variable wake_, done_;
+    const std::function<void(int)>* fn_ = nullptr;
+    int n_ = 0, left_ = 0;
+    uint64_t gen_ = 0;
+    bool stop_ = false;
+};
+
+// Canvas RGBA (bytes R,G,B,A) -> qtrle's packed RGB / ARGB, n pixels.
+static void to_rgb(uint8_t* t, const uint8_t* s, int n) {
+    int x = 0;
+    for (; x + 1 < n; ++x, s += 4, t += 3) std::memcpy(t, s, 4);   // the 4th byte is overwritten by the next pixel
+    if (x < n) { t[0] = s[0]; t[1] = s[1]; t[2] = s[2]; }
+}
+static void to_argb(uint8_t* t, const uint8_t* s, int n) {
+    static const bool le = [] { const uint16_t one = 1; uint8_t b; std::memcpy(&b, &one, 1); return b == 1; }();
+    if (!le) {
+        for (int x = 0; x < n; ++x, s += 4, t += 4) { t[0] = s[3]; t[1] = s[0]; t[2] = s[1]; t[3] = s[2]; }
+        return;
+    }
+    for (int x = 0; x < n; ++x, s += 4, t += 4) {   // little-endian: a one-byte rotate of the word
+        uint32_t v;
+        std::memcpy(&v, s, 4);
+        v = (v << 8) | (v >> 24);
+        std::memcpy(t, &v, 4);
+    }
+}
+
+// Pixel equality with plain loads (memcmp of 3 bytes is not reduced to them).
+template <int BPP>
+static inline bool px_eq(const uint8_t* a, const uint8_t* b) {
+    if constexpr (BPP == 4) {
+        uint32_t x, y;
+        std::memcpy(&x, a, 4); std::memcpy(&y, b, 4);
+        return x == y;
+    } else {
+        uint16_t x, y;
+        std::memcpy(&x, a, 2); std::memcpy(&y, b, 2);
+        return x == y && a[2] == b[2];
+    }
+}
+
+// One line: leading skip byte (+1), then 0=skip / -n=repeat / +n=literal codes, -1 = end.
+// BPP is a template parameter so the per-pixel compares are fixed-size (inlined).
+template <int BPP>
+static void qtrle_line(std::vector<uint8_t>& out, const uint8_t* cur, const uint8_t* prev, int W, bool key) {
+    auto same_prev = [&](int x) { return !key && px_eq<BPP>(cur + x * BPP, prev + x * BPP); };
+    auto eq = [&](int a, int b) { return px_eq<BPP>(cur + a * BPP, cur + b * BPP); };
+    int x = 0;
+    int skip = 0;
+    while (x < W && same_prev(x) && skip < 254) { ++x; ++skip; }
+    out.push_back((uint8_t)(skip + 1));
+    while (x < W) {
+        if (same_prev(x)) {
+            int s = 0;
+            while (x + s < W && same_prev(x + s) && s < 254) ++s;
+            if (x + s >= W) break;               // trailing unchanged pixels: just end the line
+            out.push_back(0); out.push_back((uint8_t)(s + 1));
+            x += s;
+            continue;
+        }
+        int run = 1;
+        while (x + run < W && run < 128 && eq(x, x + run)) ++run;
+        if (run >= 2) {
+            out.push_back((uint8_t)(int8_t)(-run));
+            out.insert(out.end(), cur + x * BPP, cur + (x + 1) * BPP);
+            x += run;
+            continue;
+        }
+        // literal: until a repeat of >= 2 or an unchanged pixel starts
+        int lit = 1;
+        while (x + lit < W && lit < 127 && !same_prev(x + lit) &&
+               !(x + lit + 1 < W && eq(x + lit, x + lit + 1))) ++lit;
+        out.push_back((uint8_t)lit);
+        out.insert(out.end(), cur + x * BPP, cur + (x + lit) * BPP);
+        x += lit;
+    }
+    out.push_back(0xFF);
+}
+
 class QtrleWriter : public Writer {
 public:
     bool init(const std::string& path, const Options& o, std::string& err) {
@@ -260,40 +392,73 @@ public:
         gop_ = std::max(1, (int)std::lround(o.fps * std::max(0.1, o.keyframe_seconds)));
         cur_.assign((size_t)o.width * o.height * bpp_, 0);
         prev_ = cur_;
+        const int hw = (int)std::max(1u, std::thread::hardware_concurrency());
+        // Auto: a few threads. render_video renders the next frame alongside
+        // the encoder, and more encoder threads slow that renderer down
+        // (measured: 3 best on 6 cores / 12 threads, at 1080p and 4K).
+        pool_.reset(new PartPool(o.threads > 0 ? std::min(o.threads, 64) : std::max(2, std::min(4, hw / 4))));
         return mux_.open(path, true, err);
     }
     bool add_frame(const Canvas& c, Rect dirty) override {
         const int W = o_.width, H = o_.height;
         const bool key = (frame_ % gop_) == 0;
-        Rect d = (frame_ == 0) ? Rect{0, 0, W, H} : dirty.clipped(W, H);
-        // canvas (RGBA) -> packed RGB / ARGB for the dirty area
-        for (int y = d.y; y < d.y + d.h; ++y) {
-            const uint8_t* s = c.row(y) + (size_t)d.x * 4;
-            uint8_t* t = cur_.data() + ((size_t)y * W + d.x) * bpp_;
-            if (bpp_ == 3) for (int x = 0; x < d.w; ++x, s += 4, t += 3) { t[0] = s[0]; t[1] = s[1]; t[2] = s[2]; }
-            else for (int x = 0; x < d.w; ++x, s += 4, t += 4) { t[0] = s[3]; t[1] = s[0]; t[2] = s[1]; t[3] = s[2]; }
-        }
-        // changed line range (key frames encode everything)
+        const Rect d = (frame_ == 0) ? Rect{0, 0, W, H} : dirty.clipped(W, H);
         const size_t rowb = (size_t)W * bpp_;
-        int y0 = 0, y1 = H;
-        if (!key) {
-            y0 = H; y1 = 0;
-            for (int y = d.y; y < d.y + d.h; ++y)
-                if (std::memcmp(cur_.data() + y * rowb, prev_.data() + y * rowb, rowb) != 0) { y0 = std::min(y0, y); y1 = std::max(y1, y + 1); }
+
+        // 1) canvas (RGBA) -> packed RGB / ARGB for the dirty area, and the
+        //    changed line range (key frames encode everything).
+        int y0 = key ? 0 : H, y1 = key ? H : 0;
+        {
+            const int parts = parts_for(d.h, d.w);
+            ranges_.assign((size_t)parts, {H, 0});
+            pool_->run(parts, [&](int i) {
+                const int a = d.y + (int)((int64_t)d.h * i / parts), b = d.y + (int)((int64_t)d.h * (i + 1) / parts);
+                int lo = H, hi = 0;
+                for (int y = a; y < b; ++y) {
+                    const uint8_t* s = c.row(y) + (size_t)d.x * 4;
+                    uint8_t* t = cur_.data() + ((size_t)y * W + d.x) * bpp_;
+                    if (bpp_ == 3) to_rgb(t, s, d.w);
+                    else to_argb(t, s, d.w);
+                    if (!key && std::memcmp(cur_.data() + y * rowb, prev_.data() + y * rowb, rowb) != 0) {
+                        lo = std::min(lo, y);
+                        hi = y + 1;
+                    }
+                }
+                ranges_[(size_t)i] = {lo, hi};
+            });
+            if (!key)
+                for (const auto& r : ranges_) { y0 = std::min(y0, r.first); y1 = std::max(y1, r.second); }
             if (y1 <= y0) { y0 = H; y1 = H; }
         }
+
+        // 2) encode the changed lines, split into parts (lines are independent),
+        //    and make them the reference for the next frame. Lines outside
+        //    [y0, y1) are unchanged, so prev_ already holds them.
+        const int rows = y1 - y0;
+        const int parts = parts_for(rows, W);
+        if (part_out_.size() < (size_t)parts) part_out_.resize((size_t)parts);
+        pool_->run(parts, [&](int i) {
+            const int a = y0 + (int)((int64_t)rows * i / parts), b = y0 + (int)((int64_t)rows * (i + 1) / parts);
+            std::vector<uint8_t>& o = part_out_[(size_t)i];
+            o.clear();
+            for (int y = a; y < b; ++y) {
+                uint8_t* cr = cur_.data() + y * rowb;
+                uint8_t* pr = prev_.data() + y * rowb;
+                if (bpp_ == 3) qtrle_line<3>(o, cr, pr, W, key);
+                else qtrle_line<4>(o, cr, pr, W, key);
+                std::memcpy(pr, cr, rowb);
+            }
+        });
+
         out_.clear();
         put32(0);
         if ((y0 == 0 && y1 == H) || y0 == H) put16(0);
         else { put16(8); put16((unsigned)y0); put16(0); put16((unsigned)(y1 - y0)); put16(0); }
-        for (int y = y0; y < y1; ++y) encode_line(cur_.data() + y * rowb, prev_.data() + y * rowb, W, key);
+        for (int i = 0; i < parts; ++i) out_.insert(out_.end(), part_out_[(size_t)i].begin(), part_out_[(size_t)i].end());
         out_.push_back(0);
         const uint32_t n = (uint32_t)out_.size();
         out_[0] = (uint8_t)(n >> 24); out_[1] = (uint8_t)(n >> 16); out_[2] = (uint8_t)(n >> 8); out_[3] = (uint8_t)n;
         if (!mux_.add(out_.data(), out_.size(), key)) { err_ = "write failed (disk full?)"; return false; }
-        // reference frame for the next one
-        for (int y = std::min(d.y, y0); y < std::max(d.y + d.h, y1) && y < H; ++y)
-            std::memcpy(prev_.data() + y * rowb, cur_.data() + y * rowb, rowb);
         ++frame_;
         return true;
     }
@@ -311,41 +476,12 @@ public:
 private:
     void put16(unsigned v) { out_.push_back((uint8_t)(v >> 8)); out_.push_back((uint8_t)v); }
     void put32(uint32_t v) { put16(v >> 16); put16(v & 0xFFFF); }
-    void pix(const uint8_t* p) { out_.insert(out_.end(), p, p + bpp_); }
-
-    // One line: leading skip byte (+1), then 0=skip / -n=repeat / +n=literal codes, -1 = end.
-    void encode_line(const uint8_t* cur, const uint8_t* prev, int W, bool key) {
-        auto same_prev = [&](int x) { return !key && std::memcmp(cur + x * bpp_, prev + x * bpp_, bpp_) == 0; };
-        auto eq = [&](int a, int b) { return std::memcmp(cur + a * bpp_, cur + b * bpp_, bpp_) == 0; };
-        int x = 0;
-        int skip = 0;
-        while (x < W && same_prev(x) && skip < 254) { ++x; ++skip; }
-        out_.push_back((uint8_t)(skip + 1));
-        while (x < W) {
-            if (same_prev(x)) {
-                int s = 0;
-                while (x + s < W && same_prev(x + s) && s < 254) ++s;
-                if (x + s >= W) break;               // trailing unchanged pixels: just end the line
-                out_.push_back(0); out_.push_back((uint8_t)(s + 1));
-                x += s;
-                continue;
-            }
-            int run = 1;
-            while (x + run < W && run < 128 && eq(x, x + run)) ++run;
-            if (run >= 2) {
-                out_.push_back((uint8_t)(int8_t)(-run)); pix(cur + x * bpp_);
-                x += run;
-                continue;
-            }
-            // literal: until a repeat of >= 2 or an unchanged pixel starts
-            int lit = 1;
-            while (x + lit < W && lit < 127 && !same_prev(x + lit) &&
-                   !(x + lit + 1 < W && eq(x + lit, x + lit + 1))) ++lit;
-            out_.push_back((uint8_t)lit);
-            out_.insert(out_.end(), cur + x * bpp_, cur + (x + lit) * bpp_);
-            x += lit;
-        }
-        out_.push_back(0xFF);
+    // Parts for `rows` lines of `w` pixels: about 64K pixels each at least
+    // (below that the hand-off costs more than it saves), at most one per thread.
+    int parts_for(int rows, int w) const {
+        if (rows <= 0 || w <= 0) return 0;
+        const int64_t by_size = std::max<int64_t>(1, (int64_t)rows * w / (1 << 16));
+        return (int)std::min<int64_t>({by_size, (int64_t)rows, (int64_t)pool_->size()});
     }
 
     Options o_;
@@ -353,6 +489,9 @@ private:
     int bpp_ = 3, gop_ = 60;
     uint64_t frame_ = 0;
     std::vector<uint8_t> cur_, prev_, out_;
+    std::vector<std::vector<uint8_t>> part_out_;   // encoded lines of each part
+    std::vector<std::pair<int, int>> ranges_;      // changed lines found by each part
+    std::unique_ptr<PartPool> pool_;
     std::string err_;
 };
 
@@ -525,22 +664,92 @@ int render_video(const std::string& path, const Options& opt, const FrameTextSou
     if (text_scale) *text_scale = fr.scale();
     auto writer = create_writer(path, opt, &e);
     if (!writer) { if (err) *err = e; return -1; }
-    auto last = std::chrono::steady_clock::now();
-    for (size_t k = 0; k < total; ++k) {
-        if (cancel && cancel->load(std::memory_order_relaxed)) { writer->abort(); return -2; }
-        fr.render_pieces(text.pieces(k));
-        const Rect dirty = (k == 0) ? Rect{0, 0, opt.width, opt.height} : fr.dirty();
-        if (!writer->add_frame(fr.canvas(), dirty)) {
-            if (err) *err = writer->error();
-            writer->abort();
-            return -1;
+
+    // Pipeline: this thread renders frame k while an encoder thread encodes
+    // frame k-1. Frames are handed over in two snapshot canvases, used
+    // alternately. A snapshot last held frame k-2, so copying the area that
+    // changed since (dirty k-1 united with dirty k) makes it equal the
+    // rendered canvas exactly -- encoders may read pixels outside `dirty`
+    // (x264 rounds it to even coordinates).
+    const int W = opt.width, H = opt.height;
+    const Rect full{0, 0, W, H};
+    Canvas snap[2];
+    Rect snap_dirty[2];
+    snap[0].resize(W, H);
+    snap[1].resize(W, H);
+    std::mutex m;
+    std::condition_variable cv;
+    bool busy[2] = {false, false};   // handed to the encoder, not encoded yet
+    std::deque<int> queue;           // snapshots waiting for the encoder, in frame order
+    bool stop = false, failed = false;
+    size_t encoded = 0;
+    std::thread enc([&] {
+        std::unique_lock<std::mutex> l(m);
+        for (;;) {
+            cv.wait(l, [&] { return stop || !queue.empty(); });
+            if (queue.empty()) return;   // stop requested and nothing left
+            const int i = queue.front();
+            l.unlock();
+            const bool ok = writer->add_frame(snap[i], snap_dirty[i]);
+            l.lock();
+            queue.pop_front();
+            busy[i] = false;
+            ++encoded;
+            if (!ok) failed = true;
+            cv.notify_all();
+            if (!ok) return;
         }
+    });
+    auto stop_encoder = [&] {
+        { std::lock_guard<std::mutex> l(m); stop = true; }
+        cv.notify_all();
+        enc.join();
+    };
+
+    auto last = std::chrono::steady_clock::now();
+    Rect prev_dirty = full;
+    for (size_t k = 0; k < total; ++k) {
+        if (cancel && cancel->load(std::memory_order_relaxed)) {
+            { std::lock_guard<std::mutex> l(m); queue.clear(); }   // drop what is not encoding yet
+            stop_encoder();
+            writer->abort();
+            return -2;
+        }
+        fr.render_pieces(text.pieces(k));
+        const Rect dirty = (k == 0) ? full : fr.dirty().clipped(W, H);
+        const int i = (int)(k & 1);
+        size_t done;
+        {
+            std::unique_lock<std::mutex> l(m);
+            cv.wait(l, [&] { return !busy[i] || failed; });
+            if (failed) break;
+            done = encoded;
+        }
+        const Rect u = (k < 2) ? full : dirty.united(prev_dirty);
+        const Canvas& c = fr.canvas();
+        for (int y = u.y; y < u.y + u.h; ++y)
+            std::memcpy(snap[i].row(y) + (size_t)u.x * 4, c.row(y) + (size_t)u.x * 4, (size_t)u.w * 4);
+        snap_dirty[i] = dirty;
+        prev_dirty = dirty;
+        {
+            std::lock_guard<std::mutex> l(m);
+            busy[i] = true;
+            queue.push_back(i);
+        }
+        cv.notify_all();
         const auto now = std::chrono::steady_clock::now();
-        if (progress && (now - last > std::chrono::milliseconds(100) || k + 1 == total)) {
+        if (progress && now - last > std::chrono::milliseconds(100)) {
             last = now;
-            progress(k + 1, total);
+            progress(done, total);
         }
     }
+    stop_encoder();
+    if (failed) {
+        if (err) *err = writer->error();
+        writer->abort();
+        return -1;
+    }
+    if (progress) progress(total, total);
     if (!writer->finish()) { if (err) *err = writer->error(); writer->abort(); return -1; }
     return 0;
 }

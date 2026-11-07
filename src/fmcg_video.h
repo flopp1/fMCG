@@ -24,7 +24,7 @@ struct Options {
     int width = 1920, height = 1080;
     double fps = 60.0;
     bool transparent = false;   // MOV only: 32-bit ARGB with the canvas alpha
-    int threads = 0;            // x264 threads, 0 = auto
+    int threads = 0;            // encoder threads (x264, qtrle line encoding), 0 = auto
     int crf = 18;               // x264 constant-quality factor, 0 (lossless) .. 51
     std::string preset = "veryfast";  // one of k_presets
     std::string tune;           // "" = none, else one of k_tunes
@@ -58,8 +58,10 @@ std::unique_ptr<Writer> create_writer(const std::string& path, const Options& op
 
 // Renders every video frame of `text` (lead-in, song, tail) with the given
 // style/placement/background and encodes it to `path`. `progress(done, total)`
-// is called at most every ~100 ms. On cancel or error the partial file is
-// deleted. Returns 0 = ok, -2 = cancelled, -1 = error (err filled).
+// is called at most every ~100 ms (done = frames encoded). On cancel or error
+// the partial file is deleted. Returns 0 = ok, -2 = cancelled, -1 = error
+// (err filled). Rendering and encoding overlap: the calling thread renders
+// frame k while an encoder thread encodes frame k-1.
 // The text block is laid out from text.block_spec(): fixed-width cells
 // (placement.cells) and, with placement.fit, one font scale for the whole
 // video so its largest block fits the frame; *text_scale receives that scale.
