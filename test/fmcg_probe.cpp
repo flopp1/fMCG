@@ -37,10 +37,17 @@ int main(int argc, char** argv) {
     };
     if (spec_twopass)
         cb.on_spec_violation = [&twopass](uint64_t, size_t) -> int { twopass = true; return 1; };
-    uint16_t ppqn = 0; uint64_t notes = 0, ticks = 0;
-    SongMeter meter;
-    auto fr = fmcg_stream::process_streaming(argv[1], fps, ppqn, notes, true, ticks, cb, 0.0, threads, dedup == 2,
-                                             dedup == 1, risky, &meter);
+    fmcg_stream::ScanOptions opt;
+    opt.fps = fps;
+    opt.parse_threads = threads;
+    opt.track_dedup = dedup == 2;
+    opt.layered_dedup = dedup == 1;
+    opt.risky_dedup = risky;
+    const fmcg_stream::ScanResult r = fmcg_stream::process_streaming(argv[1], opt, cb);
+    const std::vector<FrameStats>& fr = r.frames;
+    const uint16_t ppqn = r.ppqn;
+    const uint64_t notes = r.total_notes, ticks = r.total_ticks;
+    const SongMeter& meter = r.meter;
     if (fr.empty()) { printf("FAIL\n"); return 1; }
     printf("OK notes=%llu ticks=%llu ppqn=%u peak_poly=%lld peak_nps=%.0f frames=%zu lossy=%d twopass=%d assumed=%d"
            " beats=%llu measures=%llu\n",

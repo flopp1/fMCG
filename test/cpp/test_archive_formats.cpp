@@ -58,7 +58,11 @@ static std::string counts(const std::string& path) {
     uint64_t notes = 0, ticks = 0;
     ProgressCallbacks cb;
     cb.on_log = [](const char*, bool) {};
-    auto fr = fmcg_stream::process_streaming(path, 60.0, ppqn, notes, true, ticks, cb);
+    const fmcg_stream::ScanResult scan1 = fmcg_stream::process_streaming(path, fmcg_stream::ScanOptions{60.0, true}, cb);
+    auto fr = scan1.frames;
+    ppqn = scan1.ppqn;
+    notes = scan1.total_notes;
+    ticks = scan1.total_ticks;
     if (fr.empty()) return "FAIL";
     return std::to_string(notes) + "/" + std::to_string(ticks) + "/" + std::to_string(ppqn) + "/" +
            std::to_string(fr.back().peak_polyphony);

@@ -118,7 +118,11 @@ int main() {
         mf.write((const char*)mid, sizeof mid);
         mf.close();
         uint16_t div = 0; uint64_t tn = 0, tt = 0;
-        auto frames = fmcg_stream::process_streaming("_tail.mid", 10.0, div, tn, true, tt, {}, 1.5);
+        const fmcg_stream::ScanResult scan1 = fmcg_stream::process_streaming("_tail.mid", fmcg_stream::ScanOptions{10.0, true, 1.5});
+        auto frames = scan1.frames;
+        div = scan1.ppqn;
+        tn = scan1.total_notes;
+        tt = scan1.total_ticks;
         std::remove("_tail.mid");
         char buf[8];
         snprintf(buf, sizeof(buf), "%zu", frames.size());
@@ -176,7 +180,11 @@ int main() {
             mf.write((const char*)mid.data(), (std::streamsize)mid.size());
             mf.close();
             uint16_t div = 0; uint64_t tn = 0, tt = 0;
-            auto frames = fmcg_stream::process_streaming("_nps.mid", 60.0, div, tn, true, tt, {});
+            const fmcg_stream::ScanResult scan2 = fmcg_stream::process_streaming("_nps.mid", fmcg_stream::ScanOptions{60.0, true});
+            auto frames = scan2.frames;
+            div = scan2.ppqn;
+            tn = scan2.total_notes;
+            tt = scan2.total_ticks;
             std::remove("_nps.mid");
             return frames.empty() ? -1.0 : frames.back().peak_nps;
         };
@@ -201,7 +209,11 @@ int main() {
             mf.write((const char*)mid.data(), (std::streamsize)mid.size());
             mf.close();
             uint16_t div = 0; uint64_t tn = 0, tt = 0;
-            auto frames = fmcg_stream::process_streaming("_nps.mid", 59.94, div, tn, true, tt, {});
+            const fmcg_stream::ScanResult scan3 = fmcg_stream::process_streaming("_nps.mid", fmcg_stream::ScanOptions{59.94, true});
+            auto frames = scan3.frames;
+            div = scan3.ppqn;
+            tn = scan3.total_notes;
+            tt = scan3.total_ticks;
             std::remove("_nps.mid");
             check("nps window literal 1s @59.94fps", std::to_string(frames.empty() ? -1 : (int)frames.back().peak_nps), "20");
         }
@@ -217,7 +229,11 @@ int main() {
             mf.write((const char*)mid.data(), (std::streamsize)mid.size());
             mf.close();
             uint16_t div = 0; uint64_t tn = 0, tt = 0;
-            auto frames = fmcg_stream::process_streaming("_lowfps.mid", 0.25, div, tn, true, tt, {});
+            const fmcg_stream::ScanResult scan4 = fmcg_stream::process_streaming("_lowfps.mid", fmcg_stream::ScanOptions{0.25, true});
+            auto frames = scan4.frames;
+            div = scan4.ppqn;
+            tn = scan4.total_notes;
+            tt = scan4.total_ticks;
             std::remove("_lowfps.mid");
             check("0.25 fps: notes", std::to_string(tn), "3");
             check("0.25 fps: frame 0 nps = its notes", frames.empty() ? "none"
@@ -252,7 +268,10 @@ int main() {
                 cb.on_spec_violation = [](uint64_t, size_t) { return 1; };
             }
             uint16_t div = 0; uint64_t tn = 0, tt = 0;
-            fmcg_stream::process_streaming("_tracks.mid", 60.0, div, tn, true, tt, cb, 0.0, threads);
+            const fmcg_stream::ScanResult scan5 = fmcg_stream::process_streaming("_tracks.mid", fmcg_stream::ScanOptions{60.0, true, 0.0, threads}, cb);
+            div = scan5.ppqn;
+            tn = scan5.total_notes;
+            tt = scan5.total_ticks;
             return std::to_string(done) + "/" + std::to_string(total);
         };
         check("tracks: sequential reports 5 (total unknown)", run(1, false), "5/0");
@@ -267,7 +286,10 @@ int main() {
             cb.on_spec_violation = [&](uint64_t t, size_t) { at = t; return 0; };
             cb.on_log = [&](const char* m, bool) { log += m; };
             uint16_t div = 0; uint64_t tn = 0, tt = 0;
-            fmcg_stream::process_streaming("_tracks.mid", 60.0, div, tn, true, tt, cb, 0.0, 4);
+            const fmcg_stream::ScanResult scan6 = fmcg_stream::process_streaming("_tracks.mid", fmcg_stream::ScanOptions{60.0, true, 0.0, 4}, cb);
+            div = scan6.ppqn;
+            tn = scan6.total_notes;
+            tt = scan6.total_ticks;
             check("spec warning reports the crossing tick", std::to_string(at), "100");
             check("parallel stats line", log.find("parallel parse on 4 threads") != std::string::npos ? "yes" : "no", "yes");
         }
@@ -290,7 +312,11 @@ int main() {
                 cb.on_spec_violation = [](uint64_t, size_t) { return 1; };
             }
             uint16_t div = 0; uint64_t tn = 0, tt = 0;
-            auto fr = fmcg_stream::process_streaming("_held.mid", 60.0, div, tn, true, tt, cb, 0.0, 1);
+            const fmcg_stream::ScanResult scan7 = fmcg_stream::process_streaming("_held.mid", fmcg_stream::ScanOptions{60.0, true, 0.0, 1}, cb);
+            auto fr = scan7.frames;
+            div = scan7.ppqn;
+            tn = scan7.total_notes;
+            tt = scan7.total_ticks;
             return fr.empty() ? std::string("FAIL") : std::to_string(fr.back().polyphony);
         };
         fmcg_stream::set_close_held_notes(true);

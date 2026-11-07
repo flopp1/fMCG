@@ -53,15 +53,27 @@ bool close_held_notes();
 // stop decoding the layer. WRONG (silently) on files where the rest of a layer
 // is made of different tiles with a matching total size; the log states every
 // assumption applied. Off by default.
-//
-// out_meter (optional): song-wide beat / measure totals from the file's time
-// signatures (default 4/4); every frame's beat / measure fields are filled.
-std::vector<FrameStats> process_streaming(
-    const std::string& filename, double fps, uint16_t& out_division,
-    uint64_t& out_total_notes, bool vel0_as_note_off, uint64_t& out_total_ticks,
-    const ProgressCallbacks& cb, double end_delay = 0.0,
-    int parse_threads = 0, bool track_dedup = false, bool layered_dedup = false,
-    bool risky_dedup = false, SongMeter* out_meter = nullptr);
+struct ScanOptions {
+    double fps = 60.0;
+    bool   vel0_as_note_off = true;   // note-on velocity 0 is a note-off (MIDI standard)
+    double end_delay = 0.0;           // seconds of frozen-stats tail appended to the frames
+    int    parse_threads = 0;         // see above
+    bool   track_dedup = false;       // see above
+    bool   layered_dedup = false;
+    bool   risky_dedup = false;       // needs layered_dedup
+};
+
+struct ScanResult {
+    std::vector<FrameStats> frames;   // empty: failed or cancelled (the log says which)
+    uint16_t ppqn = 480;
+    uint64_t total_notes = 0;
+    uint64_t total_ticks = 0;         // the song's last tick ({tick-total})
+    SongMeter meter;                  // beat / measure totals; every frame's meter fields are filled
+    bool ok() const { return !frames.empty(); }
+};
+
+ScanResult process_streaming(const std::string& filename, const ScanOptions& opt,
+                             const ProgressCallbacks& cb = {});
 
 // Fills every frame's beat / measure fields from the time-signature records
 // in tempo_raw (see fmcg_engine.cpp) and returns the song totals. Called by

@@ -18,10 +18,12 @@ static std::vector<FrameStats> parse_full(const char* path, double fps,
                                           uint16_t& div, uint64_t& total,
                                           uint64_t& total_cc, bool vel0 = true) {
     ProgressCallbacks cb;
-    cb.cc_stats = true;
     cb.on_log = [](const char* msg, bool is_error) { fputs(msg, stdout); };
     total_cc = 0;
-    auto frames = ScaleMidiProcessor::process_midi(path, fps, div, total, vel0, cb);
+    const fmcg_stream::ScanResult scan1 = fmcg_stream::process_streaming(path, fmcg_stream::ScanOptions{fps, vel0}, cb);
+    auto frames = scan1.frames;
+    div = scan1.ppqn;
+    total = scan1.total_notes;
     if (!frames.empty()) total_cc = frames.back().cumulative_cc;
     return frames;
 }
@@ -160,7 +162,10 @@ int main(int argc, char** argv) {
     // --- invalid file returns empty ---
     {
         uint16_t div = 0; uint64_t total = 0;
-        auto frames = ScaleMidiProcessor::process_midi("notmidi.txt", 60.0, div, total, true);
+        const fmcg_stream::ScanResult scan2 = fmcg_stream::process_streaming("notmidi.txt", fmcg_stream::ScanOptions{60.0, true});
+        auto frames = scan2.frames;
+        div = scan2.ppqn;
+        total = scan2.total_notes;
         expect("notmidi frames", (long long)frames.size(), 0);
     }
 

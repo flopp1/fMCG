@@ -1009,14 +1009,36 @@ struct SpecAbort {};
 
 enum class ScanMode { ACCUMULATE, TEMPO_ONLY };
 
-// Stream-generic scanner (defined below); the layered dedup parses MIDI
-// regions through it.
-template <typename StreamT>
-static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickData& td,
-                        std::vector<TempoChange>& tempo_raw, uint16_t& out_division,
-                        const ProgressCallbacks& cb, ScanMode mode);
-
 namespace {
+// Where a track's per-tick totals go. parse_track_body batches the events of
+// one tick (pending registers) and hands each tick to the sink once:
+//   begin_track()                    before the track's first event
+//   commit(tick, ons, delta, cc)     one tick's note-ons, net polyphony delta, CC count
+//   end_track(final_tick)            after the held-note closure
+// Ticks arrive in non-decreasing order within a track. TickSink fills the
+// per-tick arrays (single-pass scans); FrameSink (two-pass fallback, below)
+// maps each tick straight to its video frame.
+struct TickSink {
+    static constexpr bool kSpecGuard = true;    // the 2^28 tick guard applies
+    static constexpr bool kDedup = true;        // track dedup may replay into td
+    static constexpr bool kWarnDataOor = true;  // first walk: warn about data bytes > 127
+    static constexpr bool kInlineFlush = false; // see parse_track_body's flush_pending
+    TickData& td;
+    void begin_track() {}
+    void commit(uint64_t t, uint64_t ons, int64_t delta, uint64_t cc) {
+        td.ensure(t);
+        if (ons)   td.cells[t].ons   += ons;
+        if (delta) td.cells[t].delta += delta;
+        if (cc) {
+            if (td.dense_cc.size() < td.cells.size()) td.dense_cc.resize(td.cells.size(), 0);
+            td.dense_cc[t] += cc;
+            td.total_cc += cc;
+        }
+        td.total_ons += ons;
+    }
+    void end_track(uint64_t t) { if (t > td.max_tick) td.max_tick = t; }
+};
+
 struct TrackBodyHooks {
     // Optional absolute-position reporting for the parallel scan's
     // prefetcher: at each 1M-event ping the body stores `pos_base +
@@ -1042,9 +1064,9 @@ struct TrackBodyHooks {
     const std::atomic<bool>* cancelled_flag = nullptr;
 };
 
-template <typename StreamT>
+template <typename StreamT, typename Sink>
 static uint64_t parse_track_body(StreamT& bs, bool accumulate, bool vel0_as_note_off,
-                                 TickData& td, std::vector<TempoChange>& tempo_raw,
+                                 Sink& sink_ref, std::vector<TempoChange>& tempo_raw,
                                  const ProgressCallbacks& cb, uint64_t spec_limit,
                                  const TrackBodyHooks& hooks,
                                  bool& data_oor, TrackSummary* sum) {
@@ -1070,6 +1092,11 @@ static uint64_t parse_track_body(StreamT& bs, bool accumulate, bool vel0_as_note
     uint64_t tick = 0;
     uint8_t running = 0;
     uint64_t refcount[16][128] = {};   // black-MIDI tracks hold huge numbers of overlapping instances of one note
+    // A local copy: sinks keep only references and per-track state, and a
+    // local the compiler can see whole stays in registers across the
+    // bucket writes (through the reference it was reloaded per event).
+    Sink sink = sink_ref;
+    if (accumulate) sink.begin_track();
 
     // ---- pending-tick registers (hot-path optimisation) ----------------
     // Black MIDIs stack thousands of events on the SAME tick via zero-delta
@@ -1085,7 +1112,8 @@ static uint64_t parse_track_body(StreamT& bs, bool accumulate, bool vel0_as_note
     uint64_t track_ev = 0;                  // events walked in THIS track (monotonic)
     uint64_t ping_at = 1000000;             // next event count that fires a ping
     uint64_t ping_last = 0;                 // track_ev at the previous ping
-    auto flush_pending = [&]() {
+    uint32_t burst_polls = 0;               // throttles the window-boundary cancel check
+    auto flush_body = [&]() __attribute__((always_inline)) {
         if (!has_pending) return;
         if (sum && (pend_delta || pend_ons || pend_cc)) {
             if (pend_ons || pend_delta) {
@@ -1099,17 +1127,16 @@ static uint64_t parse_track_body(StreamT& bs, bool accumulate, bool vel0_as_note
             }
             if (pend_cc)  { sum_add(rec.ccs, pend_tick, pend_cc); rec.cc += pend_cc; }
         }
-        if (!accumulate) { has_pending = false; pend_ons = 0; pend_delta = 0; pend_cc = 0; return; }
-        td.ensure(pend_tick);
-        if (pend_ons)   td.cells[pend_tick].ons   += pend_ons;
-        if (pend_delta) td.cells[pend_tick].delta += pend_delta;
-        if (pend_cc) {
-            if (td.dense_cc.size() < td.cells.size()) td.dense_cc.resize(td.cells.size(), 0);
-            td.dense_cc[pend_tick] += pend_cc;
-            td.total_cc += pend_cc;
-        }
-        td.total_ons += pend_ons;
+        if (accumulate) sink.commit(pend_tick, pend_ons, pend_delta, pend_cc);
         has_pending = false; pend_ons = 0; pend_delta = 0; pend_cc = 0;
+    };
+    // Inlined or called, per sink (Sink::kInlineFlush): inlining the frame
+    // sink's flush into the hot loop makes the two-pass walk ~15% faster,
+    // while inlining the tick sink's costs the single-pass walk ~10%
+    // (register pressure in the burst loop).
+    auto flush_call = [&]() __attribute__((noinline)) { flush_body(); };
+    auto flush_pending = [&]() __attribute__((always_inline)) {
+        if constexpr (Sink::kInlineFlush) flush_body(); else flush_call();
     };
 
     while (bs.at_end() == false) {
@@ -1200,8 +1227,10 @@ static uint64_t parse_track_body(StreamT& bs, bool accumulate, bool vel0_as_note
         // regardless of event density, so sparse tracks (huge delta-times,
         // <1M events total) still observe a cancel press promptly. The
         // per-1M-event check alone left the fallback standard parse of a
-        // 20GB declared track grinding for minutes after Cancel.
-        if (stop_cancelled()) {
+        // 20GB declared track grinding for minutes after Cancel. Every 64th
+        // pass only: on tracks whose deltas are all nonzero the burst ends
+        // after every event, and two atomic loads per event cost ~30% there.
+        if ((++burst_polls & 63) == 0 && stop_cancelled()) {
             bs.set_limit(0);   // force a clean EOF for the caller's accounting
             return track_ev;   // cancelled; caller reports
         }
@@ -1308,11 +1337,11 @@ static uint64_t parse_track_body(StreamT& bs, bool accumulate, bool vel0_as_note
     if (close_held)
     for (int ch = 0; ch < 16; ++ch)
         for (int n = 0; n < 128; ++n)
-            if (refcount[ch][n] > 0) {
-                rc_sum += refcount[ch][n];
-                if (accumulate) td.delta_at(tick, -(int64_t)refcount[ch][n]);
-            }
-    if (accumulate && tick > td.max_tick) td.max_tick = tick;
+            rc_sum += refcount[ch][n];
+    if (accumulate) {
+        if (rc_sum) sink.commit(tick, 0, -(int64_t)rc_sum, 0);
+        sink.end_track(tick);
+    }
     if (sum) {
         if (rc_sum) {
             if (!rec.cells.empty() && rec.cells.back().first == tick)
@@ -1356,8 +1385,11 @@ static uint64_t parse_track_body(StreamT& bs, bool accumulate, bool vel0_as_note
 // can never produce a false hit on a full-length candidate. The CALLER fills
 // rec.bytes/.hash/.events (it owns the chunk length and the returned count).
 // Returns the number of events walked in this track (including early exits).// ---- single sequential walk over the image (stream-generic) ------------------
-template <typename StreamT>
-static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickData& td,
+// `td` keeps the walk's counters (tracks, desyncs, events) and the dedup
+// store; `sink` receives the per-tick totals (TickSink{td} for the
+// single-pass scans).
+template <typename StreamT, typename Sink>
+static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickData& td, Sink& sink,
                         std::vector<TempoChange>& tempo_raw, uint16_t& out_division,
                         const ProgressCallbacks& cb, ScanMode mode) {
     const bool accumulate = (mode == ScanMode::ACCUMULATE);
@@ -1373,9 +1405,10 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
     uint64_t ev_count = 0;      // authoritative: full counts of completed tracks
     uint64_t ev_pinged = 0;     // live display: pinged prefix of the current track
     const uint64_t total_bytes = src.total_bytes();   // 0 = unknown fraction
-    const uint64_t spec_limit = cb.spec_tick_limit ? cb.spec_tick_limit : ((uint64_t)1 << 28);
+    const uint64_t spec_limit = !Sink::kSpecGuard ? UINT64_MAX
+                              : cb.spec_tick_limit ? cb.spec_tick_limit : ((uint64_t)1 << 28);
     bool spec_warned = false;              // one-shot: ask at most once per scan
-    bool data_oor = false;                 // one-shot: out-of-range data bytes seen
+    bool data_oor = !Sink::kWarnDataOor;   // one-shot: out-of-range data bytes seen
     auto note_data_oor = [&]() {
         if (!data_oor) {
             emit(cb, "  Warning: file contains note data bytes above 127 (invalid MIDI); "
@@ -1438,7 +1471,7 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
     // final summary can merge its records.
     TrackDataDedup* dedup_store = nullptr;
     uint64_t dedup_replayed_events = 0;             // events from replays (not walked)
-    if (accumulate && td.dedup_enabled) {
+    if (Sink::kDedup && accumulate && td.dedup_enabled) {
         dedup_store = &td.dedup;
         emit(cb, "  Track dedup enabled.\n");
     }
@@ -1472,6 +1505,27 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
         tracks_reported = now;
         cb.on_tracks(td.ntracks, 0);
     };
+    // Per-track hooks: live counter from the pinged prefix (the authoritative
+    // walked total is each body's return value; adding both double-counted
+    // every pinged event), per-1M-event cancel, and the spec-violation prompt.
+    auto make_hooks = [&]() {
+        TrackBodyHooks hooks;
+        hooks.cancelled_flag = cb.cancel_flag;
+        hooks.ping = [&](uint64_t n) {
+            ev_pinged += n;
+            ping();
+        };
+        hooks.spec_fire = [&](uint64_t at) -> bool {
+            if (spec_warned) return true;
+            const int choice = cb.on_spec_violation
+                ? cb.on_spec_violation(at, td.memory_bytes()) : 0;
+            if (choice == 2) { emit(cb, "  Cancelled.\n"); throw ScanCancelled{}; }
+            if (choice == 1) throw SpecAbort{};
+            spec_warned = true;
+            return true;
+        };
+        return hooks;
+    };
 
     while (true) {
         if (cb.cancel_flag && cb.cancel_flag->load(std::memory_order_relaxed)) {
@@ -1502,22 +1556,8 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
             // (nothing with this length exists in the store yet): parse
             // straight from the stream, exactly like dedup-off.
             if (seen_len.insert((uint64_t)len).second) {
-                TrackBodyHooks hooks;
-                hooks.cancelled_flag = cb.cancel_flag;   // per-1M-event stop
-                hooks.ping = [&](uint64_t n) {
-                    ev_pinged += n;
-                    ping();
-                };
-                hooks.spec_fire = [&](uint64_t at) -> bool {
-                    if (spec_warned) return true;
-                    const int choice = cb.on_spec_violation
-                        ? cb.on_spec_violation(at, td.memory_bytes()) : 0;
-                    if (choice == 2) { emit(cb, "  Cancelled.\n"); throw ScanCancelled{}; }
-                    if (choice == 1) throw SpecAbort{};
-                    spec_warned = true;
-                    return true;
-                };
-                ev_count += parse_track_body(bs, accumulate, vel0_as_note_off, td, tempo_raw,
+                const TrackBodyHooks hooks = make_hooks();
+                ev_count += parse_track_body(bs, accumulate, vel0_as_note_off, sink, tempo_raw,
                                              cb, spec_limit, hooks, data_oor, nullptr);
                 ev_pinged = 0;
                 td.ntracks++;
@@ -1535,22 +1575,8 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
             // track parses straight from the stream, byte-for-byte the same
             // as dedup-off (correctness is unaffected: it just never replays).
             if ((uint64_t)len > TrackDataDedup::kMaxCandidateBytes) {
-                TrackBodyHooks hooks;
-                hooks.cancelled_flag = cb.cancel_flag;   // per-1M-event stop
-                hooks.ping = [&](uint64_t n) {
-                    ev_pinged += n;
-                    ping();
-                };
-                hooks.spec_fire = [&](uint64_t at) -> bool {
-                    if (spec_warned) return true;
-                    const int choice = cb.on_spec_violation
-                        ? cb.on_spec_violation(at, td.memory_bytes()) : 0;
-                    if (choice == 2) { emit(cb, "  Cancelled.\n"); throw ScanCancelled{}; }
-                    if (choice == 1) throw SpecAbort{};
-                    spec_warned = true;
-                    return true;
-                };
-                ev_count += parse_track_body(bs, accumulate, vel0_as_note_off, td, tempo_raw,
+                const TrackBodyHooks hooks = make_hooks();
+                ev_count += parse_track_body(bs, accumulate, vel0_as_note_off, sink, tempo_raw,
                                              cb, spec_limit, hooks, data_oor, nullptr);
                 ev_pinged = 0;
                 td.ntracks++;
@@ -1602,26 +1628,8 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
                 rec.hash  = hash;
                 bool data_oor_local = data_oor;
                 RawStream tbs(bufp, got);
-                TrackBodyHooks hooks;
-                hooks.cancelled_flag = cb.cancel_flag;   // per-1M-event stop
-                hooks.ping = [&](uint64_t n) {
-                    // Live counter from the pinged prefix; the authoritative
-                    // walked total comes from the body's return value per
-                    // track (accumulating both double-counted every pinged
-                    // event).
-                    ev_pinged += n;
-                    ping();
-                };
-                hooks.spec_fire = [&](uint64_t at) -> bool {
-                    if (spec_warned) return true;
-                    const int choice = cb.on_spec_violation
-                        ? cb.on_spec_violation(at, td.memory_bytes()) : 0;
-                    if (choice == 2) { emit(cb, "  Cancelled.\n"); throw ScanCancelled{}; }
-                    if (choice == 1) throw SpecAbort{};
-                    spec_warned = true;
-                    return true;
-                };
-                rec.events = parse_track_body(tbs, accumulate, vel0_as_note_off, td, tempo_raw,
+                const TrackBodyHooks hooks = make_hooks();
+                rec.events = parse_track_body(tbs, accumulate, vel0_as_note_off, sink, tempo_raw,
                                               cb, spec_limit, hooks, data_oor_local, &rec);
                 ev_count += rec.events;   // walked events: same accounting as the ordinary path
                 ev_pinged = 0;            // this track's prefix is now in ev_count
@@ -1643,22 +1651,8 @@ static bool scan_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, TickDa
         // for tempo capture only (the shared body's `accumulate` flag keeps
         // every array write out).
         {
-            TrackBodyHooks hooks;
-            hooks.cancelled_flag = cb.cancel_flag;   // per-1M-event stop
-            hooks.ping = [&](uint64_t n) {
-                ev_pinged += n;
-                ping();
-            };
-            hooks.spec_fire = [&](uint64_t at) -> bool {
-                if (spec_warned) return true;
-                const int choice = cb.on_spec_violation
-                    ? cb.on_spec_violation(at, td.memory_bytes()) : 0;
-                if (choice == 2) { emit(cb, "  Cancelled.\n"); throw ScanCancelled{}; }
-                if (choice == 1) throw SpecAbort{};
-                spec_warned = true;
-                return true;
-            };
-            ev_count += parse_track_body(bs, accumulate, vel0_as_note_off, td, tempo_raw,
+            const TrackBodyHooks hooks = make_hooks();
+            ev_count += parse_track_body(bs, accumulate, vel0_as_note_off, sink, tempo_raw,
                                          cb, spec_limit, hooks, data_oor, nullptr);
             ev_pinged = 0;   // this track's prefix is now in ev_count
         }
@@ -2033,7 +2027,7 @@ struct FrameBuckets {
     uint64_t max_tick = 0;            // highest tick seen (song-horizon source)
     size_t nframes = 0;
 
-    void ensure(size_t fi) {
+    [[gnu::noinline]] void ensure(size_t fi) {
         if (fi >= nframes) {
             // Direct extent (plus geometric headroom), not pure doubling: a
             // huge frame index made every intermediate doubling re-copy the
@@ -2045,7 +2039,7 @@ struct FrameBuckets {
             nframes = n;
         }
     }
-    void fine_ensure(size_t bin) {
+    [[gnu::noinline]] void fine_ensure(size_t bin) {
         if (bin >= fons.size()) {
             size_t n = fons.size() ? fons.size() * 2 : 4096;
             if (n < bin + 1) n = bin + 1;
@@ -2062,298 +2056,128 @@ struct FrameBuckets {
         if (nbins < n * FMCG_FINE_BINS) nbins = n * FMCG_FINE_BINS;
     }
     // Note events are addressed by FINE bin; the frame index is bin/8.
-    void note_on(size_t bin)  { size_t fi = bin / FMCG_FINE_BINS; ensure(fi); ons[fi]++; deltas[fi]++; total_ons++; fine_ensure(bin); fons[bin]++; ffdeltas[bin]++; }
-    void note_off(size_t bin, uint64_t n = 1) { size_t fi = bin / FMCG_FINE_BINS; ensure(fi); deltas[fi] -= (int64_t)n; fine_ensure(bin); ffdeltas[bin] -= (int64_t)n; }
-    void add_cc(size_t fi)   { ensure(fi); cc[fi]++;     total_cc++; }
+    void add_notes(size_t bin, uint64_t n_ons, int64_t delta) {
+        const size_t fi = bin / FMCG_FINE_BINS;
+        if (__builtin_expect(fi >= nframes, 0)) ensure(fi);
+        ons[fi] += n_ons; deltas[fi] += delta; total_ons += n_ons;
+        if (__builtin_expect(bin >= fons.size(), 0)) fine_ensure(bin);
+        fons[bin] += n_ons; ffdeltas[bin] += delta;
+    }
+    void add_cc(size_t fi, uint64_t n) { if (fi >= nframes) ensure(fi); cc[fi] += n; total_cc += n; }
 };
 
-// Pass 2 walk: same event grammar as scan_stream, but events land in frame
-// buckets through the precomputed tempo map. Tick-space is never materialized.
-template <typename StreamT>
-static bool scan_frames_stream(StreamT& bs, DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
-                               const std::vector<TempoChange>& tm, uint16_t ppqn, double fps,
-                               const ProgressCallbacks& cb) {
-    const bool count_cc = true;
+// Pass-2 sink: each tick's totals go straight to the frame (CC) or fine bin
+// (notes) the tick falls in, through the complete tempo map from pass 1. The
+// frame formula is kept character-for-character identical to the original
+// per-event pass-2 walk,
+//   sec = tm[conv].time_sec + (t - tm[conv].tick)*us*inv; f = sec*fps,
+// so batching a tick's events changes no bin. The tempo segment is hoisted
+// into locals and only reloaded when the anchor moves.
+struct FrameSink {
+    static constexpr bool kSpecGuard = false;    // the whole point of this pass
+    static constexpr bool kDedup = false;
+    static constexpr bool kWarnDataOor = false;  // pass 1 already warned
+    static constexpr bool kInlineFlush = true;
+    FrameBuckets& fb;
+    const std::vector<TempoChange>& tm;
+    double inv, fps;
+    size_t conv = 0;
+    double seg_time = 0.0, seg_us = 0.0;
+    uint64_t tick_base = 0;
+    uint64_t seg_end = UINT64_MAX;     // first tick of the next tempo segment
+    // Cached fine bin: every tick in [bin_t0, bin_t1) maps to cur_bin. Within
+    // a tempo segment the bin formula is non-decreasing in the tick (each step
+    // -- integer to double, multiply by a positive constant, add -- is
+    // monotone under round-to-nearest), so once bin_of(c) == bin_of(t) for
+    // some c > t, every tick in between has that bin too. Black MIDIs put
+    // hundreds of ticks in one bin; this skips the FP work for all but one.
+    uint64_t bin_t0 = 1, bin_t1 = 0;   // empty
+    size_t cur_bin = 0;
 
-    using clock = std::chrono::steady_clock;
-    const clock::time_point t_start = clock::now();
-    uint64_t ev_total = 0, ev_count = 0;
-    const uint64_t total_bytes = src.total_bytes();
-
-    auto ping = [&]() {
-        if (!cb.on_scan_progress) return;
-        double el = std::chrono::duration<double>(clock::now() - t_start).count();
-        double frac = total_bytes > 0 ? (double)bs.bytes_pulled() / (double)total_bytes : -1.0;
-        cb.on_scan_progress(ev_total + ev_count, el,
-                            el > 0.0 ? (double)(ev_total + ev_count) / el : 0.0, frac);
-    };
-    uint64_t tracks_done = 0;
-    clock::time_point tracks_reported{};
-    auto report_tracks = [&](bool force) {
-        if (!cb.on_tracks) return;
-        const clock::time_point now = clock::now();
-        if (!force && now - tracks_reported < std::chrono::milliseconds(100)) return;
-        tracks_reported = now;
-        cb.on_tracks(tracks_done, 0);
-    };
-
-    auto rd32 = [&]() -> int64_t {
-        int a = bs.get(), b = bs.get(), c = bs.get(), d = bs.get();
-        if (a < 0 || b < 0 || c < 0 || d < 0) return -1;
-        return ((int64_t)a << 24) | ((int64_t)b << 16) | ((int64_t)c << 8) | (int64_t)d;
-    };
-
-    if (rd32() != 0x4D546864) {
-        emit(cb, "Error: not a MIDI file (missing MThd header).\n", true);
-        return false;
+    FrameSink(FrameBuckets& b, const std::vector<TempoChange>& t, uint16_t ppqn, double f)
+        : fb(b), tm(t), inv(1.0 / ((double)ppqn * 1e6)), fps(f) { load(); }
+    void load() {
+        seg_time  = tm.empty() ? 0.0 : tm[conv].time_sec;
+        seg_us    = tm.empty() ? 0.0 : (double)tm[conv].us_per_quarter;
+        tick_base = tm.empty() ? 0ull : tm[conv].tick;
+        seg_end   = conv + 1 < tm.size() ? tm[conv + 1].tick : UINT64_MAX;
+        bin_t0 = 1; bin_t1 = 0;
     }
-    int64_t hlen = rd32();
-    if (hlen < 0) { emit(cb, "Error: truncated MIDI header.\n", true); return false; }
-    int f2 = bs.get(), f1 = bs.get();
-    int n2 = bs.get(), n1 = bs.get();
-    int d2 = bs.get(), d1 = bs.get();
-    const bool mt_split = (d2 == 'M' && d1 == 'T');   // 12-byte MThd: 'MT' of the next tag
-    bool mt_pending = mt_split;
-    if (f2 < 0 || f1 < 0 || n2 < 0 || n1 < 0 || d2 < 0 || d1 < 0) {
-        emit(cb, "Error: truncated MIDI header.\n", true); return false;
+    void begin_track() { conv = 0; load(); }   // tick restarts at 0 per track
+    double sec_of(uint64_t t) const { return seg_time + (double)(t - tick_base) * seg_us * inv; }
+    size_t bin_of(uint64_t t) const {
+        const double f = sec_of(t) * fps * (double)FMCG_FINE_BINS;
+        return f <= 0.0 ? 0 : (size_t)(int64_t)f;   // f < 2^63: the signed conversion is one instruction
     }
-    if (hlen > 6) bs.skip((size_t)hlen - 6);
-
-    const double inv = 1.0 / ((double)ppqn * 1e6);
-    size_t conv = 0;   // tempo anchor walked forward with the events
-
-    // Segment state hoisted out of the hot path: the tempo segment changes
-    // rarely, so its fields are loaded into locals only when conv advances
-    // (instead of re-reading tm[conv] members per event). The frame formula
-    // is kept character-for-character identical to the original
-    //   sec = tm[conv].time_sec + (t - tm[conv].tick)*us*inv; f = sec*fps
-    // so results are bit-identical and frame boundaries cannot shift.
-    double seg_time = tm.empty() ? 0.0 : tm[0].time_sec;
-    double seg_us   = tm.empty() ? 0.0 : (double)tm[0].us_per_quarter;
-    uint64_t tick_base = tm.empty() ? 0ull : tm[0].tick;
-
-    auto advance_conv = [&](uint64_t t) {
-        bool moved = false;
-        while (conv + 1 < tm.size() && tm[conv + 1].tick <= t) { ++conv; moved = true; }
-        if (moved) {
-            seg_time  = tm[conv].time_sec;
-            seg_us    = (double)tm[conv].us_per_quarter;
-            tick_base = tm[conv].tick;
-        }
-    };
-
-    // Maps a tick to its frame index using the current segment; advance_conv
-    // must already have covered the tick (called in lockstep with the walk).
-    auto frame_of = [&](uint64_t t) -> size_t {
-        const double sec = seg_time + (double)(t - tick_base) * seg_us * inv;
-        double f = sec * fps;
-        return f <= 0.0 ? 0 : (size_t)f;
-    };
-    // Fine bin for note events (sub-frame peak resolution; bin/8 = frame).
-    auto fine_of = [&](uint64_t t) -> size_t {
-        const double sec = seg_time + (double)(t - tick_base) * seg_us * inv;
-        double f = sec * fps * (double)FMCG_FINE_BINS;
-        return f <= 0.0 ? 0 : (size_t)f;
-    };
-
-    while (true) {
-        if (cb.cancel_flag && cb.cancel_flag->load(std::memory_order_relaxed)) {
-            emit(cb, "  Cancelled.\n"); throw ScanCancelled{};
-        }
-        report_tracks(false);
-        int64_t tag;
-        if (mt_pending) {
-            mt_pending = false;
-            const int a = bs.get(), c = bs.get();
-            tag = (a < 0 || c < 0) ? -1 : (int64_t)(0x4D540000u | ((unsigned)a << 8) | (unsigned)c);
-        } else tag = rd32();
-        if (tag < 0) break;
-        int64_t len = rd32();
-        if (len < 0) { emit(cb, "Error: truncated chunk header.\n", true); return false; }
-        if (tag != 0x4D54726B) { bs.skip((size_t)len); continue; }
-
-        bs.set_limit((size_t)len);
-        uint64_t tick = 0;
-        uint8_t running = 0;
-        uint64_t refcount[16][128] = {};
-        // Tick restarts at 0 for each track: rewind the tempo anchor and its
-        // hoisted segment state with it.
-        conv = 0;
-        seg_time  = tm.empty() ? 0.0 : tm[0].time_sec;
-        seg_us    = tm.empty() ? 0.0 : (double)tm[0].us_per_quarter;
-        tick_base = tm.empty() ? 0ull : tm[0].tick;
-
-        while (bs.at_end() == false) {
-            tick += bs.vlq();
-            advance_conv(tick);
-#ifndef FMCG_NO_BURST
-            // ---- pointer-batched fast path --------------------------------
-            // Consumes a run of ordinary two-data-byte channel events chained
-            // by zero deltas, straight from the stream's own buffer (bounds
-            // and state checks once per burst instead of per byte). Deltas --
-            // including the zero ones chaining the run -- always stay in the
-            // stream: this block never touches `tick`; the byte-wise code
-            // below remains the sole owner of time and of every edge case.
-            // The run stops at the first event it cannot fully classify
-            // (meta/system family, 1-data-byte message, or a window tail
-            // without both data bytes); that event is then handled by the
-            // normal slow path via fall-through.
-            bool burst_at_event = false;   // stopped on an unclassified event?
-            {
-                size_t win = bs.acquire_window();
-                const uint8_t* p = bs.fast_p;
-                const uint8_t* const pend = bs.fast_p + win;
-                while (p < pend) {
-                    const uint8_t* q = p;                  // classification cursor
-                    uint8_t status;
-                    bool explicit_status = false;
-                    if (__builtin_expect(*q < 0x80, 1)) {
-                        status = running;                  // running status
-                    } else {
-                        status = *q++;                     // explicit status byte
-                        explicit_status = true;
-                    }
-                    if (__builtin_expect(status < 0x80, 0)) { burst_at_event = true; break; }   // running == 0
-                    const uint8_t et = status & 0xF0;
-                    if (__builtin_expect(et == 0xC0 || et == 0xD0, 0)) { burst_at_event = true; break; }
-                    if (__builtin_expect(et != 0x80 && et != 0x90 && et != 0xA0 && et != 0xB0 && et != 0xE0, 0)) {
-                        burst_at_event = true; break;      // meta/system family
-                    }
-                    if (pend - q < 2) { burst_at_event = true; break; }    // both data bytes must be in-window
-                    uint8_t n1 = *q++;
-                    const uint8_t n2 = *q++;
-                    p = q;                                 // event fully consumed
-                    if (explicit_status) running = status; // 0xFx never reaches here
-                    if (n1 > 0x7F) n1 &= 0x7F;   // invalid data byte: clamp (protects refcount[16][128])
-                    if (et == 0x90 && (n2 > 0 || !vel0_as_note_off)) {
-                        refcount[status & 0x0F][n1]++;
-                        fb.note_on(fine_of(tick));
-                    } else if (et == 0x90 || et == 0x80) {
-                        if (refcount[status & 0x0F][n1] > 0) {
-                            refcount[status & 0x0F][n1]--;
-                            fb.note_off(fine_of(tick));
-                        }
-                    } else if (et == 0xB0 && count_cc) {
-                        fb.add_cc(frame_of(tick));
-                    }
-                    // 0xA0/0xE0 and uncounted CC consume 3 bytes, touch nothing.
-                    if (++ev_count >= 1000000) {
-                        ev_count = 0;
-                        ev_total += 1000000;
-                        ping();
-                        if (cb.cancel_flag && cb.cancel_flag->load()) {
-                            bs.commit_window(p - bs.fast_p);
-                            emit(cb, "  Cancelled.\n");
-                            return false;
-                        }
-                    }
-                    if (p == pend) break;                  // window boundary: delta beyond it
-                    if (*p != 0) break;                    // nonzero delta: loop top reads it
-                    ++p;                                   // zero delta: consume it and chain
-                    if (p == pend) {                       // delta eaten but its event is beyond
-                        burst_at_event = true;             // the window: hand the event to the
-                        break;                             // slow path (a zero delta adds no tick)
-                    }
-                }
-                bs.commit_window(p - bs.fast_p);
-            }
-            if (!burst_at_event) continue;   // stream sits at a delta: back to loop top
-            // Fall through: the event at the stream head goes through the slow path.
-#endif   // FMCG_NO_BURST
-            // Peek-based running-status handling (mirrors parse_track_body).
-            int st = bs.peek();
-            if (st < 0) break;
-            uint8_t status;
-            if (st < 0x80) { status = running; }
-            else { bs.get(); status = (uint8_t)st; running = (status < 0xF0) ? status : (status >= 0xF8 && status != 0xFF) ? running : 0; }
-
-            if (status >= 0xF0) {
-                if (status == 0xFF) {
-                    int type = bs.get();
-                    if (type < 0) break;
-                    uint64_t mlen = bs.vlq();
-                    bs.skip((size_t)mlen);   // tempo map is already complete
-                } else if (status == 0xF0 || status == 0xF7) {
-                    bs.skip((size_t)bs.vlq());
-                } else if (status >= 0xF1 && status <= 0xF6) {
-                    if (status == 0xF1 || status == 0xF3) bs.skip(1);
-                    else if (status == 0xF2) bs.skip(2);
-                }
-            } else if (status >= 0x80) {
-                uint8_t et = status & 0xF0;
-                int n1e = bs.get();
-                if (n1e < 0) break;
-                if (et != 0xC0 && et != 0xD0) {
-                    int n2e = bs.get();
-                    if (n2e < 0) break;
-                    uint8_t ch = status & 0x0F, note = (uint8_t)n1e, vel = (uint8_t)n2e;
-                    if (note > 0x7F) note &= 0x7F;   // invalid data byte: clamp (protects refcount[16][128])
-                    if (et == 0x90 && (vel > 0 || !vel0_as_note_off)) {
-                        refcount[ch][note]++;
-                        fb.note_on(fine_of(tick));
-                    } else if (et == 0x90 || et == 0x80) {
-                        if (refcount[ch][note] > 0) { refcount[ch][note]--;                             fb.note_off(fine_of(tick)); }
-                    } else if (et == 0xB0 && count_cc) {
-                        fb.add_cc(frame_of(tick));
-                    }
-                }
-            }
-
-            if (++ev_count >= 1000000) {
-                ev_count = 0;
-                ev_total += 1000000;
-                ping();
-                if (cb.cancel_flag && cb.cancel_flag->load()) {
-                    emit(cb, "  Cancelled.\n");
-                    return false;
-                }
-            }
-        }
-
-        // Held notes close at the track's final tick (every held instance,
-        // like the single-pass closure).
-        if (close_held_notes())
-        for (int ch = 0; ch < 16; ++ch)
-            for (int n = 0; n < 128; ++n)
-                if (refcount[ch][n] > 0) fb.note_off(fine_of(tick), refcount[ch][n]);
-        if (tick > fb.max_tick) fb.max_tick = tick;
-
-        size_t consumed = bs.consumed();
-        bs.set_limit((size_t)-1);
-        if (consumed < (size_t)len) bs.skip((size_t)len - consumed);
-        ++tracks_done;
+    [[gnu::noinline]] size_t note_bin_slow(uint64_t t) {
+        const size_t b = bin_of(t);
+        // Predicted last tick of bin b (inverse formula), clamped to the segment, then verified.
+        const double d = ((double)(b + 1) / (fps * (double)FMCG_FINE_BINS) - seg_time) / (seg_us * inv);
+        uint64_t c = t;
+        if (d > (double)(t - tick_base) + 1.0)
+            c = d >= 1.8e19 ? UINT64_MAX : tick_base + (uint64_t)d - 1;
+        if (c >= seg_end) c = seg_end - 1;
+        if (c < t) c = t;
+        for (int k = 0; k < 4 && c > t && bin_of(c) != b; ++k) c = t + (c - t) / 2;
+        if (bin_of(c) != b) c = t;
+        cur_bin = b; bin_t0 = t; bin_t1 = c + 1;
+        return b;
     }
-
-    ping();
-    report_tracks(true);
-    fb.total_events_seen = ev_total + ev_count;   // identical metric to the live pings
-    return true;
-}
+    size_t note_bin(uint64_t t) {
+        const size_t b = (t >= bin_t0 && t < bin_t1) ? cur_bin : note_bin_slow(t);
+#ifdef FMCG_CHECK_BINS
+        if (b != bin_of(t)) { fprintf(stderr, "FrameSink bin cache mismatch at tick %llu\n", (unsigned long long)t); abort(); }
+#endif
+        return b;
+    }
+    [[gnu::always_inline]] inline void commit(uint64_t t, uint64_t n_ons, int64_t delta, uint64_t cc) {
+        if (t >= seg_end) {
+            while (conv + 1 < tm.size() && tm[conv + 1].tick <= t) ++conv;
+            load();
+        }
+        if (n_ons || delta) fb.add_notes(note_bin(t), n_ons, delta);
+        if (cc) {
+            const double f = sec_of(t) * fps;
+            fb.add_cc(f <= 0.0 ? 0 : (size_t)(int64_t)f, cc);
+        }
+    }
+    void end_track(uint64_t t) { if (t > fb.max_tick) fb.max_tick = t; }
+};
 
 // ---- dispatch: raw mmap walk when the source exposes an image -----------------
+
+template <typename Sink>
+static bool scan_any(DataSrc& src, bool vel0_as_note_off, TickData& td, Sink& sink,
+                     std::vector<TempoChange>& tempo_raw, uint16_t& out_division,
+                     const ProgressCallbacks& cb, ScanMode mode) {
+    size_t n = 0;
+    if (const uint8_t* img = src.image(n); img && n > 0) {
+        RawStream bs(img, n);
+        return scan_stream(bs, src, vel0_as_note_off, td, sink, tempo_raw, out_division, cb, mode);
+    }
+    ByteStream bs(src);
+    return scan_stream(bs, src, vel0_as_note_off, td, sink, tempo_raw, out_division, cb, mode);
+}
 
 static bool scan_any(DataSrc& src, bool vel0_as_note_off, TickData& td,
                      std::vector<TempoChange>& tempo_raw, uint16_t& out_division,
                      const ProgressCallbacks& cb, ScanMode mode = ScanMode::ACCUMULATE) {
-    size_t n = 0;
-    if (const uint8_t* img = src.image(n); img && n > 0) {
-        RawStream bs(img, n);
-        return scan_stream(bs, src, vel0_as_note_off, td, tempo_raw, out_division, cb, mode);
-    }
-    ByteStream bs(src);
-    return scan_stream(bs, src, vel0_as_note_off, td, tempo_raw, out_division, cb, mode);
+    TickSink sink{td};
+    return scan_any(src, vel0_as_note_off, td, sink, tempo_raw, out_division, cb, mode);
 }
 
+// Pass 2 of the two-pass fallback: the same walk, events bucketed by frame.
 static bool scan_any_frames(DataSrc& src, bool vel0_as_note_off, FrameBuckets& fb,
                             const std::vector<TempoChange>& tm, uint16_t ppqn, double fps,
                             const ProgressCallbacks& cb) {
-    size_t n = 0;
-    if (const uint8_t* img = src.image(n); img && n > 0) {
-        RawStream bs(img, n);
-        return scan_frames_stream(bs, src, vel0_as_note_off, fb, tm, ppqn, fps, cb);
-    }
-    ByteStream bs(src);
-    return scan_frames_stream(bs, src, vel0_as_note_off, fb, tm, ppqn, fps, cb);
+    TickData counters;                     // tracks / events; no tick arrays
+    std::vector<TempoChange> tempo_again;  // pass 1 already has the map
+    uint16_t division = ppqn;
+    FrameSink sink(fb, tm, ppqn, fps);
+    const bool ok = scan_any(src, vel0_as_note_off, counters, sink, tempo_again, division, cb,
+                             ScanMode::ACCUMULATE);
+    fb.total_events_seen = counters.total_events_seen;
+    return ok;
 }
 
 // Convert frame buckets to FrameStats. Pass-1-style semantics: running sums
@@ -2634,8 +2458,9 @@ static uint64_t parse_track_range(const uint8_t* img, const std::vector<TrackSpa
             rec.bytes = (uint64_t)spans[i].len;
             rec.hash  = hash;
             RawStream bs(img + spans[i].off, (size_t)spans[i].len);
+            TickSink ts{td};
             rec.events = parse_track_body(bs, /*accumulate=*/true, vel0_as_note_off,
-                                          td, tempo_raw, cb, spec_limit, hooks,
+                                          ts, tempo_raw, cb, spec_limit, hooks,
                                           data_oor_local, &rec);
             events += rec.events;   // walked events count like every other parse
             rec.desync = ((size_t)bs.consumed() < (size_t)spans[i].len);
@@ -2650,8 +2475,9 @@ static uint64_t parse_track_range(const uint8_t* img, const std::vector<TrackSpa
         }
 
         RawStream bs(img + spans[i].off, (size_t)spans[i].len);
+        TickSink ts{td};
         const uint64_t walked = parse_track_body(bs, /*accumulate=*/true, vel0_as_note_off,
-                                                 td, tempo_raw, cb, spec_limit, hooks,
+                                                 ts, tempo_raw, cb, spec_limit, hooks,
                                                  data_oor_local, nullptr);
         events += walked;
         if (ev_pub) ev_pub->fetch_add(walked - pub_track, std::memory_order_relaxed);
@@ -2981,16 +2807,18 @@ static bool filtered_7z(const std::string& filename) {
     return hit;
 }
 
-std::vector<FrameStats> process_streaming(
-    const std::string& filename, double fps, uint16_t& out_division,
-    uint64_t& out_total_notes, bool vel0_as_note_off, uint64_t& out_total_ticks,
-    const ProgressCallbacks& cb, double end_delay, int parse_threads,
-    bool track_dedup, bool layered_dedup, bool risky_dedup, SongMeter* out_meter)
+ScanResult process_streaming(const std::string& filename, const ScanOptions& opt,
+                             const ProgressCallbacks& cb)
 {
     using clock = std::chrono::steady_clock;
-    if (out_meter) *out_meter = SongMeter{};
-    out_total_notes = 0;
-    out_total_ticks = 0;
+    const double fps = opt.fps, end_delay = opt.end_delay;
+    const bool vel0_as_note_off = opt.vel0_as_note_off;
+    const int parse_threads = opt.parse_threads;
+    const bool track_dedup = opt.track_dedup, layered_dedup = opt.layered_dedup, risky_dedup = opt.risky_dedup;
+    ScanResult res;
+    uint16_t& out_division = res.ppqn;
+    uint64_t& out_total_notes = res.total_notes;
+    uint64_t& out_total_ticks = res.total_ticks;
     const bool compressed = is_compressed_file(filename);
     const bool cj_name = has_cjcmcg_name(filename);   // CJCMCG preprocessed file (by name)
     emit(cb, "Reading and parsing \"" + filename + "\"" + (compressed ? " (compressed)" : "") + "...\n");
@@ -3290,9 +3118,9 @@ std::vector<FrameStats> process_streaming(
         }
         st << ", " << std::setprecision(2) << t_sweep_s << "s sweep\n";
         emit(cb, st.str());
-        const SongMeter meter = apply_meter(frames, tempo_raw, out_division, out_total_ticks);
-        if (out_meter) *out_meter = meter;
-        return frames;
+        res.meter = apply_meter(frames, tempo_raw, out_division, out_total_ticks);
+        res.frames = std::move(frames);
+        return res;
     } catch (const ScanCancelled&) {
         // Cancel fired inside the layered walk / scan / sweep. Without this
         // handler the empty-struct exception escaped process_streaming

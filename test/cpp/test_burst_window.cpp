@@ -53,7 +53,11 @@ int main() {
 
     ProgressCallbacks cb;   // no spec callback: tick 64 is far under the limit
     uint16_t div = 0; uint64_t notes = 0, ticks = 0;
-    auto frames = ScaleMidiProcessor::process_midi(path, 60.0, div, notes, true, ticks, cb);
+    const fmcg_stream::ScanResult scan1 = fmcg_stream::process_streaming(path, fmcg_stream::ScanOptions{60.0, true}, cb);
+    auto frames = scan1.frames;
+    div = scan1.ppqn;
+    notes = scan1.total_notes;
+    ticks = scan1.total_ticks;
 
     check("notes counted", (long long)notes, (long long)pairs);
     check("total ticks", (long long)ticks, (long long)last_tick);

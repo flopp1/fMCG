@@ -70,7 +70,10 @@ static void run(const char* label, const std::vector<uint8_t>& mid) {
 
     auto t0 = std::chrono::steady_clock::now();
     uint64_t notes = 0; uint16_t div = 0;
-    auto frames = ScaleMidiProcessor::process_midi(name, 60.0, div, notes, true, cb);
+    const fmcg_stream::ScanResult scan1 = fmcg_stream::process_streaming(name, fmcg_stream::ScanOptions{60.0, true}, cb);
+    auto frames = scan1.frames;
+    div = scan1.ppqn;
+    notes = scan1.total_notes;
     double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     remove(name);
 

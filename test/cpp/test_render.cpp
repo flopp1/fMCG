@@ -36,7 +36,11 @@ int main(int argc, char** argv) {
     uint16_t ppqn = 0;
     uint64_t notes = 0, ticks = 0;
     const double fps = 30.0;
-    std::vector<FrameStats> frames = fmcg_stream::process_streaming(midi, fps, ppqn, notes, true, ticks, cb, 0.5);
+    const fmcg_stream::ScanResult scan1 = fmcg_stream::process_streaming(midi, fmcg_stream::ScanOptions{fps, true, 0.5}, cb);
+    std::vector<FrameStats> frames = scan1.frames;
+    ppqn = scan1.ppqn;
+    notes = scan1.total_notes;
+    ticks = scan1.total_ticks;
     check("engine processed " + midi, !frames.empty());
     if (frames.empty()) return 1;
 

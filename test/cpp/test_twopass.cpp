@@ -13,7 +13,10 @@ int main(int argc, char** argv) {
     // Single pass (no spec callback => proceed silently).
     ProgressCallbacks cb1;
     uint16_t div1 = 0; uint64_t notes1 = 0;
-    auto single = ScaleMidiProcessor::process_midi(path, 60.0, div1, notes1, true, cb1);
+    const fmcg_stream::ScanResult scan1 = fmcg_stream::process_streaming(path, fmcg_stream::ScanOptions{60.0, true}, cb1);
+    auto single = scan1.frames;
+    div1 = scan1.ppqn;
+    notes1 = scan1.total_notes;
     printf("single-pass: %zu frames, %llu notes\n", single.size(), (unsigned long long)notes1);
 
     // Two pass: threshold at tick 1, callback answers "restart in two-pass".
@@ -21,7 +24,10 @@ int main(int argc, char** argv) {
     cb2.spec_tick_limit = 1;
     cb2.on_spec_violation = [](uint64_t, size_t) { return 1; };   // two-pass
     uint16_t div2 = 0; uint64_t notes2 = 0;
-    auto two = ScaleMidiProcessor::process_midi(path, 60.0, div2, notes2, true, cb2);
+    const fmcg_stream::ScanResult scan2 = fmcg_stream::process_streaming(path, fmcg_stream::ScanOptions{60.0, true}, cb2);
+    auto two = scan2.frames;
+    div2 = scan2.ppqn;
+    notes2 = scan2.total_notes;
     printf("two-pass:    %zu frames, %llu notes\n", two.size(), (unsigned long long)notes2);
 
     if (single.empty() || two.empty()) { printf("FAIL: a parse returned empty\n"); return 1; }

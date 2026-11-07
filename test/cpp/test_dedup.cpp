@@ -81,9 +81,11 @@ static RunResult run(const std::string& path, int parse_threads, bool dedup) {
     RunResult r;
     ProgressCallbacks cb;
     cb.on_log = [&r](const char* msg, bool) { r.log += msg; };
-    r.frames = ScaleMidiProcessor::process_midi(path, 60.0, r.ppqn, r.notes,
-                                                /*vel0_as_note_off=*/true, r.ticks,
-                                                cb, /*end_delay=*/0.0, parse_threads, dedup);
+    const fmcg_stream::ScanResult scan1 = fmcg_stream::process_streaming(path, fmcg_stream::ScanOptions{60.0, true, 0.0, parse_threads, dedup}, cb);
+    r.frames = scan1.frames;
+    r.ppqn = scan1.ppqn;
+    r.notes = scan1.total_notes;
+    r.ticks = scan1.total_ticks;
     r.ok = !r.frames.empty();
     return r;
 }

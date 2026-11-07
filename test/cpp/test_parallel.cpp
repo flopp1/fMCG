@@ -99,9 +99,11 @@ struct RunResult {
 static RunResult run(const std::string& path, int parse_threads) {
     RunResult r;
     ProgressCallbacks cb;   // no callbacks: spec guard proceeds silently
-    r.frames = ScaleMidiProcessor::process_midi(path, 60.0, r.ppqn, r.notes,
-                                                /*vel0_as_note_off=*/true, r.ticks,
-                                                cb, /*end_delay=*/0.0, parse_threads);
+    const fmcg_stream::ScanResult scan1 = fmcg_stream::process_streaming(path, fmcg_stream::ScanOptions{60.0, true, 0.0, parse_threads}, cb);
+    r.frames = scan1.frames;
+    r.ppqn = scan1.ppqn;
+    r.notes = scan1.total_notes;
+    r.ticks = scan1.total_ticks;
     r.ok = !r.frames.empty();
     return r;
 }
@@ -249,7 +251,11 @@ int main() {
         cb.spec_tick_limit = 1 << 12;                    // tiny: every track crosses it
         cb.on_spec_violation = [&](uint64_t, size_t) -> int { prompts++; return 0; };
         uint16_t ppqn; uint64_t notes, ticks;
-        auto f_proceed = ScaleMidiProcessor::process_midi(path, 60.0, ppqn, notes, true, ticks, cb, 0.0, 4);
+        const fmcg_stream::ScanResult scan2 = fmcg_stream::process_streaming(path, fmcg_stream::ScanOptions{60.0, true, 0.0, 4}, cb);
+        auto f_proceed = scan2.frames;
+        ppqn = scan2.ppqn;
+        notes = scan2.total_notes;
+        ticks = scan2.total_ticks;
         check("spec prompt: proceed (asked once)", prompts == 1 && !f_proceed.empty());
 
         int prompts2 = 0;
@@ -257,7 +263,11 @@ int main() {
         cb2.spec_tick_limit = 1 << 12;
         cb2.on_spec_violation = [&](uint64_t, size_t) -> int { prompts2++; return 1; };   // two-pass
         uint16_t ppqn2; uint64_t notes2, ticks2;
-        auto f_2pass = ScaleMidiProcessor::process_midi(path, 60.0, ppqn2, notes2, true, ticks2, cb2, 0.0, 4);
+        const fmcg_stream::ScanResult scan3 = fmcg_stream::process_streaming(path, fmcg_stream::ScanOptions{60.0, true, 0.0, 4}, cb2);
+        auto f_2pass = scan3.frames;
+        ppqn2 = scan3.ppqn;
+        notes2 = scan3.total_notes;
+        ticks2 = scan3.total_ticks;
         check("spec prompt: two-pass restart", prompts2 == 1 && !f_2pass.empty());
 
         // Proceed-parallel and sequential-with-proceed must agree.
@@ -266,7 +276,11 @@ int main() {
         cb3.spec_tick_limit = 1 << 12;
         cb3.on_spec_violation = [&](uint64_t, size_t) -> int { prompts3++; return 0; };
         uint16_t ppqn3; uint64_t notes3, ticks3;
-        auto f_seq = ScaleMidiProcessor::process_midi(path, 60.0, ppqn3, notes3, true, ticks3, cb3, 0.0, 1);
+        const fmcg_stream::ScanResult scan4 = fmcg_stream::process_streaming(path, fmcg_stream::ScanOptions{60.0, true, 0.0, 1}, cb3);
+        auto f_seq = scan4.frames;
+        ppqn3 = scan4.ppqn;
+        notes3 = scan4.total_notes;
+        ticks3 = scan4.total_ticks;
         check("spec proceed: parallel == sequential",
               notes == notes3 && ticks == ticks3 && frames_repr(f_proceed) == frames_repr(f_seq));
     }
@@ -314,7 +328,11 @@ int main() {
                 return 1;
             };
             uint16_t ppqn; uint64_t notes, ticks;
-            auto f = ScaleMidiProcessor::process_midi(path, 60.0, ppqn, notes, true, ticks, cb, 0.0, threads);
+            const fmcg_stream::ScanResult scan5 = fmcg_stream::process_streaming(path, fmcg_stream::ScanOptions{60.0, true, 0.0, threads}, cb);
+            auto f = scan5.frames;
+            ppqn = scan5.ppqn;
+            notes = scan5.total_notes;
+            ticks = scan5.total_ticks;
             char name[80];
             snprintf(name, sizeof name, "two-pass cancel aborts cleanly (threads=%d)", threads);
             check(name, f.empty());
@@ -338,7 +356,11 @@ int main() {
         cb.cancel_flag = &cancel;
         uint16_t ppqn; uint64_t notes, ticks;
         std::thread kick([&]() { std::this_thread::sleep_for(std::chrono::milliseconds(30)); cancel.store(true); });
-        auto f = ScaleMidiProcessor::process_midi(path, 60.0, ppqn, notes, true, ticks, cb, 0.0, 4);
+        const fmcg_stream::ScanResult scan6 = fmcg_stream::process_streaming(path, fmcg_stream::ScanOptions{60.0, true, 0.0, 4}, cb);
+        auto f = scan6.frames;
+        ppqn = scan6.ppqn;
+        notes = scan6.total_notes;
+        ticks = scan6.total_ticks;
         kick.join();
         check("cancel aborts parallel scan", f.empty());
     }
@@ -366,7 +388,11 @@ int main() {
         uint16_t ppqn; uint64_t notes, ticks;
         std::thread kick([&]() { std::this_thread::sleep_for(std::chrono::milliseconds(100)); cancel.store(true); });
         auto t0 = std::chrono::steady_clock::now();
-        auto f = ScaleMidiProcessor::process_midi(path, 60.0, ppqn, notes, true, ticks, cb, 0.0, 1);
+        const fmcg_stream::ScanResult scan7 = fmcg_stream::process_streaming(path, fmcg_stream::ScanOptions{60.0, true, 0.0, 1}, cb);
+        auto f = scan7.frames;
+        ppqn = scan7.ppqn;
+        notes = scan7.total_notes;
+        ticks = scan7.total_ticks;
         double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         kick.join();
         check("cancel aborts long sweep", f.empty() && wall < 10.0);

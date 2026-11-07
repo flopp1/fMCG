@@ -148,9 +148,10 @@ struct Result {
 static Result parse(const char* path, double fps, bool vel0_as_note_off, bool cc) {
     Result r;
     ProgressCallbacks cb;
-    cb.cc_stats = cc;
-    r.frames = ScaleMidiProcessor::process_midi(path, fps, r.division, r.notes,
-                                                vel0_as_note_off, cb);
+    const fmcg_stream::ScanResult scan1 = fmcg_stream::process_streaming(path, fmcg_stream::ScanOptions{fps, vel0_as_note_off}, cb);
+    r.frames = scan1.frames;
+    r.division = scan1.ppqn;
+    r.notes = scan1.total_notes;
     char buf[64];
     for (const auto& f : r.frames) {
         std::snprintf(buf, sizeof buf, "|%llu,%lld,%lld,%.9f,%.9f",

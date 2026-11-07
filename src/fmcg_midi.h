@@ -1,5 +1,5 @@
 // fmcg_midi.h -- MIDI data model, compressed-format detection, buffered/mmap
-// binary reader, and the ScaleMidiProcessor facade.
+// binary reader.
 #pragma once
 #include <string>
 #include <cstdint>
@@ -83,8 +83,6 @@ struct ProgressCallbacks {
     // layered dedup walk folds repeats out of order and reports its exact total
     // in the log at the end instead.
     std::function<void(uint64_t done, uint64_t total)> on_tracks;
-    // CC events are always counted (kept for source compatibility; ignored).
-    bool cc_stats = true;
     // Set (from another thread) to abort the scan at the next progress ping.
     std::atomic<bool>* cancel_flag = nullptr;
     // MIDI spec guard: a running tick beyond the 28-bit VLQ range (1 << 28)
@@ -137,25 +135,6 @@ public:
     // Asynchronous readahead for sequential scans (Win32 PrefetchVirtualMemory
     // / POSIX madvise). Best-effort: failure is silently ignored.
     void prefetch(size_t offset, size_t len);
-};
-
-// MIDI Processor -- routes all inputs through the single-pass streaming engine.
-class ScaleMidiProcessor {
-public:
-    // Preferred form: also reports the song's total tick count ({tick-total}).
-    // parse_threads: 0/1 = sequential walk; >=2 parallelizes per-track parsing
-    // of plain (uncompressed) files (compressed inputs ignore it).
-    static std::vector<FrameStats> process_midi(
-        const std::string& filename, double fps, uint16_t& out_division,
-        uint64_t& out_total_notes, bool vel0_as_note_off,
-        uint64_t& out_total_ticks, const ProgressCallbacks& cb = {},
-        double end_delay = 0.0, int parse_threads = 0, bool track_dedup = false,
-        bool layered_dedup = false, bool risky_dedup = false, SongMeter* out_meter = nullptr);
-    // Back-compat form used by tests/benchmarks (total ticks not reported).
-    static std::vector<FrameStats> process_midi(
-        const std::string& filename, double fps, uint16_t& out_division,
-        uint64_t& out_total_notes, bool vel0_as_note_off = true,
-        const ProgressCallbacks& cb = {});
 };
 
 // Formatting helper needed by the engine's stats line (defined in fmcg_util).

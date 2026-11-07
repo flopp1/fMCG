@@ -65,10 +65,6 @@ void run_process(GuiSettings s) {
         };
     }
 
-    uint16_t ppqn = 480;
-    uint64_t total_notes = 0;
-    uint64_t total_ticks = 0;
-    SongMeter meter;
 
     ProgressCallbacks cb;
     cb.on_progress = [](const char* pass, int percent) { g_app.gui_progress(pass, percent); };
@@ -111,11 +107,16 @@ void run_process(GuiSettings s) {
     app.gui_log(("Processing MIDI: " + s.midi_file + "...").c_str(), false);
 
     fmcg_stream::set_close_held_notes(s.close_held_notes);
-    auto frames = ScaleMidiProcessor::process_midi(s.midi_file, s.fps, ppqn, total_notes,
-                                                    s.vel0_note_off, total_ticks, cb, s.end_delay,
-                                                    s.parse_threads, s.dedup_mode == 1,
-                                                    s.dedup_mode == 2, s.dedup_mode == 2 && s.risky_dedup,
-                                                    &meter);
+    fmcg_stream::ScanOptions opt;
+    opt.fps = s.fps;
+    opt.vel0_as_note_off = s.vel0_note_off;
+    opt.end_delay = s.end_delay;
+    opt.parse_threads = s.parse_threads;
+    opt.track_dedup = s.dedup_mode == 1;
+    opt.layered_dedup = s.dedup_mode == 2;
+    opt.risky_dedup = s.dedup_mode == 2 && s.risky_dedup;
+    fmcg_stream::ScanResult scan = fmcg_stream::process_streaming(s.midi_file, opt, cb);
+    std::vector<FrameStats>& frames = scan.frames;
     if (spec_prompt_used) {
         app.spec_prompt_open.store(false);
         app.spec_choice.store(-1);
@@ -140,10 +141,10 @@ void run_process(GuiSettings s) {
     app.fps = s.fps;
     app.vid_width = s.width;
     app.vid_height = s.height;
-    app.ppqn = ppqn;
-    app.total_notes = total_notes;
-    app.total_ticks = total_ticks;
-    app.meter = meter;
+    app.ppqn = scan.ppqn;
+    app.total_notes = scan.total_notes;
+    app.total_ticks = scan.total_ticks;
+    app.meter = scan.meter;
     app.start_delay = s.start_delay;
     app.end_delay = s.end_delay;
     app.preview_commas = s.commas;

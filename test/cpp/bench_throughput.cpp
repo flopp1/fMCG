@@ -84,7 +84,10 @@ int main(int argc, char** argv) {
         ProgressCallbacks cb;
         uint16_t div = 0; uint64_t notes = 0;
         auto t0 = clock_::now();
-        auto frames = ScaleMidiProcessor::process_midi(out_path, 60.0, div, notes, true, cb);
+        const fmcg_stream::ScanResult scan1 = fmcg_stream::process_streaming(out_path, fmcg_stream::ScanOptions{60.0, true}, cb);
+        auto frames = scan1.frames;
+        div = scan1.ppqn;
+        notes = scan1.total_notes;
         double s = std::chrono::duration<double>(clock_::now() - t0).count();
         printf("single pass: %.2fs  ->  %.0f events/s  (%llu notes, %zu frames)\n",
                s, s > 0 ? actual_events / s : 0.0,
@@ -97,7 +100,10 @@ int main(int argc, char** argv) {
         cb.on_spec_violation = [](uint64_t, size_t) { return 1; };   // restart in two-pass
         uint16_t div = 0; uint64_t notes = 0;
         auto t0 = clock_::now();
-        auto frames = ScaleMidiProcessor::process_midi(out_path, 60.0, div, notes, true, cb);
+        const fmcg_stream::ScanResult scan2 = fmcg_stream::process_streaming(out_path, fmcg_stream::ScanOptions{60.0, true}, cb);
+        auto frames = scan2.frames;
+        div = scan2.ppqn;
+        notes = scan2.total_notes;
         double s = std::chrono::duration<double>(clock_::now() - t0).count();
         printf("two pass   : %.2fs  ->  %.0f events/s effective  (%llu notes, %zu frames)\n",
                s, s > 0 ? actual_events / s : 0.0,
