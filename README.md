@@ -73,6 +73,8 @@ Notes: {nc}/{nc-total}
 NPS: {nps}   BPM: {bpm}
 ```
 
+Add `, center` (or `, left`, `, right`) to a position line to align that block's lines with each other instead of to its side. For example, `[top-left, center]` keeps a label centred over its stat while the block stays in the corner. **Insert stat** adds a stat token at the cursor.
+
 ## Settings
 
 The window has two columns. **Global settings** on the left apply to every video. The **Pattern** on the right is the overlay's look and is saved with the pattern.
@@ -103,6 +105,7 @@ The window has two columns. **Global settings** on the left apply to every video
 | Fixed-width stats | Gives each stat a cell as wide as its widest value, aligned left, centre or right. |
 | BPM decimals | 0 to 6 decimal places for `{bpm}`. |
 | Counter position | A corner preset, or an exact x,y with separate frame and text-block anchors. Position lines in the layout place other lines elsewhere. |
+| Line alignment | How a block's lines align with each other: follow the block's side, or left, centre or right inside the block. |
 | Advanced typography | Kerning, ligatures, numeral styles, stylistic sets, extra OpenType features, letter and line spacing. |
 
 Global settings save automatically. Patterns are saved with **Save** and **Save As...**, and patterns from older fMCG versions keep their look.

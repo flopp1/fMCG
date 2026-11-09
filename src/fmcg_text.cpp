@@ -304,7 +304,7 @@ static bool align_bottom(int a) { return a == 1 || a == 2 || a == 3; }
 static bool align_middle(int a) { return a == 4 || a == 5 || a == 6; }
 
 void TextRenderer::place(const Layout& L, const Placement& p, double& x0, double& y0) const {
-    const double w = L.width, h = L.height();
+    const double w = std::max(L.width, p.min_width), h = L.height();
     if (p.pos_mode == 1) {
         // Reference point on the frame, then the block's anchor point on it.
         const int fa = p.frame_anchor, ba = p.block_anchor;
@@ -334,8 +334,9 @@ void TextRenderer::place(const Layout& L, const Placement& p, double& x0, double
 
 double TextRenderer::line_offset(const Layout& L, size_t i, const Placement& p) const {
     if (i >= L.lines.size()) return 0.0;
-    const int a = p.pos_mode == 1 ? p.block_anchor : p.alignment;
-    const double slack = L.width - L.lines[i].advance;
+    const int a = p.line_align >= 1 && p.line_align <= 3 ? 6 + p.line_align   // 7 / 8 / 9
+                : p.pos_mode == 1 ? p.block_anchor : p.alignment;
+    const double slack = std::max(L.width, p.min_width) - L.lines[i].advance;
     return align_right(a) ? slack : align_center(a) ? slack / 2.0 : 0.0;
 }
 
@@ -408,6 +409,7 @@ bool FrameRenderer::init(const TextStyle& style, const Placement& placement, RGB
     prev_pieces_.clear();
     line_cache_.clear();
     anchors_.clear();
+    aligns_.clear();
     blocks_.clear();
     blocks_for_ = (size_t)-1;
     return text_.load(style, err);
@@ -444,6 +446,13 @@ void FrameRenderer::build_blocks(size_t nlines) {
             b.place = block_placement(key == 0 ? 0 : (a > 0 ? a : 0));
             blocks_.push_back(std::move(b));
         }
+        // Line alignment: the first one a header of this block gives, else
+        // the Placement's.
+        const int la = li < aligns_.size() ? aligns_[li] : 0;
+        if (la >= 1 && la <= 3 && !blocks_[bi].align_set) {
+            blocks_[bi].place.line_align = la;
+            blocks_[bi].align_set = true;
+        }
         blocks_[bi].lines.push_back(li);
     }
     blocks_for_ = nlines;
@@ -453,6 +462,7 @@ bool FrameRenderer::init(const TextStyle& style, const Placement& placement, RGB
                          const TextBlockSpec& spec, std::string* err) {
     if (!init(style, placement, background, err)) return false;
     anchors_ = spec.anchors;
+    aligns_ = spec.line_aligns;
     build_blocks(spec.pieces.size());
     // Cell widths (widest candidate per stat) and the largest block the
     // video can show, at the current font size.
@@ -500,10 +510,13 @@ bool FrameRenderer::init(const TextStyle& style, const Placement& placement, RGB
         block_w_ = block_h_ = 0;
         fit_scale = 1.0;
         const double pad = 2.0 + (text_.style().outline ? 2.0 * (text_.style().outline_width + 1.0) : 0.0);
-        for (const Block& b : blocks_) {
+        for (Block& b : blocks_) {
             double w = 0;
             for (size_t li : b.lines)
                 if (li < L.lines.size()) w = std::max(w, L.lines[li].advance);
+            // Lines aligned on their own: the block keeps its widest width, so
+            // centred / opposite-side lines stay put while values grow.
+            b.place.min_width = b.place.line_align != 0 ? w : 0.0;
             const double h = b.lines.empty() ? 0.0 : L.em + L.line_height * (double)(b.lines.size() - 1);
             block_w_ = std::max(block_w_, w);
             block_h_ = std::max(block_h_, h);

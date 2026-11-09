@@ -218,6 +218,42 @@ static void insert_layout_line(const std::string& line) {
     g_layout_cursor = (int)(at + ins.size());
 }
 
+// Inserts `text` at the cursor (on a new last line when the editor was never
+// used) and moves the cursor after it, so several stats can be added in a row.
+static void insert_layout_text(const std::string& text) {
+    std::string buf = g_ui.layout_buf;
+    std::string ins = text;
+    size_t at;
+    if (g_layout_cursor < 0 || (size_t)g_layout_cursor > buf.size()) {
+        at = buf.size();
+        if (!buf.empty() && buf.back() != '\n') ins = "\n" + ins;
+    } else {
+        at = (size_t)g_layout_cursor;
+    }
+    if (buf.size() + ins.size() >= sizeof(g_ui.layout_buf)) return;   // no room
+    buf.insert(at, ins);
+    std::memcpy(g_ui.layout_buf, buf.c_str(), buf.size() + 1);
+    g_layout_cursor = (int)(at + ins.size());
+}
+
+// Every stat token, in the order of the Stats list, with a short description.
+static const char* const k_insert_stats[][2] = {
+    {"{nc}", "notes played"}, {"{nc-total}", "notes in the song"}, {"{nc-rem}", "notes remaining"},
+    {"{nps}", "notes per second"}, {"{nps-max}", "peak notes per second"},
+    {"{plph}", "polyphony"}, {"{plph-max}", "peak polyphony"},
+    {"{cc}", "CC events so far"}, {"{cc-total}", "CC events in the song"}, {"{cc-rem}", "CC events remaining"},
+    {"{cps}", "CC per second"}, {"{cps-max}", "peak CC per second"},
+    {"{time}", "time (m:ss)"}, {"{time-max}", "song length (m:ss)"}, {"{time-rem}", "time remaining (m:ss)"},
+    {"{time-milli}", "time (m:ss.mmm)"}, {"{time-milli-max}", "song length (m:ss.mmm)"},
+    {"{time-milli-rem}", "time remaining (m:ss.mmm)"},
+    {"{sec}", "seconds"}, {"{sec-max}", "song length in seconds"}, {"{sec-rem}", "seconds remaining"},
+    {"{tick}", "MIDI tick"}, {"{tick-total}", "ticks in the song"}, {"{tick-rem}", "ticks remaining"},
+    {"{bpm}", "tempo"}, {"{ppqn}", "ticks per quarter note"},
+    {"{beat}", "beat"}, {"{beat-total}", "beats in the song"}, {"{beat-rem}", "beats remaining"},
+    {"{measure}", "measure"}, {"{measure-total}", "measures in the song"}, {"{measure-rem}", "measures remaining"},
+    {"{measure-beat}", "beat within the measure"}, {"{timesig}", "time signature"},
+};
+
 static void draw_layout_editor() {
     const ImGuiStyle& st = ImGui::GetStyle();
     const char* text = g_ui.layout_buf;
@@ -467,13 +503,40 @@ void draw_pattern_section() {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Show every stat token usable in the layout");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(160);
-    if (ImGui::BeginCombo("##insert_pos", "Insert position")) {
+    ImGui::SetNextItemWidth(130);
+    if (ImGui::BeginCombo("##insert_stat", "Insert stat", ImGuiComboFlags_HeightLarge)) {
+        const float desc_x = ImGui::CalcTextSize("{time-milli-max}").x + 2.0f * ImGui::GetStyle().ItemSpacing.x;
+        for (const auto& st : k_insert_stats) {
+            ImGui::PushID(st[0]);
+            if (ImGui::Selectable(st[0])) insert_layout_text(st[0]);
+            ImGui::SameLine(desc_x);
+            ImGui::TextDisabled("%s", st[1]);
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Inserts a stat token at the cursor in the layout.");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(150);
+    if (ImGui::BeginCombo("##insert_pos", "Insert position", ImGuiComboFlags_HeightLarge)) {
+        // Optional line alignment for the inserted header ("[top-left, center]").
+        static int ins_align = 0;
+        ImGui::TextDisabled("Lines in the block:");
+        ImGui::RadioButton("follow position##ia", &ins_align, 0);
+        ImGui::SameLine();
+        ImGui::RadioButton("left##ia", &ins_align, 1);
+        ImGui::SameLine();
+        ImGui::RadioButton("center##ia", &ins_align, 2);
+        ImGui::SameLine();
+        ImGui::RadioButton("right##ia", &ins_align, 3);
+        ImGui::Separator();
+        const std::string suffix = ins_align > 0 ? std::string(", ") + k_line_align_names[ins_align - 1] : "";
         for (int i = 0; i < 9; ++i)
             if (ImGui::Selectable(k_position_names[i]))
-                insert_layout_line(std::string("[") + k_position_names[i] + "]");
+                insert_layout_line(std::string("[") + k_position_names[i] + suffix + "]");
         ImGui::Separator();
-        if (ImGui::Selectable("default (the placement below)")) insert_layout_line("[default]");
+        if (ImGui::Selectable("default (the placement below)")) insert_layout_line("[default" + suffix + "]");
         ImGui::EndCombo();
     }
     if (ImGui::IsItemHovered())
@@ -481,7 +544,9 @@ void draw_pattern_section() {
                           "The lines below it, up to the next position line, are drawn at that\n"
                           "point of the frame (at the margin); position lines themselves are not shown.\n"
                           "Lines before the first one use the placement settings below;\n"
-                          "[default] returns to them.");
+                          "[default] returns to them.\n"
+                          "A line alignment ([top-left, center]) aligns the block's lines that way\n"
+                          "instead of to its side.");
     if (ImGui::BeginPopupModal("Valid layout stats", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         static const char* const k_stats[] = {
             "Notes",  "{nc} / {nc-total} / {nc-rem}",
@@ -515,7 +580,8 @@ void draw_pattern_section() {
         ImGui::Spacing();
         ImGui::TextDisabled("Position lines: [top-left] [top-center] [top-right] [center-left] [center]");
         ImGui::TextDisabled("[center-right] [bottom-left] [bottom-center] [bottom-right] [default]");
-        ImGui::TextDisabled("send the lines below them to that point of the frame.");
+        ImGui::TextDisabled("send the lines below them to that point of the frame;");
+        ImGui::TextDisabled("add \", left\", \", center\" or \", right\" to align the block's lines: [top-left, center].");
         ImGui::Spacing();
         if (ImGui::Button("Close", ImVec2(120, 0)))
             ImGui::CloseCurrentPopup();
@@ -685,6 +751,17 @@ void draw_pattern_section() {
         ImGui::SameLine();
         ImGui::TextDisabled("x: %d..%d  y: %d..%d  (the block always stays fully on screen)", min_x, max_x, min_y, max_y);
     }
+    ImGui::Text("Line alignment:");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(150);
+    static const char* k_line_align_items[] = {"Follow position", "Left", "Center", "Right"};
+    ImGui::Combo("##linealign", &g_ui.s.pattern.line_align, k_line_align_items, 4);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("How the lines of a block align with each other.\n"
+                          "Follow position: to the block's side (left, centre or right).\n"
+                          "Left / Center / Right: that way inside the block, which keeps the width of\n"
+                          "its widest possible line, so e.g. a label stays centred over its stat.\n"
+                          "A position line can override it: [top-left, center].");
 }
 
 // Global section: session-wide settings, autosaved, not in patterns (left column).

@@ -326,6 +326,7 @@ std::string pattern_to_ini(const std::string& name, const PatternData& p) {
     ss << "block_anchor = " << p.block_anchor << "\n";
     ss << "cells = " << (p.cells ? 1 : 0) << "\n";
     ss << "cell_align = " << p.cell_align << "\n";
+    ss << "line_align = " << p.line_align << "\n";
     ss << "font_family = " << p.font_family << "\n";
     ss << "font_variant = " << p.font_variant << "\n";
     ss << "font_size = " << p.font_size << "\n";
@@ -395,6 +396,8 @@ void pattern_from_ini(const std::string& text, PatternData& out) {
     out.cells                = get_bool(kv, "cells", false);
     out.cell_align           = get_int(kv, "cell_align", 2);
     if (out.cell_align < 0 || out.cell_align > 2) out.cell_align = 2;
+    out.line_align           = get_int(kv, "line_align", 0);
+    if (out.line_align < 0 || out.line_align > 3) out.line_align = 0;
     out.font_family          = get_str(kv, "font_family", "Arial");
     out.font_variant         = get_str(kv, "font_variant");
     out.font_size            = get_int(kv, "font_size", 36);

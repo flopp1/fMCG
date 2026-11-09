@@ -96,10 +96,15 @@ Two separate options, both off by default. Only one can be on at a time; ticking
   - Lines before the first position line use the placement above (Corners or Custom x,y). `[default]` returns to that placement for the lines below it.
   - Position lines are not shown. Lines that share a position form one block, in layout order, and a position that matches the Corners setting joins the default lines.
   - Names ignore case and spaces. `centre` and `middle` work like `center`, and `[top]`, `[bottom]`, `[left]` and `[right]` are the edge centres. Any other text in brackets is shown as written.
-  - Each block's lines align to its side: left, centred or right.
-  - **Insert position**, next to the layout box, adds a position line above the line the cursor is on.
+  - Each block's lines align to its side: left, centred or right, unless a line alignment is set (below).
+  - **Insert position**, next to the layout box, adds a position line above the line the cursor is on. Its **Lines in the block** choice adds a line alignment to it. **Insert stat** adds a stat token at the cursor.
   - Blocks can overlap if their lines are long enough. Shorten the lines or move a block if they collide.
   - Every block uses the same font and the same fixed-width cells, and one font scale is chosen so that every block fits.
+- **Line alignment** sets how the lines of a block align with each other, separately from where the block sits.
+  - **Follow position** (the default) aligns them to the block's side, as described above.
+  - **Left**, **Center** or **Right** aligns them that way inside the block. The block keeps the width of its widest possible line for the whole video, so a centred label does not drift while the stat under it grows, and the block stays against its corner or edge.
+  - A position line can set it for its own block: `[top-left, center]`, `[bottom-right, left]`, `[default, right]`. If two position lines for the same spot give different alignments, the first one counts.
+  - For a label centred over a number, also turn on **Fixed-width stats** with **Center** alignment, so the number is centred in its cell.
 - **The text never leaves the frame.** In every mode the block, including its outline, is kept fully on screen. If the largest block the video will ever show does not fit, the font is scaled down once for the whole video. The preview shows a note, and the render log says by how much.
 
 ## Advanced typography

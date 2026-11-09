@@ -93,6 +93,13 @@ struct Placement {
     int pos_x = 30, pos_y = 30;
     int frame_anchor = 7;
     int block_anchor = 7;
+    // How lines align inside the block: 0 = to the block's side (preset
+    // alignment / block anchor), 1 left, 2 centre, 3 right.
+    int line_align = 0;
+    // The block is at least this wide (px) when placing it and aligning its
+    // lines; FrameRenderer sets it to the block's widest possible width when
+    // line_align != 0, so centred lines do not drift as values grow.
+    double min_width = 0.0;
     // Fixed-width stat cells: each stat takes the width of its widest value in
     // the video (TextBlockSpec), aligned inside it -- lines stop shifting.
     bool cells = false;
@@ -119,6 +126,10 @@ struct TextBlockSpec {
     // numpad position (pos_mode 0 at the Placement's margin). Lines with the
     // same position form one block, in line order. Empty = all at 0.
     std::vector<int> anchors;
+    // Per line: the line alignment from its position header (0 = the
+    // Placement's line_align, 1 left, 2 centre, 3 right). A block takes the
+    // first non-zero value among its lines. Empty = all 0.
+    std::vector<int> line_aligns;
 };
 
 struct ShapedGlyph { uint32_t id; double x, y; };   // pen position in px, relative to the line origin
@@ -203,6 +214,7 @@ private:
         Layout layout;               // as last drawn
         double x0 = 0, y0 = 0;
         Rect last{};                 // pixels touched by the last draw
+        bool align_set = false;      // a header gave place.line_align
     };
     void build_blocks(size_t nlines);
     Placement block_placement(int anchor) const;
@@ -214,6 +226,7 @@ private:
     Canvas canvas_;
     Rect dirty_{};
     std::vector<int> anchors_;             // per line (TextBlockSpec::anchors)
+    std::vector<int> aligns_;              // per line (TextBlockSpec::line_aligns)
     std::vector<Block> blocks_;
     size_t blocks_for_ = (size_t)-1;       // line count blocks_ was built for
     std::vector<std::vector<double>> cell_w_;

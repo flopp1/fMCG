@@ -27,6 +27,7 @@ struct PatternData {
     int         block_anchor = 0;     // custom position: block point placed there (GUI 3x3 index)
     bool        cells = false;        // fixed-width stat cells
     int         cell_align = 2;       // 0 left, 1 centre, 2 right
+    int         line_align = 0;       // lines in a block: 0 follow its position, 1 left, 2 centre, 3 right
     std::string font_family = "Arial";
     std::string font_variant;         // subfamily/style ("" = family default)
     int         font_size = 36;
@@ -44,7 +45,7 @@ struct PatternData {
         return layout_text == o.layout_text && alignment == o.alignment &&
                pos_mode == o.pos_mode && pos_x == o.pos_x && pos_y == o.pos_y &&
                frame_anchor == o.frame_anchor && block_anchor == o.block_anchor &&
-               cells == o.cells && cell_align == o.cell_align &&
+               cells == o.cells && cell_align == o.cell_align && line_align == o.line_align &&
                font_family == o.font_family && font_variant == o.font_variant &&
                font_size == o.font_size &&
                text_color_aabbggrr == o.text_color_aabbggrr &&

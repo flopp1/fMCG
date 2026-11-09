@@ -130,6 +130,7 @@ fmcg_text::Placement app_placement() {
     pl.block_anchor = gui_anchor_to_numpad(g_app.pattern.block_anchor);
     pl.cells = g_app.pattern.cells;
     pl.cell_align = g_app.pattern.cell_align;
+    pl.line_align = g_app.pattern.line_align;
     pl.alignment = gui_alignment_to_ass(g_app.pattern.alignment);
     return pl;
 }

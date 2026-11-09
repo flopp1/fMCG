@@ -85,9 +85,16 @@ std::vector<TemplateSegment> parse_template_line(const std::string& line);
 // pattern's own placement. Header lines are not shown. Names are
 // case-insensitive; "centre" / "middle" = "center", spaces or "_" = "-", and
 // "top" / "bottom" / "left" / "right" alone are the edge centres.
+// After a comma, "left" / "center" / "right" sets how the block's lines align
+// inside it ("[top-left, center]"); without it they follow the block's side.
 // Returns the numpad anchor (7 8 9 / 4 5 6 / 1 2 3), 0 for [default], -1 if
 // the line is not a header.
 int position_header(const std::string& line);
+// The same, also giving the line alignment: 0 = none given, 1 left,
+// 2 centre, 3 right (Placement::line_align).
+int position_header(const std::string& line, int& line_align);
+// Line alignment words after the comma, for line_align 1..3.
+inline const char* const k_line_align_names[3] = {"left", "center", "right"};
 // The nine positions in reading order (top-left .. bottom-right), as written
 // in a header, and their numpad anchors.
 inline const char* const k_position_names[9] = {"top-left", "top-center", "top-right",
@@ -134,6 +141,8 @@ struct FrameTextSource {
     // Per shown line (header lines excluded): 0 = the pattern's placement,
     // 1..9 = the numpad position set by the header above it.
     const std::vector<int>& line_anchors() const;
+    // Per shown line: the line alignment its header gave (0 = none, 1..3).
+    const std::vector<int>& line_aligns() const;
 
 private:
     // template_lines split once (re-split only when the lines change); the
@@ -143,5 +152,6 @@ private:
     mutable std::vector<std::string> parsed_from_;
     mutable std::vector<std::vector<TemplateSegment>> parsed_;   // shown lines only
     mutable std::vector<int> anchors_;                            // per shown line
+    mutable std::vector<int> aligns_;                             // per shown line
     mutable bool parsed_ok_ = false;
 };

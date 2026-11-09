@@ -9,6 +9,9 @@
 //    blocks; each block is drawn exactly where a one-block render of it would
 //    be; incremental (dirty-rect) rendering equals a fresh render of every
 //    frame, overlapping blocks included; one fit scale for all blocks.
+//  * line alignment ([top-left, center] / Placement::line_align): lines align
+//    inside a block that keeps its widest width, so a centred label stays put
+//    and centred over its stat on every frame.
 // Needs a TrueType font ($FMCG_TEST_FONT or a common system font); SKIPs otherwise.
 #include "src/fmcg_format.h"
 #include "src/fmcg_text.h"
@@ -76,6 +79,18 @@ static FrameTextSource make_source(const std::vector<FrameStats>& frames, double
     src.fps = fps;
     src.start_delay = 2.0;
     return src;
+}
+
+// Ink extent (min / max x of non-background pixels) in rows [y0, y1); -1 if none.
+static void ink_x(const Canvas& c, RGBA bg, int y0, int y1, int& lo, int& hi) {
+    const uint8_t b[4] = {(uint8_t)(bg >> 24), (uint8_t)(bg >> 16), (uint8_t)(bg >> 8), (uint8_t)bg};
+    lo = hi = -1;
+    for (int y = std::max(0, y0); y < std::min(c.h, y1); ++y)
+        for (int x = 0; x < c.w; ++x)
+            if (std::memcmp(c.row(y) + x * 4, b, 4) != 0) {
+                if (lo < 0 || x < lo) lo = x;
+                if (x > hi) hi = x;
+            }
 }
 
 static bool align_right(int a) { return a == 3 || a == 6 || a == 9; }
@@ -377,6 +392,115 @@ int main() {
             FrameRenderer r;
             r.init(big, q, bg, fx.block_spec());
             check("fit: the widest block (not the first) sets the scale", r.scale() < 1.0 && r.block_width() <= 480 - 60);
+        }
+    }
+
+    // ---- line alignment --------------------------------------------------------------
+    {
+        int la = -1;
+        bool parse = position_header("[top-left, center]", la) == 7 && la == 2;
+        parse &= position_header(" [Bottom Right , Right] ", la) == 3 && la == 3;
+        parse &= position_header("[top-left,centre]", la) == 7 && la == 2;
+        parse &= position_header("[default, left]", la) == 0 && la == 1;
+        parse &= position_header("[center]", la) == 5 && la == 0;
+        parse &= position_header("[top-left, up]", la) == -1 && position_header("[top-left,]", la) == -1 &&
+                 position_header("[, center]", la) == -1 && position_header("[top-left, center, right]", la) == -1;
+        check("line alignment after a comma: left / center / right, else not a header", parse);
+
+        const std::vector<FrameStats> frames = make_frames(300, 30.0);
+        FrameTextSource src = make_source(frames, 30.0);
+        src.template_lines = {"A {nc}", "[top-right, left]", "B", "[bottom-left]", "C", "[default]", "D"};
+        check("line_aligns: per line from its header, reset by the next header",
+              src.line_aligns() == std::vector<int>({0, 1, 0, 0}) &&
+              src.block_spec().line_aligns == std::vector<int>({0, 1, 0, 0}));
+
+        Placement p;
+        p.frame_w = 640; p.frame_h = 360;
+        p.alignment = 7;
+        const RGBA bg = 0x102030FFu;
+        const double em = st.size;
+        const int l0 = p.margin, l1 = p.margin + (int)em, l2 = p.margin + 2 * (int)em;
+        // A label centred over its stat, top-left block: stable over the video
+        // and centred on the stat's cell (cells centred) on every frame.
+        for (int cells = 0; cells < 2; ++cells) {
+            FrameTextSource ls = make_source(frames, 30.0);
+            ls.template_lines = {"[top-left, center]", "NOTES", "{nc}"};
+            Placement q = p;
+            q.cells = cells == 1;
+            q.cell_align = 1;
+            FrameRenderer r;
+            r.init(st, q, bg, ls.block_spec());
+            int lo0 = -1, hi0 = -1;
+            bool stable = true, centred = true;
+            for (size_t k = 0; k < ls.frame_count(); k += 7) {
+                const Canvas& c = r.render_pieces(ls.pieces(k));
+                int lo, hi, nlo, nhi;
+                ink_x(c, bg, l0, l1, lo, hi);
+                ink_x(c, bg, l1, l2, nlo, nhi);
+                if (lo0 < 0) { lo0 = lo; hi0 = hi; }
+                stable &= lo == lo0 && hi == hi0;
+                if (cells) centred &= std::fabs((lo + hi) / 2.0 - (nlo + nhi) / 2.0) <= 2.0;
+                stable &= nlo >= p.margin - 2;   // the block still hugs the left margin
+            }
+            check(std::string("[top-left, center]: label stays put over the video") + (cells ? " (cells)" : ""),
+                  stable && lo0 > p.margin + 5);
+            if (cells) check("[top-left, center] + centred cells: label centred over its stat", centred);
+        }
+        // Right-anchored block: the widest line still ends at the margin.
+        {
+            FrameTextSource ls = make_source(frames, 30.0);
+            ls.template_lines = {"[top-right, center]", "POLYPHONY", "{plph}"};
+            Placement q = p;
+            q.cells = true;
+            FrameRenderer r;
+            r.init(st, q, bg, ls.block_spec());
+            int lo0 = -1, hi0 = -1;
+            bool stable = true;
+            for (size_t k = 0; k < ls.frame_count(); k += 7) {
+                const Canvas& c = r.render_pieces(ls.pieces(k));
+                int lo, hi;
+                ink_x(c, bg, l0, l1, lo, hi);
+                if (lo0 < 0) { lo0 = lo; hi0 = hi; }
+                stable &= lo == lo0 && hi == hi0;
+            }
+            check("[top-right, center]: label stays put, block at the right margin",
+                  stable && hi0 <= p.frame_w - p.margin && hi0 > p.frame_w / 2);
+        }
+        // The pattern-wide setting == the same alignment in a header.
+        {
+            FrameTextSource a = make_source(frames, 30.0), b = make_source(frames, 30.0);
+            a.template_lines = {"[top-left, center]", "NOTES", "{nc}", "[bottom-right, left]", "Poly", "{plph}"};
+            b.template_lines = {"NOTES", "{nc}", "[bottom-right, left]", "Poly", "{plph}"};
+            Placement qa = p, qb = p;
+            qb.line_align = 2;
+            FrameRenderer ra, rb;
+            ra.init(st, qa, bg, a.block_spec());
+            rb.init(st, qb, bg, b.block_spec());
+            bool same = true;
+            for (size_t k : {(size_t)0, (size_t)90, (size_t)299})
+                same &= ra.render_pieces(a.pieces(k)).px == rb.render_pieces(b.pieces(k)).px;
+            check("Placement::line_align == the same alignment given by a header", same);
+        }
+        // Incremental == fresh with aligned, overlapping blocks.
+        {
+            FrameTextSource ov = make_source(frames, 30.0);
+            ov.template_lines = {"[top-left, right]", "Notes {nc} / {nc-total} and a long tail of text", "x",
+                                 "[top-center, left]", "NPS {nps}", "[top-right, center]", "{time-milli}", "{bpm}"};
+            for (int cells = 0; cells < 2; ++cells) {
+                Placement q = p;
+                q.cells = cells == 1;
+                FrameRenderer inc;
+                inc.init(st, q, bg, ov.block_spec());
+                bool eq = true;
+                for (size_t k = 0; k < ov.frame_count() && eq; ++k) {
+                    const Canvas& c = inc.render_pieces(ov.pieces(k));
+                    FrameRenderer fresh;
+                    fresh.init(st, q, bg, ov.block_spec());
+                    eq = fresh.render_pieces(ov.pieces(k)).px == c.px;
+                    if (!eq) std::printf("  first mismatch at frame %zu\n", k);
+                }
+                check(std::string("aligned blocks: incremental == fresh render, every frame") + (cells ? " (cells)" : ""), eq);
+            }
         }
     }
 
