@@ -63,6 +63,16 @@ Each line of the layout box is one row of the overlay, and a row can mix any tex
 - During the start delay, the time fields count up from a negative value to zero.
 - Beats and measures follow the file's time signatures; files without any count in 4/4.
 
+**Lines in different places.** A line that is only a position, such as `[bottom-right]`, sends the lines below it to that spot. The positions are the four corners, the four edge centres and `[center]`. Lines before the first position line use the pattern's placement, and `[default]` returns to it. Position lines themselves are not shown, and **Insert position** next to the layout box adds one. For example:
+
+```text
+Time: {time-milli}/{time-milli-max}
+[top-right]
+Notes: {nc}/{nc-total}
+[bottom-center]
+NPS: {nps}   BPM: {bpm}
+```
+
 ## Settings
 
 The window has two columns. **Global settings** on the left apply to every video. The **Pattern** on the right is the overlay's look and is saved with the pattern.
@@ -92,7 +102,7 @@ The window has two columns. **Global settings** on the left apply to every video
 | Leading zeros | Pads each stat to the digit count of its own maximum. |
 | Fixed-width stats | Gives each stat a cell as wide as its widest value, aligned left, centre or right. |
 | BPM decimals | 0 to 6 decimal places for `{bpm}`. |
-| Counter position | A corner preset, or an exact x,y with separate frame and text-block anchors. |
+| Counter position | A corner preset, or an exact x,y with separate frame and text-block anchors. Position lines in the layout place other lines elsewhere. |
 | Advanced typography | Kerning, ligatures, numeral styles, stylistic sets, extra OpenType features, letter and line spacing. |
 
 Global settings save automatically. Patterns are saved with **Save** and **Save As...**, and patterns from older fMCG versions keep their look.

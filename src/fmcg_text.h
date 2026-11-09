@@ -83,8 +83,8 @@ std::vector<FontFeature> font_features(const std::string& font_file, int face_in
 // left/centre/right, 4 5 6 = middle, 1 2 3 = bottom.
 struct Placement {
     int frame_w = 1920, frame_h = 1080;
-    int pos_mode = 0;               // 0 = corner preset (alignment + margin), 1 = custom position
-    int alignment = 7;              // pos_mode 0: ASS numpad alignment (corners + top/bottom centre)
+    int pos_mode = 0;               // 0 = preset position (alignment + margin), 1 = custom position
+    int alignment = 7;              // pos_mode 0: numpad alignment (corners, edge centres, 5 = centre)
     int margin = 30;                // pos_mode 0 margin, as libass MarginL/R/V
     // pos_mode 1: (pos_x, pos_y) is measured from `frame_anchor` -- inward from
     // an edge (left/top: +x right/+y down; right/bottom: +x left/+y up), or
@@ -115,6 +115,10 @@ using PieceLines = std::vector<std::vector<TextPiece>>;
 struct TextBlockSpec {
     PieceLines pieces;
     std::vector<std::vector<std::vector<std::string>>> extremes;
+    // Per line: 0 = drawn at the Placement; 1..9 = in a separate block at that
+    // numpad position (pos_mode 0 at the Placement's margin). Lines with the
+    // same position form one block, in line order. Empty = all at 0.
+    std::vector<int> anchors;
 };
 
 struct ShapedGlyph { uint32_t id; double x, y; };   // pen position in px, relative to the line origin
@@ -165,7 +169,10 @@ private:
 
 // Renders consecutive frames into one canvas: only the area touched by the
 // previous and the current text is re-cleared and redrawn. `dirty()` is that
-// area (for texture uploads and change detection).
+// area (for texture uploads and change detection). The lines can be split
+// into several blocks at different positions (TextBlockSpec::anchors); only
+// blocks whose text changed (and blocks overlapping them) are redrawn, and
+// one font scale fits every block.
 class FrameRenderer {
 public:
     bool init(const TextStyle& style, const Placement& placement, RGBA background,
@@ -187,14 +194,28 @@ public:
     double font_size() const { return text_.loaded() ? text_.style().size : 0.0; }
     double block_width() const { return block_w_; }  // largest block (px, after fitting), 0 without spec
     double block_height() const { return block_h_; }
+    size_t block_count() const { return blocks_.size(); }
 
 private:
-    const Canvas& draw(const Layout& L);
+    struct Block {
+        Placement place;
+        std::vector<size_t> lines;   // indices into the frame's lines
+        Layout layout;               // as last drawn
+        double x0 = 0, y0 = 0;
+        Rect last{};                 // pixels touched by the last draw
+    };
+    void build_blocks(size_t nlines);
+    Placement block_placement(int anchor) const;
+    const ShapedLine& line_shape(size_t li, const std::vector<TextPiece>& pieces) const;
+    const Canvas& draw(const PieceLines& pieces);
     TextRenderer text_;
     Placement place_;
     RGBA bg_ = 0x000000FFu;
     Canvas canvas_;
-    Rect last_{}, dirty_{};
+    Rect dirty_{};
+    std::vector<int> anchors_;             // per line (TextBlockSpec::anchors)
+    std::vector<Block> blocks_;
+    size_t blocks_for_ = (size_t)-1;       // line count blocks_ was built for
     std::vector<std::vector<double>> cell_w_;
     double scale_ = 1.0, block_w_ = 0, block_h_ = 0;
     bool have_prev_ = false;               // prev_pieces_ is what the canvas shows

@@ -91,6 +91,15 @@ Two separate options, both off by default. Only one can be on at a time; ticking
     - A position measured from a corner stays in that corner when the resolution changes.
   - **Block anchor** is the point of the text block that sits at that position, one of the same 9 points. The lines of the block align to that side (left, centre or right).
   - The defaults, Top Left and Top Left, put the block's top-left corner at x,y.
+- **Position lines in the layout** split the overlay into several blocks.
+  - A layout line that is only `[top-left]`, `[top-center]`, `[top-right]`, `[center-left]`, `[center]`, `[center-right]`, `[bottom-left]`, `[bottom-center]` or `[bottom-right]` sends the lines below it, up to the next position line, to that point of the frame. They sit 30 px from the edges, like **Corners**.
+  - Lines before the first position line use the placement above (Corners or Custom x,y). `[default]` returns to that placement for the lines below it.
+  - Position lines are not shown. Lines that share a position form one block, in layout order, and a position that matches the Corners setting joins the default lines.
+  - Names ignore case and spaces. `centre` and `middle` work like `center`, and `[top]`, `[bottom]`, `[left]` and `[right]` are the edge centres. Any other text in brackets is shown as written.
+  - Each block's lines align to its side: left, centred or right.
+  - **Insert position**, next to the layout box, adds a position line above the line the cursor is on.
+  - Blocks can overlap if their lines are long enough. Shorten the lines or move a block if they collide.
+  - Every block uses the same font and the same fixed-width cells, and one font scale is chosen so that every block fits.
 - **The text never leaves the frame.** In every mode the block, including its outline, is kept fully on screen. If the largest block the video will ever show does not fit, the font is scaled down once for the whole video. The preview shows a note, and the render log says by how much.
 
 ## Advanced typography

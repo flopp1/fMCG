@@ -5,6 +5,10 @@
 //    whole video (and each stat fits its cell),
 //  * goal 5: the block never leaves the frame: clamping in every mode, and a
 //    block larger than the frame is scaled down once for the whole video.
+//  * position headers ([top-left], [center], ...): lines go to separate
+//    blocks; each block is drawn exactly where a one-block render of it would
+//    be; incremental (dirty-rect) rendering equals a fresh render of every
+//    frame, overlapping blocks included; one fit scale for all blocks.
 // Needs a TrueType font ($FMCG_TEST_FONT or a common system font); SKIPs otherwise.
 #include "src/fmcg_format.h"
 #include "src/fmcg_text.h"
@@ -12,6 +16,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <random>
 #include <set>
 #include <string>
@@ -229,6 +234,150 @@ int main() {
         FrameRenderer nf;
         nf.init(s2, p, 0x000000FFu, spec);
         check("fit off: no scaling", nf.scale() == 1.0 && nf.font_size() == 160);
+    }
+
+    // ---- position headers ------------------------------------------------------------
+    {
+        bool parse = position_header("[top-left]") == 7 && position_header("  [Bottom Right] ") == 3 &&
+                     position_header("[centre]") == 5 && position_header("[middle_left]") == 4 &&
+                     position_header("[top]") == 8 && position_header("[bottom]") == 2 &&
+                     position_header("[right]") == 6 && position_header("[default]") == 0 &&
+                     position_header("[TOP-CENTER]") == 8 && position_header("[center-right]") == 6 &&
+                     position_header("[topleft]") == -1 && position_header("[nc]") == -1 &&
+                     position_header("Notes [top-left]") == -1 && position_header("{nc}") == -1 &&
+                     position_header("[]") == -1;
+        for (int i = 0; i < 9; ++i) parse &= position_header(std::string("[") + k_position_names[i] + "]") == k_position_anchors[i];
+        check("headers: names, aliases, case, spacing; non-headers stay text", parse);
+
+        const std::vector<FrameStats> frames = make_frames(300, 30.0);
+        FrameTextSource src = make_source(frames, 30.0);
+        src.template_lines = {"Time {time-milli}", "[bottom-right]", "Notes {nc}", "NPS {nps}", "[center]",
+                              "Poly {plph}", "[top-right]", "BPM {bpm}", "[default]", "Tick {tick}"};
+        const std::vector<int> want_a = {0, 3, 3, 5, 9, 0};
+        check("headers are not shown; each line gets its header's position",
+              src.line_anchors() == want_a && src.pieces(0).size() == 6 && src.lines(40).size() == 6 &&
+              src.block_spec().anchors == want_a);
+
+        Placement p;
+        p.frame_w = 640; p.frame_h = 360;
+        p.alignment = 7;                 // pattern: top-left
+        const RGBA bg = 0x102030FFu;
+        const TextBlockSpec spec = src.block_spec();
+        FrameRenderer fr;
+        fr.init(st, p, bg, spec);
+        check("blocks: top-left (default + [default]), bottom-right, center, top-right", fr.block_count() == 4);
+
+        // Each block where a one-block render of just its lines puts it.
+        bool same = true;
+        for (size_t k : {(size_t)0, (size_t)60, (size_t)200}) {
+            const PieceLines all = src.pieces(k);
+            const Canvas& c = fr.render_pieces(all);
+            Canvas expect;
+            expect.resize(p.frame_w, p.frame_h);
+            expect.fill(bg);
+            for (int a : {7, 3, 5, 9}) {
+                PieceLines mine;
+                for (size_t li = 0; li < all.size(); ++li)
+                    if ((want_a[li] == 0 ? 7 : want_a[li]) == a) mine.push_back(all[li]);
+                Placement q = p;
+                q.alignment = a;
+                FrameRenderer one;
+                one.init(st, q, bg);
+                const Canvas& oc = one.render_pieces(mine);
+                const uint8_t bgb[4] = {(uint8_t)(bg >> 24), (uint8_t)(bg >> 16), (uint8_t)(bg >> 8), (uint8_t)bg};
+                for (size_t i = 0; i < oc.px.size(); i += 4)   // composite: the block's non-background pixels
+                    if (std::memcmp(&oc.px[i], bgb, 4) != 0) std::memcpy(&expect.px[i], &oc.px[i], 4);
+            }
+            same &= c.px == expect.px;
+        }
+        check("each block is drawn where a one-block render of its lines is", same);
+
+        // Middle positions in preset mode: vertically centred.
+        {
+            TextRenderer tr;
+            tr.load(st);
+            const Layout L = tr.layout({"Centre block", "two lines"});
+            bool mid = true;
+            for (int a : {4, 5, 6}) {
+                Placement q = p;
+                q.alignment = a;
+                double x0, y0;
+                tr.place(L, q, x0, y0);
+                mid &= std::fabs(y0 + L.height() / 2.0 - p.frame_h / 2.0) < 1e-6;
+                if (a == 4) mid &= std::fabs(x0 - p.margin) < 1e-6;
+                if (a == 5) mid &= std::fabs(x0 + L.width / 2.0 - p.frame_w / 2.0) < 1e-6;
+                if (a == 6) mid &= std::fabs(x0 + L.width - (p.frame_w - p.margin)) < 1e-6;
+            }
+            check("preset positions 4/5/6: vertically centred, left/centre/right at the margin", mid);
+        }
+
+        // Incremental rendering == a fresh render, every frame, with blocks
+        // that overlap (a long top-left line runs into top-center / top-right).
+        FrameTextSource ov = make_source(frames, 30.0);
+        ov.template_lines = {"Notes {nc} / {nc-total} and a long tail of text here", "[top-center]",
+                             "NPS {nps}", "[top-right]", "{time-milli} {bpm}", "[center]", "Poly {plph}",
+                             "[center-left]", "Tick {tick} {tick} {tick}"};
+        for (int cells = 0; cells < 2; ++cells) {
+            Placement q = p;
+            q.cells = cells == 1;
+            FrameRenderer inc;
+            inc.init(st, q, bg, ov.block_spec());
+            bool eq = true, dirty_ok = true;
+            Canvas prev;
+            for (size_t k = 0; k < ov.frame_count() && eq; ++k) {
+                const Canvas& c = inc.render_pieces(ov.pieces(k));
+                FrameRenderer fresh;
+                fresh.init(st, q, bg, ov.block_spec());
+                eq = fresh.render_pieces(ov.pieces(k)).px == c.px;
+                if (!eq) std::printf("  first mismatch at frame %zu\n", k);
+                if (k > 0) {   // nothing outside dirty() changed
+                    const Rect d = inc.dirty();
+                    for (int y = 0; y < c.h && dirty_ok; ++y)
+                        for (int x = 0; x < c.w; ++x) {
+                            if (x >= d.x && x < d.x + d.w && y >= d.y && y < d.y + d.h) continue;
+                            if (std::memcmp(c.row(y) + x * 4, prev.row(y) + x * 4, 4) != 0) { dirty_ok = false; break; }
+                        }
+                }
+                prev = c;
+            }
+            check(std::string("overlapping blocks: incremental == fresh render, every frame") + (cells ? " (cells)" : ""), eq);
+            check(std::string("overlapping blocks: nothing changes outside dirty()") + (cells ? " (cells)" : ""), dirty_ok);
+        }
+
+        // A block whose text never changes is not redrawn (dirty stays away from it).
+        {
+            FrameTextSource fx = make_source(frames, 30.0);
+            fx.template_lines = {"Notes {nc}", "[bottom-right]", "fixed label"};
+            FrameRenderer r;
+            r.init(st, p, bg, fx.block_spec());
+            r.render_pieces(fx.pieces(0));
+            r.render_pieces(fx.pieces(100));
+            const Rect d = r.dirty();
+            check("an unchanged block is left alone (dirty only around the changing one)",
+                  !d.empty() && d.y + d.h < p.frame_h / 2);
+        }
+
+        // Pattern placement equal to a header's position: one block.
+        {
+            Placement q = p;
+            q.alignment = 3;
+            FrameRenderer r;
+            r.init(st, q, bg, src.block_spec());
+            check("pattern at bottom-right + [bottom-right] lines: one block, not two", r.block_count() == 3);
+        }
+
+        // Fit: one scale so that every block fits.
+        {
+            TextStyle big = st;
+            big.size = 90;
+            FrameTextSource fx = make_source(frames, 30.0);
+            fx.template_lines = {"Short", "[bottom-right]", "A much longer line of text {nc} {nc-total} {plph}"};
+            Placement q;
+            q.frame_w = 480; q.frame_h = 270;
+            FrameRenderer r;
+            r.init(big, q, bg, fx.block_spec());
+            check("fit: the widest block (not the first) sets the scale", r.scale() < 1.0 && r.block_width() <= 480 - 60);
+        }
     }
 
     std::printf("\n%s (%d failures)\n", fails ? "FAILURES" : "ALL OK", fails);

@@ -317,9 +317,10 @@ void TextRenderer::place(const Layout& L, const Placement& p, double& x0, double
     } else {
         const double ax = align_right(p.alignment) ? p.frame_w - p.margin
                         : align_center(p.alignment) ? p.frame_w / 2.0 : (double)p.margin;
-        const double ay = align_bottom(p.alignment) ? p.frame_h - p.margin : (double)p.margin;
+        const double ay = align_bottom(p.alignment) ? p.frame_h - p.margin
+                        : align_middle(p.alignment) ? p.frame_h / 2.0 : (double)p.margin;
         x0 = align_right(p.alignment) ? ax - w : align_center(p.alignment) ? ax - w / 2.0 : ax;
-        y0 = align_bottom(p.alignment) ? ay - h : ay;
+        y0 = align_bottom(p.alignment) ? ay - h : align_middle(p.alignment) ? ay - h / 2.0 : ay;
     }
     // Keep the whole block (and its outline) on screen whenever it fits; a
     // block larger than the frame starts at the top-left edge. The 1 px edge
@@ -399,7 +400,6 @@ bool FrameRenderer::init(const TextStyle& style, const Placement& placement, RGB
     bg_ = background;
     canvas_.resize(placement.frame_w, placement.frame_h);
     canvas_.fill(bg_);
-    last_ = {};
     dirty_ = {0, 0, canvas_.w, canvas_.h};
     cell_w_.clear();
     scale_ = 1.0;
@@ -407,15 +407,57 @@ bool FrameRenderer::init(const TextStyle& style, const Placement& placement, RGB
     have_prev_ = false;
     prev_pieces_.clear();
     line_cache_.clear();
+    anchors_.clear();
+    blocks_.clear();
+    blocks_for_ = (size_t)-1;
     return text_.load(style, err);
+}
+
+// Block placement for a line's anchor: 0 = the Placement itself, 1..9 = that
+// numpad position at the Placement's margin.
+Placement FrameRenderer::block_placement(int anchor) const {
+    if (anchor <= 0 || anchor > 9) return place_;
+    Placement p = place_;
+    p.pos_mode = 0;
+    p.alignment = anchor;
+    return p;
+}
+
+// Groups the lines into blocks: one per distinct position, in order of first
+// appearance. The pattern's own placement in preset mode IS a position, so
+// "[top-right]" lines join the default lines when the pattern sits top-right.
+void FrameRenderer::build_blocks(size_t nlines) {
+    for (const Block& b : blocks_) {     // a new grouping: wipe the old blocks
+        canvas_.fill_rect(b.last, bg_);
+        dirty_ = dirty_.united(b.last);
+    }
+    blocks_.clear();
+    std::vector<int> keys;   // block key: numpad position, or 0 for a custom (pos_mode 1) default block
+    for (size_t li = 0; li < nlines; ++li) {
+        const int a = li < anchors_.size() ? anchors_[li] : 0;
+        const int key = a > 0 ? a : (place_.pos_mode == 0 ? place_.alignment : 0);
+        size_t bi = 0;
+        while (bi < keys.size() && keys[bi] != key) ++bi;
+        if (bi == keys.size()) {
+            keys.push_back(key);
+            Block b;
+            b.place = block_placement(key == 0 ? 0 : (a > 0 ? a : 0));
+            blocks_.push_back(std::move(b));
+        }
+        blocks_[bi].lines.push_back(li);
+    }
+    blocks_for_ = nlines;
 }
 
 bool FrameRenderer::init(const TextStyle& style, const Placement& placement, RGBA background,
                          const TextBlockSpec& spec, std::string* err) {
     if (!init(style, placement, background, err)) return false;
+    anchors_ = spec.anchors;
+    build_blocks(spec.pieces.size());
     // Cell widths (widest candidate per stat) and the largest block the
     // video can show, at the current font size.
     std::vector<std::vector<double>> widths;
+    double fit_scale = 1.0;   // the scale every block needs to fit (at the current size)
     auto measure = [&]() {
         widths.assign(spec.pieces.size(), {});
         for (size_t li = 0; li < spec.pieces.size() && li < spec.extremes.size(); ++li)
@@ -453,44 +495,134 @@ bool FrameRenderer::init(const TextStyle& style, const Placement& placement, RGB
             }
             L = text_.layout(worst);
         }
-        block_w_ = L.width;
-        block_h_ = L.height();
+        // Per block: its lines' widest advance and its height; the largest
+        // block is reported, and every block must fit its available area.
+        block_w_ = block_h_ = 0;
+        fit_scale = 1.0;
+        const double pad = 2.0 + (text_.style().outline ? 2.0 * (text_.style().outline_width + 1.0) : 0.0);
+        for (const Block& b : blocks_) {
+            double w = 0;
+            for (size_t li : b.lines)
+                if (li < L.lines.size()) w = std::max(w, L.lines[li].advance);
+            const double h = b.lines.empty() ? 0.0 : L.em + L.line_height * (double)(b.lines.size() - 1);
+            block_w_ = std::max(block_w_, w);
+            block_h_ = std::max(block_h_, h);
+            if (w <= 0 || h <= 0) continue;
+            // Available area: the frame, minus the margin for preset positions.
+            double aw = place_.frame_w, ah = place_.frame_h;
+            if (b.place.pos_mode == 0) {
+                aw -= 2.0 * place_.margin;
+                ah -= 2.0 * place_.margin;
+                if (aw <= 0) aw = place_.frame_w;
+                if (ah <= 0) ah = place_.frame_h;
+            }
+            fit_scale = std::min({fit_scale, (aw - pad) / w, (ah - pad) / h});
+        }
     };
     measure();
-    if (place_.fit && block_w_ > 0 && block_h_ > 0) {
-        // Available area: the frame, minus the corner margin in preset mode.
-        double aw = place_.frame_w, ah = place_.frame_h;
-        if (place_.pos_mode == 0) {
-            aw -= 2.0 * place_.margin;
-            ah -= 2.0 * place_.margin;
-            if (aw <= 0) aw = place_.frame_w;
-            if (ah <= 0) ah = place_.frame_h;
-        }
-        const double pad = 2.0 + (style.outline ? 2.0 * (style.outline_width + 1.0) : 0.0);
-        const double s = std::min({1.0, (aw - pad) / block_w_, (ah - pad) / block_h_});
-        if (s < 1.0) {
-            // One scale for the whole video (metrics are linear in the size);
-            // 2% headroom for glyph ink beyond the advance box.
-            scale_ = std::max(0.01, s * 0.98);
-            TextStyle st = style;
-            st.size *= scale_;
-            st.letter_spacing *= scale_;
-            st.outline_width *= scale_;
-            if (!text_.load(st, err)) return false;
-            measure();
-        }
+    if (place_.fit && fit_scale < 1.0) {
+        // One scale for the whole video and every block (metrics are linear
+        // in the size); 2% headroom for glyph ink beyond the advance box.
+        scale_ = std::max(0.01, fit_scale * 0.98);
+        TextStyle st = style;
+        st.size *= scale_;
+        st.letter_spacing *= scale_;
+        st.outline_width *= scale_;
+        if (!text_.load(st, err)) return false;
+        measure();
     }
     if (place_.cells) cell_w_ = widths;
     return true;
 }
 
-const Canvas& FrameRenderer::draw(const Layout& L) {
-    canvas_.fill_rect(last_, bg_);
-    double x0 = 0, y0 = 0;
-    text_.place(L, place_, x0, y0);
-    const Rect now = text_.draw(canvas_, L, place_, x0, y0);
-    dirty_ = last_.united(now);
-    last_ = now;
+// One line's shaping (cells or whole-line), cached per line index.
+const ShapedLine& FrameRenderer::line_shape(size_t li, const std::vector<TextPiece>& pieces) const {
+    if (li < line_cache_.size() && line_cache_[li].first == pieces) return line_cache_[li].second;
+    const bool cells = place_.cells && !cell_w_.empty();
+    Layout one;
+    if (cells) {
+        const std::vector<std::vector<double>> w{li < cell_w_.size() ? cell_w_[li] : std::vector<double>{}};
+        one = text_.layout(PieceLines{pieces}, w, place_.cell_align);
+    } else {   // without cells: whole-line shaping (kerning across stats)
+        std::string s;
+        for (const TextPiece& p : pieces) s += p.text;
+        one = text_.layout(std::vector<std::string>{s});
+    }
+    if (li >= line_cache_.size()) line_cache_.resize(li + 1);
+    line_cache_[li] = {pieces, std::move(one.lines[0])};
+    return line_cache_[li].second;
+}
+
+Layout FrameRenderer::layout_pieces(const PieceLines& pieces) const {
+    Layout L = text_.layout(std::vector<std::string>{});   // metrics only
+    if (line_cache_.size() > pieces.size()) line_cache_.resize(pieces.size());
+    for (size_t li = 0; li < pieces.size(); ++li) {
+        L.lines.push_back(line_shape(li, pieces[li]));
+        L.width = std::max(L.width, L.lines.back().advance);
+    }
+    return L;
+}
+
+const Canvas& FrameRenderer::draw(const PieceLines& pieces) {
+    dirty_ = {};
+    if (pieces.size() != blocks_for_) {
+        build_blocks(pieces.size());     // clears the old blocks into dirty_
+        have_prev_ = false;
+    }
+    if (line_cache_.size() > pieces.size()) line_cache_.resize(pieces.size());
+    // Blocks whose text changed get a new layout and position.
+    std::vector<char> redo(blocks_.size(), 0);
+    std::vector<Rect> next(blocks_.size());
+    for (size_t bi = 0; bi < blocks_.size(); ++bi) {
+        Block& b = blocks_[bi];
+        bool changed = !have_prev_ || prev_pieces_.size() != pieces.size();
+        for (size_t k = 0; !changed && k < b.lines.size(); ++k)
+            changed = !(prev_pieces_[b.lines[k]] == pieces[b.lines[k]]);
+        if (!changed) continue;
+        redo[bi] = 1;
+        Layout L = text_.layout(std::vector<std::string>{});   // metrics only
+        for (size_t li : b.lines) {
+            L.lines.push_back(line_shape(li, pieces[li]));
+            L.width = std::max(L.width, L.lines.back().advance);
+        }
+        b.layout = std::move(L);
+        text_.place(b.layout, b.place, b.x0, b.y0);
+        next[bi] = text_.bounds(b.layout, b.place, b.x0, b.y0).clipped(canvas_.w, canvas_.h);
+    }
+    // An unchanged block overlapping an area that is cleared or drawn must be
+    // redrawn too (clearing would cut into it; repeat until nothing is added).
+    for (bool grew = true; grew;) {
+        grew = false;
+        for (size_t bi = 0; bi < blocks_.size(); ++bi) {
+            if (redo[bi] || blocks_[bi].last.empty()) continue;
+            const Rect& r = blocks_[bi].last;
+            for (size_t ci = 0; ci < blocks_.size() && !redo[bi]; ++ci) {
+                if (!redo[ci]) continue;
+                for (const Rect& o : {blocks_[ci].last, next[ci]}) {
+                    if (o.empty()) continue;
+                    if (r.x < o.x + o.w && o.x < r.x + r.w && r.y < o.y + o.h && o.y < r.y + r.h) {
+                        redo[bi] = 1;
+                        next[bi] = r;   // same text, same place
+                        grew = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    for (size_t bi = 0; bi < blocks_.size(); ++bi)
+        if (redo[bi]) {
+            canvas_.fill_rect(blocks_[bi].last, bg_);
+            dirty_ = dirty_.united(blocks_[bi].last);
+        }
+    for (size_t bi = 0; bi < blocks_.size(); ++bi)
+        if (redo[bi]) {
+            Block& b = blocks_[bi];
+            b.last = text_.draw(canvas_, b.layout, b.place, b.x0, b.y0);
+            dirty_ = dirty_.united(b.last);
+        }
+    prev_pieces_ = pieces;
+    have_prev_ = true;
     return canvas_;
 }
 
@@ -499,42 +631,12 @@ const Canvas& FrameRenderer::render(const std::vector<std::string>& lines) {
     p.reserve(lines.size());
     for (const std::string& l : lines) p.push_back({TextPiece{l, -1}});
     if (have_prev_ && p == prev_pieces_) { dirty_ = {}; return canvas_; }
-    prev_pieces_ = std::move(p);
-    have_prev_ = true;
-    return draw(text_.layout(lines));
-}
-
-Layout FrameRenderer::layout_pieces(const PieceLines& pieces) const {
-    const bool cells = place_.cells && !cell_w_.empty();
-    Layout L = text_.layout(std::vector<std::string>{});   // metrics only
-    if (line_cache_.size() > pieces.size()) line_cache_.resize(pieces.size());
-    for (size_t li = 0; li < pieces.size(); ++li) {
-        if (li < line_cache_.size() && line_cache_[li].first == pieces[li]) {
-            L.lines.push_back(line_cache_[li].second);
-        } else {
-            Layout one;
-            if (cells) {
-                const std::vector<std::vector<double>> w{li < cell_w_.size() ? cell_w_[li] : std::vector<double>{}};
-                one = text_.layout(PieceLines{pieces[li]}, w, place_.cell_align);
-            } else {   // without cells: whole-line shaping (kerning across stats)
-                std::string s;
-                for (const TextPiece& p : pieces[li]) s += p.text;
-                one = text_.layout(std::vector<std::string>{s});
-            }
-            if (li >= line_cache_.size()) line_cache_.resize(li + 1);
-            line_cache_[li] = {pieces[li], one.lines[0]};
-            L.lines.push_back(std::move(one.lines[0]));
-        }
-        L.width = std::max(L.width, L.lines.back().advance);
-    }
-    return L;
+    return draw(p);
 }
 
 const Canvas& FrameRenderer::render_pieces(const PieceLines& pieces) {
     if (have_prev_ && pieces == prev_pieces_) { dirty_ = {}; return canvas_; }
-    prev_pieces_ = pieces;
-    have_prev_ = true;
-    return draw(layout_pieces(pieces));
+    return draw(pieces);
 }
 
 // ---- typography options ------------------------------------------------------------

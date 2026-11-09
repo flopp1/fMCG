@@ -236,14 +236,55 @@ FrameStats FrameTextSource::stats(size_t k) const {
     return z;
 }
 
+int position_header(const std::string& line) {
+    size_t a = 0, b = line.size();
+    while (a < b && (line[a] == ' ' || line[a] == '\t' || line[a] == '\r')) ++a;
+    while (b > a && (line[b - 1] == ' ' || line[b - 1] == '\t' || line[b - 1] == '\r')) --b;
+    if (b - a < 3 || line[a] != '[' || line[b - 1] != ']') return -1;
+    std::string n;
+    for (size_t i = a + 1; i + 1 < b; ++i) {
+        char c = line[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c == ' ' || c == '_') c = '-';
+        if (c == '-' && (n.empty() || n.back() == '-')) continue;   // collapse / trim separators
+        n += c;
+    }
+    while (!n.empty() && n.back() == '-') n.pop_back();
+    for (const char* from : {"centre", "middle"})
+        for (size_t p; (p = n.find(from)) != std::string::npos;) n.replace(p, std::string(from).size(), "center");
+    static const struct { const char* name; int anchor; } names[] = {
+        {"default", 0},
+        {"top-left", 7}, {"top-center", 8}, {"top", 8}, {"top-right", 9},
+        {"center-left", 4}, {"left", 4}, {"center", 5}, {"center-center", 5}, {"center-right", 6}, {"right", 6},
+        {"bottom-left", 1}, {"bottom-center", 2}, {"bottom", 2}, {"bottom-right", 3},
+        {"left-top", 7}, {"right-top", 9}, {"left-bottom", 1}, {"right-bottom", 3},
+        {"left-center", 4}, {"right-center", 6}, {"center-top", 8}, {"center-bottom", 2},
+    };
+    for (const auto& e : names)
+        if (n == e.name) return e.anchor;
+    return -1;
+}
+
 const std::vector<std::vector<TemplateSegment>>& FrameTextSource::parsed() const {
     if (!parsed_ok_ || parsed_from_ != template_lines) {
         parsed_.clear();
-        for (const std::string& t : template_lines) parsed_.push_back(parse_template_line(t));
+        anchors_.clear();
+        int anchor = 0;   // lines before any header: the pattern's placement
+        for (const std::string& t : template_lines) {
+            const int h = position_header(t);
+            if (h >= 0) { anchor = h; continue; }
+            parsed_.push_back(parse_template_line(t));
+            anchors_.push_back(anchor);
+        }
         parsed_from_ = template_lines;
         parsed_ok_ = true;
     }
     return parsed_;
+}
+
+const std::vector<int>& FrameTextSource::line_anchors() const {
+    parsed();
+    return anchors_;
 }
 
 fmcg_text::PieceLines FrameTextSource::pieces_for(const FrameStats& fs, bool lead_in) const {
@@ -251,7 +292,7 @@ fmcg_text::PieceLines FrameTextSource::pieces_for(const FrameStats& fs, bool lea
     s.duration = song_duration();
     if (lead_in) { s.cc = 0; s.ticks = 0; }   // the lead-in shows CC and tick totals as 0
     fmcg_text::PieceLines out;
-    out.reserve(template_lines.size());
+    out.reserve(parsed().size());
     for (const std::vector<TemplateSegment>& t : parsed())
         out.push_back(format_template_segments(t, fs, s, fmt));
     return out;
@@ -327,6 +368,7 @@ fmcg_text::TextBlockSpec FrameTextSource::block_spec() const {
     }
     fmcg_text::TextBlockSpec spec;
     spec.pieces = pieces_for(probes.front().first, probes.front().second);
+    spec.anchors = line_anchors();
     spec.extremes.resize(spec.pieces.size());
     for (const auto& pr : probes) {
         const fmcg_text::PieceLines pl = pieces_for(pr.first, pr.second);

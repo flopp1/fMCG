@@ -200,6 +200,24 @@ static int layout_cursor_cb(ImGuiInputTextCallbackData* d) {
     return 0;
 }
 
+// Cursor in the layout editor (byte offset; -1 = never clicked). Kept after
+// the editor loses focus, so "Insert position" knows where the user was.
+static int g_layout_cursor = -1;
+
+// Inserts `line` as its own line, above the line the cursor was on (at the
+// end when the editor was never used).
+static void insert_layout_line(const std::string& line) {
+    std::string buf = g_ui.layout_buf;
+    size_t at = (g_layout_cursor < 0 || (size_t)g_layout_cursor > buf.size()) ? buf.size() : (size_t)g_layout_cursor;
+    while (at > 0 && buf[at - 1] != '\n') --at;   // start of that line
+    std::string ins = line + "\n";
+    if (at == buf.size() && !buf.empty() && buf.back() != '\n') ins = "\n" + line;   // a new last line
+    if (buf.size() + ins.size() >= sizeof(g_ui.layout_buf)) return;   // no room
+    buf.insert(at, ins);
+    std::memcpy(g_ui.layout_buf, buf.c_str(), buf.size() + 1);
+    g_layout_cursor = (int)(at + ins.size());
+}
+
 static void draw_layout_editor() {
     const ImGuiStyle& st = ImGui::GetStyle();
     const char* text = g_ui.layout_buf;
@@ -222,7 +240,8 @@ static void draw_layout_editor() {
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const ImVec2 size(std::max(avail.x, max_w + 2.0f * st.FramePadding.x + slack),
                       std::max(avail.y, lines * line_h + 2.0f * st.FramePadding.y + line_h));
-    static int cursor = -1, last_cursor = -1;
+    int& cursor = g_layout_cursor;
+    static int last_cursor = -1;
     static int follow_frames = 0;   // re-apply for a few frames: the box grows a frame after the text
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);   // the child draws the border
     ImGui::InputTextMultiline("##layout", g_ui.layout_buf, sizeof(g_ui.layout_buf), size,
@@ -447,6 +466,22 @@ void draw_pattern_section() {
         ImGui::OpenPopup("Valid layout stats");
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Show every stat token usable in the layout");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(160);
+    if (ImGui::BeginCombo("##insert_pos", "Insert position")) {
+        for (int i = 0; i < 9; ++i)
+            if (ImGui::Selectable(k_position_names[i]))
+                insert_layout_line(std::string("[") + k_position_names[i] + "]");
+        ImGui::Separator();
+        if (ImGui::Selectable("default (the placement below)")) insert_layout_line("[default]");
+        ImGui::EndCombo();
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Adds a position line such as [bottom-right] above the line the cursor is on.\n"
+                          "The lines below it, up to the next position line, are drawn at that\n"
+                          "point of the frame (at the margin); position lines themselves are not shown.\n"
+                          "Lines before the first one use the placement settings below;\n"
+                          "[default] returns to them.");
     if (ImGui::BeginPopupModal("Valid layout stats", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         static const char* const k_stats[] = {
             "Notes",  "{nc} / {nc-total} / {nc-rem}",
@@ -477,6 +512,10 @@ void draw_pattern_section() {
             }
             ImGui::EndTable();
         }
+        ImGui::Spacing();
+        ImGui::TextDisabled("Position lines: [top-left] [top-center] [top-right] [center-left] [center]");
+        ImGui::TextDisabled("[center-right] [bottom-left] [bottom-center] [bottom-right] [default]");
+        ImGui::TextDisabled("send the lines below them to that point of the frame.");
         ImGui::Spacing();
         if (ImGui::Button("Close", ImVec2(120, 0)))
             ImGui::CloseCurrentPopup();
