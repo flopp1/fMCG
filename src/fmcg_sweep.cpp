@@ -11,7 +11,7 @@ namespace fmcg_stream {
 
 // ---- anchor-interpolated sweep: tick buckets -> FrameStats --------------------
 
-// {plph-max} and {nps-max} are both EXACT in the single-pass engine, no bins
+// {plph-max}, {nps-max} and {cps-max} are all EXACT in the single-pass engine, no bins
 // involved. The sweep walks every tick in strictly increasing time order and a
 // tick is the finest time unit MIDI has (same-tick events are simultaneous by
 // definition), so:
@@ -160,7 +160,7 @@ std::vector<FrameStats> sweep_to_frames(TickData& td, std::vector<TempoChange>& 
     uint64_t cum = 0;
     uint64_t cum_cc = 0;
     int64_t poly = 0, peak_poly = 0;
-    double peak_nps = 0.0;
+    double peak_nps = 0.0, peak_cps = 0.0;
     size_t cur_frame = 0;
     size_t conv = 0;   // anchor for tick->sec conversion (walked by tick)
     size_t bpmw = 0;   // tempo walk for frame BPM (walked by time)
@@ -184,41 +184,56 @@ std::vector<FrameStats> sweep_to_frames(TickData& td, std::vector<TempoChange>& 
                     * ((double)ppqn * 1e6) / (double)tm[iconv].us_per_quarter);
     };
 
-    // ---- exact peak-NPS sliding window -----------------------------------
-    // Deque of (T, ons) for the distinct note-carrying ticks inside the last
-    // second. Window is CLOSED: an onset exactly 1.000 s older than the newest
-    // one still counts (user decision 2026-10-10).
-    std::deque<std::pair<u128, uint64_t>> nps_window;
-    uint64_t wsum = 0;               // note-ons inside the 1s window
-    uint64_t peak_nps_exact = 0;     // exact maximum (monotonic)
+    // ---- exact peak-NPS / peak-CPS sliding windows -------------------------
+    // Deque of (T, count) for the distinct ticks carrying note-ons (CC events)
+    // inside the last second. Window is CLOSED: an event exactly 1.000 s older
+    // than the newest one still counts (user decision 2026-10-10).
+    struct PeakWindow {
+        std::deque<std::pair<u128, uint64_t>> q;
+        uint64_t sum = 0;    // events inside the 1 s window
+        uint64_t peak = 0;   // exact maximum (monotonic)
+        void add(u128 T, uint64_t n, u128 one_sec) {
+            q.emplace_back(T, n);
+            sum += n;
+            while (!q.empty() && q.front().first + one_sec < T) {
+                sum -= q.front().second;
+                q.pop_front();
+            }
+            if (sum > peak) peak = sum;
+        }
+    };
+    PeakWindow nps_win, cps_win;
 
     auto push_frame = [&](size_t k) {
         // Frame-end tempo: a tempo change inside frame k must show from k on
         // (the very last tempo is never hidden by the frame boundary).
         while (bpmw + 1 < tm.size() && tm[bpmw + 1].time_sec <= (double)(k + 1) / fps) bpmw++;
         uint64_t prev_cum = (k >= W) ? out[k - W].cumulative_notes : 0;
+        uint64_t prev_cc = (k >= W) ? out[k - W].cumulative_cc : 0;
         double nps = (double)(cum - prev_cum);
+        double cps = (double)(cum_cc - prev_cc);
         int64_t cur_poly = poly;
         if (k >= song_frames) {          // end-delay tail: all event activity
-            nps = 0;                     // is over -- nps and polyphony drop
-            cur_poly = 0;                // to their resting values
+            nps = 0;                     // is over -- nps, cps and polyphony
+            cps = 0;                     // drop to their resting values
+            cur_poly = 0;
         } else {
-            peak_nps = std::max(peak_nps, (double)peak_nps_exact);
+            peak_nps = std::max(peak_nps, (double)nps_win.peak);
+            peak_cps = std::max(peak_cps, (double)cps_win.peak);
             // peak_poly is maintained exactly per tick in the tick walk;
             // already monotonic and covers every event of frames < tail.
         }
         out.push_back({k, (double)k / fps, cum, cum_cc, nps, peak_nps,
                        std::max<int64_t>(0, cur_poly), peak_poly, tm[bpmw].bpm, (int64_t)tick_at((double)k / fps)});
+        out.back().cc_per_second = cps;
+        out.back().peak_cps = peak_cps;
     };
 
-    // One touched tick, visited in strictly increasing tick order. A tick
-    // with (ons|delta)==0 contributes nothing but CC; poly/peak update per
-    // tick in tick order.
+    // One touched tick, visited in strictly increasing tick order; poly/peak
+    // update per tick in tick order. A CC-only tick lands in its own frame
+    // like any other (so {cc} and {cps} count it from that frame on).
     auto process_tick = [&](uint64_t t, uint64_t o, int64_t d, uint64_t c) {
-        if (o == 0 && d == 0) {
-            if (c) cum_cc += c;   // CC-only tick: accumulate, no frame needed
-            return;
-        }
+        if (o == 0 && d == 0 && c == 0) return;
         while (conv + 1 < tm.size() && tm[conv + 1].tick <= t) conv++;
         double sec = tm[conv].time_sec + (double)(t - tm[conv].tick) * (double)tm[conv].us_per_quarter * inv;
         size_t fi = (size_t)(sec * fps);
@@ -227,15 +242,10 @@ std::vector<FrameStats> sweep_to_frames(TickData& td, std::vector<TempoChange>& 
         // their end-of-frame state is the current running state.
         while (cur_frame < fi) push_frame(cur_frame++);
 
-        if (o > 0) {
+        if (o > 0 || c > 0) {
             const u128 T = tanchor[conv] + (u128)(t - tm[conv].tick) * tm[conv].us_per_quarter;
-            nps_window.emplace_back(T, o);
-            wsum += o;
-            while (!nps_window.empty() && nps_window.front().first + one_sec < T) {
-                wsum -= nps_window.front().second;
-                nps_window.pop_front();
-            }
-            if (wsum > peak_nps_exact) peak_nps_exact = wsum;
+            if (o > 0) nps_win.add(T, o, one_sec);
+            if (c > 0) cps_win.add(T, c, one_sec);
         }
 
         cum += o;
@@ -356,7 +366,7 @@ std::vector<FrameStats> buckets_to_frames(FrameBuckets& fb, double fps,
     out.reserve(total_frames);
     uint64_t cum = 0, cum_cc = 0;
     int64_t poly = 0, peak_poly = 0;
-    double peak_nps = 0.0;
+    double peak_nps = 0.0, peak_cps = 0.0;
     size_t bpmw = 0;
     const size_t W = std::max<size_t>(1, (size_t)std::round(fps));   // >= 1 frame (fps < 0.5)
 
@@ -364,9 +374,9 @@ std::vector<FrameStats> buckets_to_frames(FrameBuckets& fb, double fps,
     // prefix sums as sweep_to_frames, so both engines agree.
     const size_t wlen = W * FMCG_FINE_BINS;
     size_t fine_next = 0;
-    uint64_t wsum = 0;
+    uint64_t wsum = 0, csum = 0;
     int64_t  psum = 0;
-    uint64_t run_nps = 0;
+    uint64_t run_nps = 0, run_cps = 0;
     int64_t  run_poly = 0;
 
     // Tick-space inversion, same as sweep_to_frames: anchor walked by time.
@@ -402,21 +412,32 @@ std::vector<FrameStats> buckets_to_frames(FrameBuckets& fb, double fps,
             wsum += fb.fons[fine_next];
             if (fine_next >= wlen) wsum -= fb.fons[fine_next - wlen];
             if (wsum > run_nps) run_nps = wsum;
+            if (with_cc) {
+                csum += fb.fcc[fine_next];
+                if (fine_next >= wlen) csum -= fb.fcc[fine_next - wlen];
+                if (csum > run_cps) run_cps = csum;
+            }
             psum += fb.ffdeltas[fine_next];
             if (psum > run_poly) run_poly = psum;
         }
         uint64_t prev_cum = (k >= W) ? out[k - W].cumulative_notes : 0;
+        uint64_t prev_cc = (k >= W) ? out[k - W].cumulative_cc : 0;
         double nps = (double)(cum - prev_cum);
+        double cps = (double)(cum_cc - prev_cc);
         int64_t cur_poly = poly;
         if (k >= song_frames) {          // end-delay tail: all event activity
-            nps = 0;                     // is over -- nps and polyphony drop
-            cur_poly = 0;                // to their resting values
+            nps = 0;                     // is over -- nps, cps and polyphony
+            cps = 0;                     // drop to their resting values
+            cur_poly = 0;
         } else {
             peak_nps = std::max(peak_nps, (double)run_nps);
+            peak_cps = std::max(peak_cps, (double)run_cps);
             peak_poly = std::max(peak_poly, run_poly);
         }
         out.push_back({k, (double)k / fps, cum, cum_cc, nps, peak_nps,
                        std::max<int64_t>(0, cur_poly), peak_poly, tm[bpmw].bpm, (int64_t)tick_at((double)k / fps)});
+        out.back().cc_per_second = cps;
+        out.back().peak_cps = peak_cps;
     }
     return out;
 }

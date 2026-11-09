@@ -19,7 +19,7 @@ const TokenName k_tokens[] = {
     {"time", Stat::Time}, {"time-max", Stat::TimeMax}, {"time-rem", Stat::TimeRem},
     {"time-milli", Stat::TimeMilli}, {"time-milli-max", Stat::TimeMilliMax}, {"time-milli-rem", Stat::TimeMilliRem},
     {"bpm", Stat::Bpm}, {"ppqn", Stat::Ppqn}, {"plph", Stat::Poly}, {"plph-max", Stat::PolyMax},
-    {"nps", Stat::Nps}, {"nps-max", Stat::NpsMax},
+    {"nps", Stat::Nps}, {"nps-max", Stat::NpsMax}, {"cps", Stat::Cps}, {"cps-max", Stat::CpsMax},
     {"beat", Stat::Beat}, {"beat-total", Stat::BeatTotal}, {"beat-rem", Stat::BeatRem},
     {"measure", Stat::Measure}, {"measure-total", Stat::MeasureTotal}, {"measure-rem", Stat::MeasureRem},
     {"measure-beat", Stat::MeasureBeat}, {"timesig", Stat::TimeSig},
@@ -37,7 +37,7 @@ struct StatFormatter {
     const SongTotals& song;
     const CommaOpts& commas;
     int bdec;
-    int w_notes = 0, w_cc = 0, w_poly = 0, w_nps = 0, w_sec = 0, w_tick = 0;
+    int w_notes = 0, w_cc = 0, w_poly = 0, w_nps = 0, w_cps = 0, w_sec = 0, w_tick = 0;
     int w_beat = 0, w_measure = 0, w_mbeat = 0;
 
     StatFormatter(const FrameStats& f, const SongTotals& s, const FormatOpts& o)
@@ -49,6 +49,7 @@ struct StatFormatter {
             w_cc      = w(song.cc);
             w_poly    = w(static_cast<uint64_t>(std::max<int64_t>(0, fs.peak_polyphony)));
             w_nps     = w(static_cast<uint64_t>(std::max<double>(0, std::round(fs.peak_nps))));
+            w_cps     = w(static_cast<uint64_t>(std::max<double>(0, std::round(fs.peak_cps))));
             w_sec     = w(static_cast<uint64_t>(std::max<double>(0, song.duration)));
             w_tick    = w(song.ticks);
             w_beat    = w(song.meter.beats);
@@ -128,6 +129,8 @@ struct StatFormatter {
         case Stat::PolyMax:      return fmt(commas.polyphony, peak_poly, w_poly);
         case Stat::Nps:          return fmt(commas.nps, static_cast<uint64_t>(std::round(std::max<double>(0, fs.notes_per_second))), w_nps);
         case Stat::NpsMax:       return fmt(commas.nps, static_cast<uint64_t>(std::round(std::max<double>(0, fs.peak_nps))), w_nps);
+        case Stat::Cps:          return fmt(commas.cc, static_cast<uint64_t>(std::round(std::max<double>(0, fs.cc_per_second))), w_cps);
+        case Stat::CpsMax:       return fmt(commas.cc, static_cast<uint64_t>(std::round(std::max<double>(0, fs.peak_cps))), w_cps);
         case Stat::Beat:         return fmt(commas.beats, fs.beat, w_beat);
         case Stat::BeatTotal:    return fmt(commas.beats, song.meter.beats, w_beat);
         case Stat::BeatRem:      return fmt(commas.beats, rem(song.meter.beats, fs.beat), w_beat);
@@ -275,7 +278,7 @@ fmcg_text::TextBlockSpec FrameTextSource::block_spec() const {
     //  - the first song frame (largest *-rem),
     //  - the last frame (largest time/ticks/totals so far),
     //  - a synthetic frame with every running stat at its maximum (notes, CC,
-    //    polyphony, NPS, BPM, beat / measure numbers), once per time signature
+    //    polyphony, NPS, CPS, BPM, beat / measure numbers), once per time signature
     //    the song uses ({timesig} and {measure-beat} change with it).
     // Each probe's text, with every digit replaced by each of 0..9, gives the
     // candidates; the renderer measures them in the actual font, so the
@@ -291,12 +294,15 @@ fmcg_text::TextBlockSpec FrameTextSource::block_spec() const {
         mx.cumulative_cc = song.cc;
         mx.polyphony = std::max<int64_t>(mx.polyphony, mx.peak_polyphony);
         mx.notes_per_second = std::max(mx.notes_per_second, mx.peak_nps);
+        mx.cc_per_second = std::max(mx.cc_per_second, mx.peak_cps);
         for (const FrameStats& f : *frames) {
             mx.bpm = std::max(mx.bpm, f.bpm);
             mx.polyphony = std::max<int64_t>(mx.polyphony, f.peak_polyphony);
             mx.peak_polyphony = std::max<int64_t>(mx.peak_polyphony, f.peak_polyphony);
             mx.notes_per_second = std::max(mx.notes_per_second, f.peak_nps);
             mx.peak_nps = std::max(mx.peak_nps, f.peak_nps);
+            mx.cc_per_second = std::max(mx.cc_per_second, f.peak_cps);
+            mx.peak_cps = std::max(mx.peak_cps, f.peak_cps);
         }
         mx.beat = song.meter.beats;
         mx.measure = song.meter.measures;

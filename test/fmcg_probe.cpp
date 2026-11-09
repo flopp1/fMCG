@@ -50,9 +50,10 @@ int main(int argc, char** argv) {
     const SongMeter& meter = r.meter;
     if (fr.empty()) { printf("FAIL\n"); return 1; }
     printf("OK notes=%llu ticks=%llu ppqn=%u peak_poly=%lld peak_nps=%.0f frames=%zu lossy=%d twopass=%d assumed=%d"
-           " beats=%llu measures=%llu\n",
+           " beats=%llu measures=%llu cc=%llu peak_cps=%.0f\n",
            (unsigned long long)notes, (unsigned long long)ticks, (unsigned)ppqn,
            (long long)fr.back().peak_polyphony, fr.back().peak_nps, fr.size(), lossy ? 1 : 0, twopass ? 1 : 0,
-           assumed ? 1 : 0, (unsigned long long)meter.beats, (unsigned long long)meter.measures);
+           assumed ? 1 : 0, (unsigned long long)meter.beats, (unsigned long long)meter.measures,
+           (unsigned long long)fr.back().cumulative_cc, fr.back().peak_cps);
     return 0;
 }

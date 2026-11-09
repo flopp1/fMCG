@@ -1117,7 +1117,7 @@ struct FrameBuckets {
     std::vector<int64_t> deltas;   // signed: transient negatives must not wrap
     // Fine-grid mirrors (FMCG_FINE_BINS bins per frame) feeding the sub-frame
     // peak computation, identical to the single-pass engine's.
-    std::vector<uint64_t> fons;
+    std::vector<uint64_t> fons, fcc;
     std::vector<int64_t>  ffdeltas;
     size_t nbins = 0;
     uint64_t total_ons = 0, total_cc = 0;
@@ -1141,7 +1141,7 @@ struct FrameBuckets {
         if (bin >= fons.size()) {
             size_t n = fons.size() ? fons.size() * 2 : 4096;
             if (n < bin + 1) n = bin + 1;
-            fons.resize(n, 0); ffdeltas.resize(n, 0);
+            fons.resize(n, 0); ffdeltas.resize(n, 0); fcc.resize(n, 0);
             nbins = n;
         }
     }
@@ -1151,6 +1151,7 @@ struct FrameBuckets {
         if (!cc.empty()) cc.resize(n, 0);
         if (nframes < n) nframes = n;
         fons.resize(n * FMCG_FINE_BINS, 0); ffdeltas.resize(n * FMCG_FINE_BINS, 0);
+        fcc.resize(n * FMCG_FINE_BINS, 0);
         if (nbins < n * FMCG_FINE_BINS) nbins = n * FMCG_FINE_BINS;
     }
     // Note events are addressed by FINE bin; the frame index is bin/8.
@@ -1161,7 +1162,15 @@ struct FrameBuckets {
         if (__builtin_expect(bin >= fons.size(), 0)) fine_ensure(bin);
         fons[bin] += n_ons; ffdeltas[bin] += delta;
     }
-    void add_cc(size_t fi, uint64_t n) { if (fi >= nframes) ensure(fi); cc[fi] += n; total_cc += n; }
+    // CC events by fine bin too (frame = bin / 8, the same frame as before:
+    // scaling by 8 is exact in floating point), for the sub-frame peak CPS.
+    void add_cc(size_t bin, uint64_t n) {
+        const size_t fi = bin / FMCG_FINE_BINS;
+        if (fi >= nframes) ensure(fi);
+        cc[fi] += n; total_cc += n;
+        if (bin >= fcc.size()) fine_ensure(bin);
+        fcc[bin] += n;
+    }
 };
 
 // Pass-2 sink: each tick's totals go straight to the frame (CC) or fine bin
@@ -1233,10 +1242,10 @@ struct FrameSink {
             while (conv + 1 < tm.size() && tm[conv + 1].tick <= t) ++conv;
             load();
         }
-        if (n_ons || delta) fb.add_notes(note_bin(t), n_ons, delta);
-        if (cc) {
-            const double f = sec_of(t) * fps;
-            fb.add_cc(f <= 0.0 ? 0 : (size_t)(int64_t)f, cc);
+        if (n_ons || delta || cc) {
+            const size_t b = note_bin(t);
+            if (n_ons || delta) fb.add_notes(b, n_ons, delta);
+            if (cc) fb.add_cc(b, cc);
         }
     }
     void end_track(uint64_t t) { if (t > fb.max_tick) fb.max_tick = t; }

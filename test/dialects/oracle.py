@@ -247,8 +247,19 @@ def stats(flat: bytes):
     poly = peak_poly = 0
     win = deque()
     wsum = peak_nps = 0
+    cwin = deque()             # the same closed 1 s window over CC events
+    csum = peak_cps = 0
+    cc = 0
     for t in sorted(cells):
-        o, d, _ = cells[t]
+        o, d, c = cells[t]
+        if c:
+            T = itime(t)
+            cwin.append((T, c))
+            csum += c
+            cc += c
+            while cwin and cwin[0][0] + one_sec < T:
+                csum -= cwin.popleft()[1]
+            peak_cps = max(peak_cps, csum)
         if o == 0 and d == 0:
             continue
         if o:
@@ -262,7 +273,7 @@ def stats(flat: bytes):
         peak_poly = max(peak_poly, poly)
     beats, measures = meter_totals(metas, max_tick, div)
     return dict(notes=notes, ticks=max_tick, ppqn=div, peak_poly=peak_poly, peak_nps=peak_nps,
-                beats=beats, measures=measures)
+                beats=beats, measures=measures, cc=cc, peak_cps=peak_cps)
 
 
 def _ceil_div(a, b):

@@ -170,7 +170,7 @@ int main(int argc, char** argv) {
     }
 
     // --- CC counting: gen CC events into a temp midi and count them ---
-    //     5 CC events at ticks 0,240,480,720,960 (120bpm = 0.5s/quarter).
+    //     5 CC events at ticks 0,240,480,720,960 (120 bpm, 480 ppqn: 0.25 s apart).
     //     CC during lead-in and CC total must both be reflected.
     {
         FILE* f = fopen("_cctest.mid", "wb");
@@ -194,7 +194,7 @@ int main(int argc, char** argv) {
             std::string ev;
             ev += vlq(0) + std::string("\xFF\x51\x03\x07\xA1\x20", 6);   // tempo 120
             for (int k = 0; k < 5; ++k)
-                ev += vlq(k ? 240 : 0) + std::string("\xB0\x07\x40", 3); // CC7=64 each quarter
+                ev += vlq(k ? 240 : 0) + std::string("\xB0\x07\x40", 3); // CC7=64 every eighth
             ev += vlq(960) + std::string("\x90\x3C\x64", 3);             // a note at 2.0s
             ev += vlq(240) + std::string("\x80\x3C\x40", 3);
             ev += vlq(480) + std::string("\xFF\x2F\x00", 3);
@@ -209,11 +209,27 @@ int main(int argc, char** argv) {
             auto frames = parse_full("_cctest.mid", 60.0, div, total, tcc);
             expect("cc total", (long long)tcc, 5);
             expect("cc note still counted", (long long)total, 1);
-            if (!frames.empty()) {
-                // CCs land at 0.0/0.5/1.0/1.5/2.0s; the note-on is at 2.0s too,
-                // so the first frame already carries all 5 (CC@t0=frame 0).
-                expect("cc cum@f0", (long long)frames[0].cumulative_cc, 5);
+            if (frames.size() > 121) {
+                // CCs every 240 ticks = 0.25 s: 0.0/0.25/0.5/0.75/1.0 s =
+                // frames 0/15/30/45/60; the note is at 2.0 s. Each CC counts
+                // from its own frame (a CC-only tick is not pulled into an
+                // earlier frame).
+                expect("cc cum@f0", (long long)frames[0].cumulative_cc, 1);
+                expect("cc cum@f14", (long long)frames[14].cumulative_cc, 1);
+                expect("cc cum@f15", (long long)frames[15].cumulative_cc, 2);
+                expect("cc cum@f30", (long long)frames[30].cumulative_cc, 3);
+                expect("cc cum@f60", (long long)frames[60].cumulative_cc, 5);
                 expect("cc cum@last", (long long)frames.back().cumulative_cc, 5);
+                // {cps}: CCs in the last 60 frames; {cps-max}: exact closed 1 s
+                // window over ticks -- 0.0 .. 1.0 s all fit in one (5), which
+                // no 60-frame difference of the frame counts shows (max 4).
+                expect("cps@f60", (long long)frames[60].cc_per_second, 4);
+                expect("cps@f120", (long long)frames[120].cc_per_second, 0);
+                expect("cps-max@f59", (long long)frames[59].peak_cps, 4);
+                expect("cps-max@f60", (long long)frames[60].peak_cps, 5);
+                expect("cps-max@last", (long long)frames.back().peak_cps, 5);
+            } else {
+                expect("cc frames", (long long)frames.size(), 122);
             }
             remove("_cctest.mid");
         }

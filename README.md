@@ -56,6 +56,7 @@ Each line of the layout box is one row of the overlay, and a row can mix any tex
 | Beat within the measure | `{measure-beat}` |
 | Time signature | `{timesig}` (e.g. `6/8`) |
 | Control changes | `{cc}` `{cc-total}` `{cc-rem}` |
+| Control changes per second (1 s window) | `{cps}` `{cps-max}` |
 | PPQN | `{ppqn}` |
 
 - Times switch to `h:mm:ss` from one hour on.

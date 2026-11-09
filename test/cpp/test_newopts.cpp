@@ -42,6 +42,16 @@ int main() {
         auto out = format_line("N:{nc}/{nc-total}", fs, SongTotals{678901, 0, 0, tmax, ppqn}, FormatOpts{c3, p1, {}});
         check("auto-pad no-comma", out, "N:000034/678901");
     }
+    {   // CC per second: CC commas option, auto-pad to the peak's width.
+        FrameStats fs; fs.cc_per_second = 1234.4; fs.peak_cps = 56789;
+        CommaOpts cc_on = c; cc_on.cc = true;
+        check("cps commas off (default)",
+              format_line("{cps}/{cps-max}", fs, SongTotals{0, 0, 0, tmax, ppqn}, FormatOpts{c, p0, {}}), "1234/56789");
+        check("cps commas on",
+              format_line("{cps}/{cps-max}", fs, SongTotals{0, 0, 0, tmax, ppqn}, FormatOpts{cc_on, p0, {}}), "1,234/56,789");
+        check("cps auto-pad",
+              format_line("{cps}/{cps-max}", fs, SongTotals{0, 0, 0, tmax, ppqn}, FormatOpts{c, p1, {}}), "01234/56789");
+    }
     {   // CC tokens: on/off, remainder, commas, auto-pad to total-CC width.
         FrameStats fs; fs.cumulative_cc = 7;
         auto out = format_line("C:{cc}/{cc-total}/{cc-rem}", fs, SongTotals{0, 1205, 0, tmax, ppqn}, FormatOpts{c, p0, {}});

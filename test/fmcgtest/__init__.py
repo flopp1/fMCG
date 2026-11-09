@@ -130,10 +130,10 @@ def probe():
     return build("probe", CORE + ["test/fmcg_probe.cpp"])
 
 
-KEYS = ["notes", "ticks", "ppqn", "peak_poly", "peak_nps", "beats", "measures"]
+KEYS = ["notes", "ticks", "ppqn", "peak_poly", "peak_nps", "beats", "measures", "cc", "peak_cps"]
 # The two-pass fallback (used whenever a standard scan crosses the MIDI-spec
 # tick limit, 2^28) bins peaks; only these stats are exact there.
-TWOPASS_KEYS = ["notes", "ticks", "ppqn", "frames", "beats", "measures"]
+TWOPASS_KEYS = ["notes", "ticks", "ppqn", "frames", "beats", "measures", "cc"]
 
 
 def keys_for(*results):

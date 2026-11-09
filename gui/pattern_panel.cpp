@@ -451,6 +451,7 @@ void draw_pattern_section() {
         static const char* const k_stats[] = {
             "Notes",  "{nc} / {nc-total} / {nc-rem}",
             "CC",     "{cc} / {cc-total} / {cc-rem}",
+            "CC per second", "{cps} / {cps-max}",
             "Time",   "{time} / {time-max} / {time-rem}",
             "Time (ms)", "{time-milli} / {time-milli-max} / {time-milli-rem}",
             "Seconds", "{sec} / {sec-max} / {sec-rem}",

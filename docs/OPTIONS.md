@@ -15,6 +15,7 @@ This page explains each setting more fully than the [README](../README.md).
 ## Stats
 
 - **Notes per second** counts the note-ons in the last second. The window includes its boundary, so a note exactly 1.0 s earlier still counts. `{nps-max}` is the highest value so far.
+- **CC per second** (`{cps}`, `{cps-max}`) counts control-change events the same way: the last second, boundary included, and the highest value so far. The "CC" comma option groups them.
 - **Polyphony** is note-ons minus note-offs. A note-off only counts when that key is held on that channel. `{plph-max}` is the highest value so far.
 - **Ticks** keep advancing during the end delay at the last tempo. During the start delay they count up from a negative value to zero.
 - **Beats and measures** follow the file's time signatures, with 4/4 when there are none.

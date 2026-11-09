@@ -37,6 +37,11 @@ struct FrameStats {
     uint64_t beat = 0, measure = 0;
     uint32_t measure_beat = 0;
     uint8_t ts_num = 4, ts_dd = 2;
+    // Control changes per second: CC events in the last second (same window
+    // as notes_per_second) and its running maximum (same method as peak_nps:
+    // exact sliding 1 s window over ticks; bin-quantized in two-pass mode).
+    double cc_per_second = 0.0;
+    double peak_cps = 0.0;
 };
 
 // One global meta event from the scan: a tempo change (us_per_quarter > 0)

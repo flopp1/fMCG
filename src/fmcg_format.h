@@ -13,7 +13,7 @@ struct CommaOpts {
     bool notes     = true;   // {nc} {nc-total} {nc-rem}
     bool polyphony = true;   // {plph} {plph-max}
     bool nps       = true;   // {nps} {nps-max}
-    bool cc        = false;  // {cc} {cc-total} {cc-rem}
+    bool cc        = false;  // {cc} {cc-total} {cc-rem} {cps} {cps-max}
     bool ticks     = true;   // {tick} {tick-total} {tick-rem}
     bool beats     = true;   // {beat*} {measure*}
     bool operator==(const CommaOpts& o) const {
@@ -65,7 +65,7 @@ enum class Stat : uint8_t {
     Literal,
     Notes, NotesTotal, NotesRem, Cc, CcTotal, CcRem, Tick, TickTotal, TickRem,
     Sec, SecMax, SecRem, Time, TimeMax, TimeRem, TimeMilli, TimeMilliMax, TimeMilliRem,
-    Bpm, Ppqn, Poly, PolyMax, Nps, NpsMax,
+    Bpm, Ppqn, Poly, PolyMax, Nps, NpsMax, Cps, CpsMax,
     Beat, BeatTotal, BeatRem, Measure, MeasureTotal, MeasureRem, MeasureBeat, TimeSig,
 };
 
