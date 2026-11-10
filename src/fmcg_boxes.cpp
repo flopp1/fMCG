@@ -235,6 +235,17 @@ bool split_leaf(Node& root, int leaf, int dir, int n) {
     return true;
 }
 
+int insert_box(Node& root, int leaf, int side) {
+    if (side < 0 || side > 3 || !split_leaf(root, leaf, side % 2 == 0 ? kColumns : kRows, 2)) return -1;
+    // split_leaf leaves the content in part `leaf` and the empty part right
+    // after it in reading order; a new box on the left / above swaps them.
+    if (side == 0 || side == 1) {
+        std::swap(leaf_at(root, leaf)->box, leaf_at(root, leaf + 1)->box);
+        return leaf;
+    }
+    return leaf + 1;
+}
+
 int remove_leaf(Node& root, int leaf) {
     Found f = find(root, leaf);
     if (!f.node || !f.parent) return -1;

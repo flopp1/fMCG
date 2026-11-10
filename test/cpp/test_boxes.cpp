@@ -97,6 +97,41 @@ int main() {
         check("remove after a nested split: the neighbouring leaf is reported, texts unchanged",
               to == 1 && leaf_at(n, 0)->box.text == "TL" && leaf_at(n, 1)->box.text == "BL" && n.split == kRows && tiles(n));
     }
+    {   // insert a box beside the selected one
+        bool ok = true;
+        const char* names[4] = {"left", "above", "right", "below"};
+        for (int side = 0; side < 4; ++side) {
+            Node root;
+            split_leaf(root, 0, kColumns, 2);     // two halves; box 1 = right half
+            leaf_at(root, 1)->box.text = "keep";
+            const FRect before = leaf_rects(root)[1];
+            const int added = insert_box(root, 1, side);
+            const std::vector<FRect> r = leaf_rects(root);
+            int kept = -1;
+            for (int i = 0; i < leaf_count(root); ++i)
+                if (leaf_at(root, i)->box.text == "keep") kept = i;
+            bool good = added >= 0 && kept >= 0 && added != kept && leaf_count(root) == 3 && tiles(root) &&
+                        leaf_at(root, added)->box.text.empty();
+            if (good) {
+                const FRect& a = r[added];
+                const FRect& k = r[kept];
+                const double mx = (before.x0 + before.x1) / 2, my = (before.y0 + before.y1) / 2;
+                if (side == 0) good = near(a.x0, before.x0) && near(a.x1, mx) && near(k.x0, mx) && near(k.y1, before.y1);
+                if (side == 2) good = near(k.x1, mx) && near(a.x0, mx) && near(a.x1, before.x1);
+                if (side == 1) good = near(a.y0, before.y0) && near(a.y1, my) && near(k.y0, my) && near(k.x0, before.x0);
+                if (side == 3) good = near(k.y1, my) && near(a.y0, my) && near(a.y1, before.y1);
+                good &= near(r[0].x1, 0.5);    // the other box is untouched
+            }
+            if (!good) std::printf("  insert %s failed\n", names[side]);
+            ok &= good;
+        }
+        check("insert_box: an empty box on each side, in half the box's space", ok);
+        Node one;
+        one.box.text = "x";
+        check("insert_box: left of the only box", insert_box(one, 0, 0) == 0 && leaf_at(one, 1)->box.text == "x" &&
+                                                    near(leaf_rects(one)[0].x1, 0.5));
+        check("insert_box: bad input", insert_box(one, 5, 0) == -1 && insert_box(one, 0, 4) == -1);
+    }
     {   // dividers and dragging
         Node root;
         split_leaf(root, 0, kRows, 2);
@@ -164,13 +199,14 @@ int main() {
             Node root;
             for (int step = 0; step < 30 && ok; ++step) {
                 const int n = leaf_count(root);
-                const int op = (int)(rng() % 4), leaf = (int)(rng() % n);
+                const int op = (int)(rng() % 5), leaf = (int)(rng() % n);
                 if (op == 0) split_leaf(root, leaf, 1 + (int)(rng() % 2), 2 + (int)(rng() % 3));
                 else if (op == 1 && n > 1) remove_leaf(root, leaf);
                 else if (op == 2) {
                     const std::vector<Divider> d = dividers(root);
                     if (!d.empty()) move_divider(root, d[rng() % d.size()], (rng() % 1000) / 1000.0);
-                } else equalize_parent(root, leaf);
+                } else if (op == 3) equalize_parent(root, leaf);
+                else insert_box(root, leaf, (int)(rng() % 4));
                 Node back;
                 ok = tiles(root) && parse_structure(structure_string(root), back) && leaf_count(back) == leaf_count(root);
                 if (!ok) std::printf("  run %d step %d: %s\n", run, step, structure_string(root).c_str());

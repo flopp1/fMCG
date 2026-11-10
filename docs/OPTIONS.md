@@ -90,6 +90,7 @@ The overlay is split into boxes. Each box has its own text, and says where in th
   - **Split into columns** and **Split into rows** divide the selected box into the number of equal **parts** chosen beside them (2 to 8). Splitting a column into more columns adds them to the same row of columns.
   - Drag the line between two boxes to resize the boxes on both sides of it. The line snaps to 1/2, 1/3, 1/4, 1/5, 1/6, 1/8, 1/10 and 1/12 of the frame and to the edges of other boxes; the tooltip shows where it is. Hold Alt to drag without snapping.
   - **Exact size** (under the selected box's settings) shows the box's left, right, top and bottom edges as percentages of the frame. Type a value and press Enter to move that edge; the boxes on its other side change with it. Edges on the frame border cannot move.
+  - **Add a box: Left / Right / Above / Below** puts a new empty box on that side of the selected box. The two share the selected box's space half and half, the selected box keeps its text, and the new box is selected.
   - **Equal sizes** gives the selected box and the boxes it was split with the same size.
   - **Delete box** removes the selected box and its text, after asking if it has any. Its space goes to the box before it (or after it, for the first).
 - **Text sits at** chooses one of 9 points of the selected box: a corner, an edge centre or the centre. The block of text is placed there, inset by the **Margin**.

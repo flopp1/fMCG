@@ -55,6 +55,10 @@ bool parse_structure(const std::string& s, Node& out);
 // (kRows). The first part keeps the content, the others start empty. Inside a
 // split of the same direction the parts join it (no extra nesting).
 bool split_leaf(Node& root, int leaf, int dir, int n);
+// Adds an empty box beside box `leaf` (side: 0 left, 1 above, 2 right,
+// 3 below), taking half of that box's space; the box keeps its content.
+// Returns the new box's index, -1 on bad input.
+int insert_box(Node& root, int leaf, int side);
 // Removes box `leaf` and its content: its space goes to the neighbour
 // before it (after it when it is the first). Returns the index of the
 // neighbouring box next to it afterwards, -1 if it is the only box.

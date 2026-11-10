@@ -468,6 +468,25 @@ static void draw_box_editor() {
     ImGui::SameLine();
     ImGui::SetNextItemWidth(70);
     if (ImGui::InputInt("parts", &parts)) parts = std::max(2, std::min(8, parts));
+    // A new empty box on one side of the selected one (half its space).
+    ImGui::TextUnformatted("Add a box:");
+    static const char* const k_add_side[4] = {"Left", "Above", "Right", "Below"};
+    for (int side : {0, 2, 1, 3}) {
+        ImGui::SameLine();
+        ImGui::PushID(side);
+        if (ImGui::Button(k_add_side[side])) {
+            commit_layout_buf();
+            const int added = insert_box(root, g_ui.selected_box, side);
+            if (added >= 0) {
+                g_ui.selected_box = added;
+                load_layout_buf();
+            }
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Adds an empty box %s the selected box, in half of its space,\nand selects it.",
+                              side == 0 ? "left of" : side == 1 ? "above" : side == 2 ? "right of" : "below");
+        ImGui::PopID();
+    }
     if (n > 1) {
         if (ImGui::Button("Equal sizes")) equalize_parent(root, sel);
         if (ImGui::IsItemHovered())
