@@ -32,7 +32,7 @@ std::string rrggbb_to_ass(const std::string& rrggbb) {
     return "&H00" + rrggbb.substr(4, 2) + rrggbb.substr(2, 2) + rrggbb.substr(0, 2);
 }
 
-bool EditColour(const char* label, std::string& rrggbb) {
+bool EditColour(const char* label, std::string& rrggbb, bool swatch_only) {
     // Normalise current value into float components. Never throws: the value
     // can come from a hand-edited pattern file (stoul on "GG" crashed the UI).
     auto nib = [](char c) {
@@ -50,7 +50,8 @@ bool EditColour(const char* label, std::string& rrggbb) {
     // The swatch itself opens the compact picker popup.
     bool changed = ImGui::ColorEdit3(label, col,
         ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_NoDragDrop |
-        ImGuiColorEditFlags_NoOptions | ImGuiColorEditFlags_DisplayHex);
+        ImGuiColorEditFlags_NoOptions | ImGuiColorEditFlags_DisplayHex |
+        (swatch_only ? ImGuiColorEditFlags_NoInputs : 0));
     ImGui::PopID();
 
     if (changed) {

@@ -131,6 +131,43 @@ int main() {
         check("insert_box: left of the only box", insert_box(one, 0, 0) == 0 && leaf_at(one, 1)->box.text == "x" &&
                                                     near(leaf_rects(one)[0].x1, 0.5));
         check("insert_box: bad input", insert_box(one, 5, 0) == -1 && insert_box(one, 0, 4) == -1);
+
+        // Add a box beside any box, delete it (space back to the box it was
+        // added beside): the tree is bit-identical, in every layout.
+        std::vector<Node> layouts;
+        Node cols; split_leaf(cols, 0, kColumns, 3); layouts.push_back(cols);
+        Node rows; split_leaf(rows, 0, kRows, 3); layouts.push_back(rows);
+        Node mix; split_leaf(mix, 0, kRows, 2); split_leaf(mix, 0, kColumns, 3); split_leaf(mix, 3, kColumns, 2);
+        layouts.push_back(mix);
+        Node dragged = mix;
+        for (const Divider& d : dividers(dragged)) move_divider(dragged, d, d.pos + 0.0123);
+        layouts.push_back(dragged);
+        Node parsed;
+        parse_structure("R(0.3:C(0.2:B,0.45:B,0.35:B),0.7:C(0.6:R(0.5:B,0.5:B),0.4:B))", parsed);
+        layouts.push_back(parsed);
+        bool exact = true, back_ok = true;
+        for (size_t li = 0; li < layouts.size(); ++li)
+            for (int leaf = 0; leaf < leaf_count(layouts[li]); ++leaf)
+                for (int side = 0; side < 4; ++side) {
+                    Node t = layouts[li];
+                    for (int i = 0; i < leaf_count(t); ++i) leaf_at(t, i)->box.text = "box " + std::to_string(i);
+                    const Node orig = t;
+                    const int added = insert_box(t, leaf, side);
+                    const int origin = added == leaf ? leaf + 1 : leaf;
+                    const int got = remove_leaf(t, added, origin);
+                    if (!(t == orig)) {
+                        if (exact) std::printf("  layout %zu leaf %d side %d: %s vs %s\n", li, leaf, side,
+                                               structure_string(t).c_str(), structure_string(orig).c_str());
+                        exact = false;
+                    }
+                    back_ok &= got == leaf;
+                }
+        check("add a box then delete it: tree bit-identical (5 layouts, every box, 4 sides)", exact);
+        check("add a box then delete it: the space goes back to the original box", back_ok);
+        // Without a preference (or a box not beside it) the old neighbour rule applies.
+        Node c3 = cols;
+        check("remove_leaf: prefer not adjacent -> the box before it", remove_leaf(c3, 2, 0) == 1 &&
+                                                                         near(leaf_rects(c3)[1].x1, 1.0));
     }
     {   // dividers and dragging
         Node root;

@@ -34,22 +34,25 @@
 #endif
 #include "panels.h"
 
+// Every labelled row puts its input at the same x.
+static const float k_label_w = 170.0f;
+
 void draw_global_section() {
     // --- Global section: session-wide settings, autosaved, NOT in patterns --
     ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f),
-        "Global settings - autosaved, separate from patterns");
+        "Global - autosaved, separate from patterns");
     ImGui::Spacing();
 
-    ImGui::Text("Start delay (seconds): ");
-    ImGui::SameLine(170);
+    ImGui::Text("Start delay (seconds)");
+    ImGui::SameLine(k_label_w);
     ImGui::SetNextItemWidth(100);
     double delay_input = g_ui.s.global.start_delay;
     if (ImGui::InputDouble("##delay", &delay_input, 0, 0, "%.2f")) {
         if (delay_input >= 0) { g_ui.s.global.start_delay = std::min(delay_input, k_max_delay); mark_globals_dirty(); }
     }
 
-    ImGui::Text("End delay (seconds): ");
-    ImGui::SameLine(170);
+    ImGui::Text("End delay (seconds)");
+    ImGui::SameLine(k_label_w);
     ImGui::SetNextItemWidth(100);
     double edelay_input = g_ui.s.global.end_delay;
     if (ImGui::InputDouble("##edelay", &edelay_input, 0, 0, "%.2f")) {
@@ -65,7 +68,7 @@ void draw_global_section() {
                           "Affects polyphony only.");
 
     ImGui::Text("Resolution");
-    ImGui::SameLine(120);
+    ImGui::SameLine(k_label_w);
     ImGui::SetNextItemWidth(100);
     if (ImGui::InputInt("##w", &g_ui.s.global.width, 0, 0)) { mark_globals_dirty(); }
     ImGui::SameLine();
@@ -82,7 +85,7 @@ void draw_global_section() {
     }
 
     ImGui::Text("FPS");
-    ImGui::SameLine(120);
+    ImGui::SameLine(k_label_w);
     ImGui::SetNextItemWidth(120);
     double fps_input = g_ui.s.global.fps;
     if (ImGui::InputDouble("##fps", &fps_input, 0, 0, "%.1f")) {
@@ -90,7 +93,7 @@ void draw_global_section() {
     }
 
     ImGui::Text("Parsing threads");
-    ImGui::SameLine(120);
+    ImGui::SameLine(k_label_w);
     ImGui::SetNextItemWidth(120);
     int par_input = g_ui.s.global.parse_threads;
     if (ImGui::InputInt("##parthreads", &par_input, 0, 0)) {
@@ -149,7 +152,7 @@ void draw_global_section() {
                            "Risky: counts are wrong if a layer's rest is other tiles of matching size.");
 
     ImGui::Text("Encoder threads");
-    ImGui::SameLine(120);
+    ImGui::SameLine(k_label_w);
     ImGui::SetNextItemWidth(120);
     int thr_input = g_ui.s.global.ffmpeg_threads;
     if (ImGui::InputInt("##threads", &thr_input, 0, 0)) {
@@ -166,8 +169,8 @@ void draw_global_section() {
 
     // Output format (global). Switching it swaps the output file extension.
     ImGui::Text("Format");
-    ImGui::SameLine(120);
-    ImGui::SetNextItemWidth(300);
+    ImGui::SameLine(k_label_w);
+    ImGui::SetNextItemWidth(std::min(300.0f, ImGui::GetContentRegionAvail().x));
     {
         static const char* k_formats[] = {"MP4 (H.264)", "MOV (QuickTime Animation, lossless)"};
         int fmt = g_ui.s.global.output_format;
@@ -188,7 +191,8 @@ void draw_global_section() {
             ImGui::SetTooltip("MP4: H.264, plays everywhere (lossy).\n"
                               "MOV: QuickTime Animation, lossless and fast, for video editors;\n"
                               "supports a transparent background. Not playable in browsers.");
-        ImGui::SameLine();
+        ImGui::Dummy(ImVec2(0, 0));
+        ImGui::SameLine(k_label_w);   // under the format, so the row stays narrow
         const bool mov = g_ui.s.global.output_format == 1;
         if (!mov) ImGui::BeginDisabled();
         if (ImGui::Checkbox("Transparent background", &g_ui.s.global.transparent_bg)) mark_globals_dirty();
@@ -204,7 +208,7 @@ void draw_global_section() {
         const bool mp4 = g_ui.s.global.output_format == 0;
         if (!mp4) ImGui::BeginDisabled();
         ImGui::Text("Quality (CRF)");
-        ImGui::SameLine(170);
+        ImGui::SameLine(k_label_w);
         ImGui::SetNextItemWidth(160);
         int crf = g_ui.s.global.x264_crf;
         if (ImGui::SliderInt("##crf", &crf, 0, 51, "%d", ImGuiSliderFlags_AlwaysClamp) && crf != g_ui.s.global.x264_crf) {
@@ -217,7 +221,7 @@ void draw_global_section() {
                               "0 = mathematically lossless (High 4:4:4 profile: many players and\n"
                               "browsers cannot play it). Ctrl+click to type a value.");
         ImGui::Text("Speed preset");
-        ImGui::SameLine(170);
+        ImGui::SameLine(k_label_w);
         ImGui::SetNextItemWidth(160);
         {
             const int np = (int)(sizeof(fmcg_video::k_presets) / sizeof(fmcg_video::k_presets[0]));
@@ -235,7 +239,7 @@ void draw_global_section() {
                               "Slower presets make smaller files but render slower.\n"
                               "veryfast (default) renders 1080p60 at several times realtime.");
         ImGui::Text("Tune");
-        ImGui::SameLine(170);
+        ImGui::SameLine(k_label_w);
         ImGui::SetNextItemWidth(160);
         {
             static const char* k_tune_labels[] = {"None", "Animation", "Still image", "Film", "Grain", "Fast decode"};
@@ -253,7 +257,7 @@ void draw_global_section() {
                               "Still image / Animation favour flat areas and sharp edges.");
         if (!mp4) ImGui::EndDisabled();
         ImGui::Text("Keyframe every");
-        ImGui::SameLine(170);
+        ImGui::SameLine(k_label_w);
         ImGui::SetNextItemWidth(100);
         double kf = g_ui.s.global.keyframe_seconds;
         if (ImGui::InputDouble("##keyint", &kf, 0, 0, "%.2f")) {
@@ -277,7 +281,7 @@ void draw_global_section() {
     }
     ImGui::Spacing();
     ImGui::Text("Output Path");
-    ImGui::SameLine(120);
+    ImGui::SameLine(k_label_w);
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 80);
     ImGui::InputText("##output", g_ui.output_buf, sizeof(g_ui.output_buf));
     ImGui::SameLine();

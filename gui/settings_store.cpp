@@ -232,6 +232,9 @@ void globals_from_ini(const std::string& text, GlobalSettings& out) {
     }
     out.keyframe_seconds = get_dbl(kv, "keyframe_seconds", 2.0);
     if (!(out.keyframe_seconds >= 0.1 && out.keyframe_seconds <= 60.0)) out.keyframe_seconds = 2.0;
+    out.log_height = get_dbl(kv, "log_height", 150.0);
+    if (!(out.log_height >= 60.0 && out.log_height <= 10000.0)) out.log_height = 150.0;
+    out.log_open = get_bool(kv, "log_open", false);
     if (out.fps <= 0) out.fps = 60.0;
     if (out.fps > 1000.0) out.fps = 1000.0;           // k_max_fps (gui/app_state.h)
     if (out.width <= 0) out.width = 1920;
@@ -271,6 +274,8 @@ std::string globals_to_ini(const GlobalSettings& s) {
     ss << "x264_preset = " << s.x264_preset << "\n";
     ss << "x264_tune = " << s.x264_tune << "\n";
     ss << "keyframe_seconds = " << s.keyframe_seconds << "\n";
+    ss << "log_height = " << s.log_height << "\n";
+    ss << "log_open = " << (s.log_open ? 1 : 0) << "\n";
     return ss.str();
 }
 

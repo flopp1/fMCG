@@ -69,6 +69,8 @@ struct GlobalSettings {
     std::string x264_preset = "veryfast";    // fmcg_video::k_presets
     std::string x264_tune;                   // "" = none, else fmcg_video::k_tunes
     double      keyframe_seconds = 2.0;      // both formats
+    double      log_height = 150.0;          // log panel height (px), set by the draggable border
+    bool        log_open = false;            // log panel expanded (collapsed by default)
     std::string output_dir;           // last output video folder
 };
 

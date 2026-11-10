@@ -231,6 +231,15 @@ int main() {
         GlobalSettings s;
         globals_from_ini(globals_to_ini(r), s);
         CHECK(s.dedup_mode == 1 && s.x264_crf == 23 && s.x264_preset == "slow" && s.fps == 30);
+        GlobalSettings dl;   // log panel: collapsed by default; height + state round-trip
+        CHECK(!dl.log_open && dl.log_height == 150.0);
+        dl.log_open = true; dl.log_height = 222.5;
+        GlobalSettings dl2;
+        globals_from_ini(globals_to_ini(dl), dl2);
+        CHECK(dl2.log_open && dl2.log_height == 222.5);
+        GlobalSettings dl3;
+        globals_from_ini("log_height = 5\nlog_open = 0\n", dl3);
+        CHECK(!dl3.log_open && dl3.log_height == 150.0);
         GlobalSettings lim;   // limits: FPS <= 1000, delays <= 1 hour; nan/inf -> defaults
         globals_from_ini("fps = 5000\nstart_delay = 99999\nend_delay = 7200\n", lim);
         CHECK(lim.fps == 1000.0 && lim.start_delay == 3600.0 && lim.end_delay == 3600.0);

@@ -84,7 +84,7 @@ NOTES
 
 ## Settings
 
-The window has two columns. **Global settings** on the left apply to every video. The **Pattern** on the right is the overlay's look and is saved with the pattern.
+The pattern picker sits at the top, next to the MIDI file. Below it are three columns, each scrolling on its own: **Global** settings apply to every video; **Look** (font, colours, margin, typography, number format) and **Layout** (the boxes and their text) are the pattern, saved with it. In a narrow window Look and Layout share one column. The log below the buttons can be collapsed; the progress bar always shows.
 
 **Global settings**
 

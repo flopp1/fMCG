@@ -28,5 +28,7 @@ void set_active_pattern(const std::string& name);
 void sync_pattern_index();
 void refresh_pattern_list();
 
-void draw_pattern_section();   // right column
+void draw_pattern_bar();       // top bar: pattern picker + save
+void draw_look_section();      // font, colours, margin, typography, number format
+void draw_layout_section(bool fill);   // boxes + box text; fill = own column
 void draw_global_section();    // left column

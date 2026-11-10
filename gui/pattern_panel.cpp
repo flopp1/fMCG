@@ -241,7 +241,7 @@ static const char* const k_insert_stats[][2] = {
     {"{measure-beat}", "beat within the measure"}, {"{timesig}", "time signature"},
 };
 
-static void draw_layout_editor() {
+static void draw_layout_editor(float height) {
     const ImGuiStyle& st = ImGui::GetStyle();
     const char* text = g_ui.layout_buf;
     const float line_h = ImGui::GetTextLineHeight();
@@ -258,7 +258,7 @@ static void draw_layout_editor() {
 
     ImGui::PushStyleColor(ImGuiCol_ChildBg, st.Colors[ImGuiCol_FrameBg]);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::BeginChild("##layout_area", ImVec2(-1, 120), ImGuiChildFlags_Borders,
+    ImGui::BeginChild("##layout_area", ImVec2(-1, height), ImGuiChildFlags_Borders,
                       ImGuiWindowFlags_HorizontalScrollbar);
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const ImVec2 size(std::max(avail.x, max_w + 2.0f * st.FramePadding.x + slack),
@@ -319,12 +319,16 @@ static std::string fraction_label(double f) {
     return buf;
 }
 
-static void draw_box_editor() {
+static void draw_box_editor(float max_thumb_h, float* out_thumb_h = nullptr) {
     using namespace fmcg_boxes;
     Node& root = g_ui.s.pattern.boxes;
     const int W = std::max(16, g_ui.s.global.width), H = std::max(16, g_ui.s.global.height);
     if (g_ui.selected_box >= leaf_count(root)) select_box(leaf_count(root) - 1);
     const int sel = g_ui.selected_box;
+    // The box selected before the current one: Delete gives the space back to
+    // it and selects it again (add a box, delete it = nothing changed).
+    static int seen_sel = -1, prev_sel = -1;
+    if (sel != seen_sel) { prev_sel = seen_sel; seen_sel = sel; }
 
     ImGui::Text("Boxes");
     ImGui::SameLine();
@@ -340,7 +344,8 @@ static void draw_box_editor() {
 
     // Thumbnail size: the panel's width at the video's aspect, at most 260 px high.
     float tw = ImGui::GetContentRegionAvail().x, th = tw * (float)H / (float)W;
-    if (th > 260.0f) { th = 260.0f; tw = th * (float)W / (float)H; }
+    if (th > max_thumb_h) { th = max_thumb_h; tw = th * (float)W / (float)H; }
+    if (out_thumb_h) *out_thumb_h = th;
     if (tw < 32.0f || th < 18.0f) return;
     const ImVec2 p0 = ImGui::GetCursorScreenPos(), p1(p0.x + tw, p0.y + th);
     const ImTextureID tex = fmcg_preview::pattern_thumbnail(current_pattern_from_ui());
@@ -349,7 +354,7 @@ static void draw_box_editor() {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     if (tex) dl->AddImage(tex, p0, p1);
     else dl->AddRectFilled(p0, p1, IM_COL32(20, 20, 20, 255));
-    dl->PushClipRect(p0, p1, true);
+    dl->PushClipRect(ImVec2(std::floor(p0.x), std::floor(p0.y)), ImVec2(std::ceil(p1.x), std::ceil(p1.y)), true);
 
     auto sx = [&](double f) { return p0.x + (float)f * tw; };
     auto sy = [&](double f) { return p0.y + (float)f * th; };
@@ -361,12 +366,20 @@ static void draw_box_editor() {
     const float mgx = (float)g_ui.s.pattern.margin / W * tw, mgy = (float)g_ui.s.pattern.margin / H * th;
     for (size_t i = 0; i < rects.size(); ++i) {
         const FRect& r = rects[i];
-        const ImVec2 a(sx(r.x0), sy(r.y0)), b(sx(r.x1), sy(r.y1));
+        // Whole pixels, and the border drawn as bands inside the box: every
+        // side the same width, none clipped at the thumbnail's edge.
+        const ImVec2 a(std::round(sx(r.x0)), std::round(sy(r.y0))), b(std::round(sx(r.x1)), std::round(sy(r.y1)));
         const bool is_sel = (int)i == sel;
+        auto band = [&](ImVec2 q0, ImVec2 q1, float t, ImU32 col) {
+            dl->AddRectFilled(q0, ImVec2(q1.x, q0.y + t), col);                       // top
+            dl->AddRectFilled(ImVec2(q0.x, q1.y - t), q1, col);                       // bottom
+            dl->AddRectFilled(ImVec2(q0.x, q0.y + t), ImVec2(q0.x + t, q1.y - t), col);   // left
+            dl->AddRectFilled(ImVec2(q1.x - t, q0.y + t), ImVec2(q1.x, q1.y - t), col);   // right
+        };
         if (is_sel) dl->AddRectFilled(a, b, IM_COL32(255, 200, 0, 36));
-        dl->AddRect(a, b, IM_COL32(0, 0, 0, 170), 0.0f, 0, 3.0f);
-        dl->AddRect(a, b, is_sel ? IM_COL32(255, 200, 0, 255) : IM_COL32(255, 255, 255, 150), 0.0f, 0,
-                    is_sel ? 2.0f : 1.0f);
+        const float t = is_sel ? 2.0f : 1.0f;
+        band(a, b, t, is_sel ? IM_COL32(255, 200, 0, 255) : IM_COL32(255, 255, 255, 150));
+        band(ImVec2(a.x + t, a.y + t), ImVec2(b.x - t, b.y - t), 1.0f, IM_COL32(0, 0, 0, 170));   // contrast on light video
         // Box number in the bottom-right corner (clear of the usual top-left text).
         const std::string num = std::to_string(i + 1);
         const ImVec2 ns = ImGui::CalcTextSize(num.c_str());
@@ -476,8 +489,13 @@ static void draw_box_editor() {
         ImGui::PushID(side);
         if (ImGui::Button(k_add_side[side])) {
             commit_layout_buf();
-            const int added = insert_box(root, g_ui.selected_box, side);
+            const int from = g_ui.selected_box;
+            const int added = insert_box(root, from, side);
             if (added >= 0) {
+                // The box it was added beside moved one number up when the new
+                // box comes first (left / above).
+                prev_sel = added == from ? from + 1 : from;
+                seen_sel = added;
                 g_ui.selected_box = added;
                 load_layout_buf();
             }
@@ -493,9 +511,14 @@ static void draw_box_editor() {
             ImGui::SetTooltip("Gives the selected box and the boxes it was split with the same size.");
         ImGui::SameLine();
         auto delete_selected = [&]() {
-            const int to = remove_leaf(root, g_ui.selected_box);
+            const int del = g_ui.selected_box;
+            const int back = prev_sel >= 0 && prev_sel < leaf_count(root) && prev_sel != del ? prev_sel : -1;
+            const int to = remove_leaf(root, del, back);
             if (to >= 0) {
-                g_ui.selected_box = to;
+                // Back to the box selected before (renumbered past the removed one).
+                g_ui.selected_box = back >= 0 ? (back > del ? back - 1 : back) : to;
+                seen_sel = g_ui.selected_box;
+                prev_sel = -1;
                 load_layout_buf();
             }
         };
@@ -516,13 +539,7 @@ static void draw_box_editor() {
             if (ImGui::Button("Cancel", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
-        ImGui::SameLine();
     }
-    ImGui::SetNextItemWidth(90);
-    if (ImGui::InputInt("Margin (px)", &g_ui.s.pattern.margin))
-        g_ui.s.pattern.margin = std::max(0, std::min(1000, g_ui.s.pattern.margin));
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Space kept between each box's edges and its text.");
 
     // The selected box: where its text sits and how its lines align.
     if (Node* leaf = leaf_at(root, g_ui.selected_box)) {
@@ -587,18 +604,15 @@ static void draw_box_editor() {
     ImGui::Spacing();
 }
 
-void draw_pattern_section() {
-    // --- Pattern section: everything here is saved under the selected pattern
-    ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f),
-        "Pattern - the overlay look, saved with the selected pattern");
-    ImGui::Spacing();
+// The pattern picker (top bar): choose, save, save as, delete.
+void draw_pattern_bar() {
     {
         // Our own saves/deletes refresh the list immediately; the periodic
         // re-scan only picks up files changed outside the program (it used to
         // list the folder every frame).
         if (ImGui::GetTime() - g_pattern_list_time > 2.0) refresh_pattern_list();
         else sync_pattern_index();
-        ImGui::Text("Active:");
+        ImGui::Text("Pattern:");
         ImGui::SameLine(120);
 
         std::vector<const char*> pat_cstrs;
@@ -714,8 +728,12 @@ void draw_pattern_section() {
         }
     }
 
-    ImGui::Spacing();
+}
 
+// Look column: font, colours, margin, typography, number format.
+void draw_look_section() {
+    ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f), "Look - saved with the pattern");
+    ImGui::Spacing();
     // Font family + weight/variant share one row to stay compact.
     ImGui::Text("Font Family");
     if (!g_ui.font_cstrs.empty()) font_list_loaded = true;
@@ -770,13 +788,112 @@ void draw_pattern_section() {
     ImGui::InputInt("##fsize", &g_ui.s.pattern.font_size, 1, 10);
     g_ui.s.pattern.font_size = std::max(1, std::min(2000, g_ui.s.pattern.font_size));
 
-    draw_typography_options();
+    // Colours on one row: swatches (click for the picker with a hex field).
+    {
+        std::string rgb;
+        ImGui::Text("Colours");
+        ImGui::SameLine(120);
+        if (fmcg_ui::ass_to_rrggbb(g_ui.s.pattern.text_color_aabbggrr, rgb) && fmcg_ui::EditColour("Text##textcol", rgb, true))
+            g_ui.s.pattern.text_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
+        ImGui::SameLine(0, 14);
+        if (fmcg_ui::ass_to_rrggbb(g_ui.s.pattern.bg_color_aabbggrr, rgb) && fmcg_ui::EditColour("Background##bgcol", rgb, true))
+            g_ui.s.pattern.bg_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
+        ImGui::Text("Outline");
+        ImGui::SameLine(120);
+        ImGui::Checkbox("##ol", &g_ui.s.pattern.outline_enabled);
+        ImGui::SameLine();
+        if (!g_ui.s.pattern.outline_enabled) ImGui::BeginDisabled();
+        if (fmcg_ui::ass_to_rrggbb(g_ui.s.pattern.outline_color_aabbggrr, rgb) && fmcg_ui::EditColour("##olcol", rgb, true))
+            g_ui.s.pattern.outline_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(60);
+        float ow = (float)g_ui.s.pattern.outline_width;
+        if (ImGui::InputFloat("px##olw", &ow, 0.0f, 0.0f, "%.1f")) {
+            if (ow < 0.0f) ow = 0.0f;
+            if (ow > 20.0f) ow = 20.0f;
+            g_ui.s.pattern.outline_width = ow;
+        }
+        if (!g_ui.s.pattern.outline_enabled) ImGui::EndDisabled();
+    }
+    ImGui::Text("Box margin");
+    ImGui::SameLine(120);
+    ImGui::SetNextItemWidth(120);
+    if (ImGui::InputInt("px##margin", &g_ui.s.pattern.margin))
+        g_ui.s.pattern.margin = std::max(0, std::min(1000, g_ui.s.pattern.margin));
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Space kept between each box's edges and its text (every box).");
 
-    draw_box_editor();
+    draw_typography_options();
+    // Number format: set once per pattern, so collapsed by default.
+    if (ImGui::TreeNode("Number format")) {
+        ImGui::Text("Comma separators:");
+        ImGui::SameLine();
+        ImGui::Checkbox("Notes##c", &g_ui.s.pattern.commas.notes);
+        ImGui::SameLine();
+        ImGui::Checkbox("Poly##c", &g_ui.s.pattern.commas.polyphony);
+        ImGui::SameLine();
+        ImGui::Checkbox("NPS##c", &g_ui.s.pattern.commas.nps);
+        ImGui::SameLine();
+        ImGui::Checkbox("Ticks##c", &g_ui.s.pattern.commas.ticks);
+        ImGui::SameLine();
+        ImGui::Checkbox("CC##c", &g_ui.s.pattern.commas.cc);
+        ImGui::SameLine();
+        ImGui::Checkbox("Beats##c", &g_ui.s.pattern.commas.beats);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("{beat*} and {measure*} stats");
+        ImGui::Checkbox("Leading zeros (pad each stat to its own maximum)", &g_ui.s.pattern.pad.enabled);
+        ImGui::Checkbox("Fixed-width stats", &g_ui.s.pattern.cells);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Each stat gets a cell as wide as its widest value in this video\n"
+                              "(measured in the chosen font), so text after it and the line's\n"
+                              "width stay put while digits change.");
+        ImGui::SameLine();
+        if (!g_ui.s.pattern.cells) ImGui::BeginDisabled();
+        ImGui::Text("align");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(100);
+        static const char* k_cell_align[] = {"Left", "Center", "Right"};
+        ImGui::Combo("##cellalign", &g_ui.s.pattern.cell_align, k_cell_align, 3);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Where a value sits inside its cell (Right lines numbers up by their last digit).");
+        if (!g_ui.s.pattern.cells) ImGui::EndDisabled();
+
+        ImGui::Text("BPM decimals:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(70);
+        int bdec = g_ui.s.pattern.bpm.decimals;
+        if (ImGui::InputInt("##bpmdec", &bdec, 0, 0)) {
+            if (bdec < 0) bdec = 0;
+            if (bdec > 6) bdec = 6;   // beyond 6 is display noise
+            g_ui.s.pattern.bpm.decimals = bdec;
+        }
+        ImGui::TreePop();
+    }
+}
+
+// Layout column: the boxes and the selected box's text. `fill`: this is its
+// own column, so the thumbnail takes the width and the editor the rest of the
+// height; otherwise fixed sizes (stacked under the look settings).
+void draw_layout_section(bool fill) {
+    ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f), "Layout - saved with the pattern");
+    ImGui::Spacing();
+    // Filling: the thumbnail gets what is left after the other controls
+    // (measured last frame) and a 120 px text editor; the editor then takes
+    // the rest. other_h = everything in this column but those two.
+    static float other_h = 300.0f;
+    const float col_start = ImGui::GetCursorPosY();
+    const float col_avail = ImGui::GetContentRegionAvail().y;
+    float thumb_h = 0.0f;
+    draw_box_editor(fill ? std::max(60.0f, std::min(col_avail * 0.6f, col_avail - other_h - 120.0f)) : 260.0f, &thumb_h);
 
     // Layout of the selected box: one line per overlay row (pattern-saved).
     ImGui::Text("Box %d text (one line per overlay row; {nc}, {time-milli}, {bpm}, ...)", g_ui.selected_box + 1);
-    draw_layout_editor();
+    // Filling: the editor takes the column's remaining height above the two
+    // button rows below it.
+    // rows_below: measured on the previous frame (buttons under the editor).
+    static float rows_below = 60.0f;
+    const float editor_h = fill ? std::max(120.0f, ImGui::GetContentRegionAvail().y - rows_below) : 120.0f;
+    draw_layout_editor(editor_h);
+    const float below_start = ImGui::GetCursorPosY();
     if (ImGui::Button("Stats list"))
         ImGui::OpenPopup("Valid layout stats");
     if (ImGui::IsItemHovered())
@@ -872,78 +989,8 @@ void draw_pattern_section() {
         }
     }
 
-    // --- Colours: swatch + RGB-slider popup, live preview (pattern-saved) --
-    {
-        std::string rgb;
-        if (fmcg_ui::ass_to_rrggbb(g_ui.s.pattern.text_color_aabbggrr, rgb)) {
-            ImGui::Text("Text Colour");
-            ImGui::SameLine(120);
-            if (fmcg_ui::EditColour("##textcol", rgb))
-                g_ui.s.pattern.text_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
-        }
-        if (fmcg_ui::ass_to_rrggbb(g_ui.s.pattern.bg_color_aabbggrr, rgb)) {
-            ImGui::Text("Background");
-            ImGui::SameLine(120);
-            if (fmcg_ui::EditColour("##bgcol", rgb))
-                g_ui.s.pattern.bg_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
-        }
-        // Text outline (pattern setting; off by default).
-        ImGui::Checkbox("Outline##ol", &g_ui.s.pattern.outline_enabled);
-        ImGui::SameLine(120);
-        if (!g_ui.s.pattern.outline_enabled) ImGui::BeginDisabled();
-        ImGui::SetNextItemWidth(90);
-        float ow = (float)g_ui.s.pattern.outline_width;
-        if (ImGui::InputFloat("px##olw", &ow, 0.0f, 0.0f, "%.1f")) {
-            if (ow < 0.0f) ow = 0.0f;
-            if (ow > 20.0f) ow = 20.0f;
-            g_ui.s.pattern.outline_width = ow;
-        }
-        ImGui::SameLine();
-        if (fmcg_ui::ass_to_rrggbb(g_ui.s.pattern.outline_color_aabbggrr, rgb) && fmcg_ui::EditColour("##olcol", rgb))
-            g_ui.s.pattern.outline_color_aabbggrr = fmcg_ui::rrggbb_to_ass(rgb);
-        if (!g_ui.s.pattern.outline_enabled) ImGui::EndDisabled();
-    }
-
-    ImGui::Text("Comma separators:");
-    ImGui::SameLine();
-    ImGui::Checkbox("Notes##c", &g_ui.s.pattern.commas.notes);
-    ImGui::SameLine();
-    ImGui::Checkbox("Poly##c", &g_ui.s.pattern.commas.polyphony);
-    ImGui::SameLine();
-    ImGui::Checkbox("NPS##c", &g_ui.s.pattern.commas.nps);
-    ImGui::SameLine();
-    ImGui::Checkbox("Ticks##c", &g_ui.s.pattern.commas.ticks);
-    ImGui::SameLine();
-    ImGui::Checkbox("CC##c", &g_ui.s.pattern.commas.cc);
-    ImGui::SameLine();
-    ImGui::Checkbox("Beats##c", &g_ui.s.pattern.commas.beats);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("{beat*} and {measure*} stats");
-    ImGui::Checkbox("Leading zeros (pad each stat to its own maximum)", &g_ui.s.pattern.pad.enabled);
-    ImGui::Checkbox("Fixed-width stats", &g_ui.s.pattern.cells);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Each stat gets a cell as wide as its widest value in this video\n"
-                          "(measured in the chosen font), so text after it and the line's\n"
-                          "width stay put while digits change.");
-    ImGui::SameLine();
-    if (!g_ui.s.pattern.cells) ImGui::BeginDisabled();
-    ImGui::Text("align");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(100);
-    static const char* k_cell_align[] = {"Left", "Center", "Right"};
-    ImGui::Combo("##cellalign", &g_ui.s.pattern.cell_align, k_cell_align, 3);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("Where a value sits inside its cell (Right lines numbers up by their last digit).");
-    if (!g_ui.s.pattern.cells) ImGui::EndDisabled();
-
-    ImGui::Text("BPM decimals:");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(70);
-    int bdec = g_ui.s.pattern.bpm.decimals;
-    if (ImGui::InputInt("##bpmdec", &bdec, 0, 0)) {
-        if (bdec < 0) bdec = 0;
-        if (bdec > 6) bdec = 6;   // beyond 6 is display noise
-        g_ui.s.pattern.bpm.decimals = bdec;
-    }
+    rows_below = ImGui::GetCursorPosY() - below_start;
+    other_h = ImGui::GetCursorPosY() - col_start - thumb_h - editor_h;
 }
 
 // Global section: session-wide settings, autosaved, not in patterns (left column).

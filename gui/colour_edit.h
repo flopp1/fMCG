@@ -11,7 +11,8 @@ namespace fmcg_ui {
 
 // 'col' is an in/out RRGGBB hex string ("FFFFFF", no '#'). Returns true when
 // the value changed this frame (so callers can persist immediately).
-bool EditColour(const char* label, std::string& rrggbb);
+// swatch_only: just the swatch and the label (the picker popup keeps the hex field).
+bool EditColour(const char* label, std::string& rrggbb, bool swatch_only = false);
 
 // ASS (&HAABBGGRR) <-> RRGGBB conversions shared by the widget and callers.
 bool   ass_to_rrggbb(const std::string& ass, std::string& out_rrggbb);

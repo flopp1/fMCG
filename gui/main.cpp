@@ -138,29 +138,74 @@ static void draw_frame(GLFWwindow* window) {
         }
     }
 
+    // The pattern picker sits in the top bar with the MIDI file.
+    draw_pattern_bar();
+
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
 
-    // MIDI file stays on top; below it Global (left) and Pattern (right) side
-    // by side, so the window no longer has to fit both groups stacked.
-    if (ImGui::BeginTable("##settings_cols", 2,
+    // Settings: Global | Look | Layout side by side (Look and Layout stacked
+    // in one column when the window is narrow). The area takes the window's
+    // height minus what the buttons, progress bar and log used last frame,
+    // and every column scrolls on its own.
+    static float bottom_h = 260.0f;
+    const float settings_h = std::max(300.0f, ImGui::GetContentRegionAvail().y - bottom_h);
+    const bool three = ImGui::GetContentRegionAvail().x >= 1200.0f;
+    if (ImGui::BeginTable(three ? "##settings_cols3" : "##settings_cols2", three ? 3 : 2,
                           ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoSavedSettings)) {
         ImGui::TableSetupColumn("Global", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-        ImGui::TableSetupColumn("Pattern", ImGuiTableColumnFlags_WidthStretch, 1.1f);
+        ImGui::TableSetupColumn("Look", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        if (three) ImGui::TableSetupColumn("Layout", ImGuiTableColumnFlags_WidthStretch, 1.3f);
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
+        ImGui::BeginChild("##col_global", ImVec2(0, settings_h));
         draw_global_section();
+        ImGui::EndChild();
         ImGui::TableSetColumnIndex(1);
-        draw_pattern_section();
+        ImGui::BeginChild("##col_look", ImVec2(0, settings_h));
+        draw_look_section();
+        if (!three) {
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            draw_layout_section(false);
+        }
+        ImGui::EndChild();
+        if (three) {
+            ImGui::TableSetColumnIndex(2);
+            ImGui::BeginChild("##col_layout", ImVec2(0, settings_h));
+            draw_layout_section(true);
+            ImGui::EndChild();
+        }
         ImGui::EndTable();
+    }
+    const float bottom_start = ImGui::GetCursorPosY();
+    // Draggable border between the settings and the buttons / progress / log:
+    // it sets the log's height (the settings area takes the rest).
+    // Height and open state are global settings (saved; collapsed by default).
+    float log_h = (float)g_ui.s.global.log_height;
+    static bool log_open_last = false;
+    {
+        ImGui::InvisibleButton("##settings_split", ImVec2(-1, 6));
+        const bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
+        if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        if (ImGui::IsItemHovered() && !log_open_last) ImGui::SetTooltip("Open the log to resize it");
+        if (ImGui::IsItemActive() && log_open_last) {
+            const float max_h = std::max(60.0f, ImGui::GetWindowHeight() - 480.0f);
+            log_h = std::max(60.0f, std::min(max_h, log_h - ImGui::GetIO().MouseDelta.y));
+            if (log_h != (float)g_ui.s.global.log_height) {
+                g_ui.s.global.log_height = log_h;
+                mark_globals_dirty();
+            }
+        }
+        const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+        const float y = (a.y + b.y) / 2;
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(a.x, y), ImVec2(b.x, y),
+            ImGui::GetColorU32(hot ? ImGuiCol_SeparatorActive : ImGuiCol_Separator), hot ? 3.0f : 1.0f);
     }
 
     maybe_autosave_globals();
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
 
     // --- Action Buttons ---
     {
@@ -424,11 +469,21 @@ static void draw_frame(GLFWwindow* window) {
         ImGui::EndPopup();
     }
 
-    // --- Log ---
-    ImGui::Text("Log Output:");
-    ImGui::BeginChild("log_area", ImVec2(0, std::max(150.0f, ImGui::GetContentRegionAvail().y - 25)), ImGuiChildFlags_None,
-                      ImGuiWindowFlags_HorizontalScrollbar);
-    {
+    // --- Log (collapsible; opens by itself when a process or render starts) ---
+    static bool was_busy = false;
+    const bool busy_now = g_app.busy.load();
+    if (busy_now && !was_busy) ImGui::SetNextItemOpen(true);
+    else ImGui::SetNextItemOpen(g_ui.s.global.log_open, ImGuiCond_Once);   // saved state at startup
+    was_busy = busy_now;
+    const bool log_open = ImGui::CollapsingHeader("Log");
+    if (log_open != g_ui.s.global.log_open) {
+        g_ui.s.global.log_open = log_open;
+        mark_globals_dirty();
+    }
+    log_open_last = log_open;
+    if (log_open) ImGui::BeginChild("log_area", ImVec2(0, log_h), ImGuiChildFlags_None,
+                                    ImGuiWindowFlags_HorizontalScrollbar);
+    if (log_open) {
         std::lock_guard<std::mutex> lock(g_app.log_mutex);
         // While a scan is live, the last log entry is a self-overwriting
         // status line (per the user's request) instead of a growing list.
@@ -453,7 +508,7 @@ static void draw_frame(GLFWwindow* window) {
         if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
             ImGui::SetScrollHereY(1.0f);
     }
-    ImGui::EndChild();
+    if (log_open) ImGui::EndChild();
 
     // Final status line, phrased per operation so a failed/cancelled
     // PROCESS is never mislabelled as "Render failed". Shown for every
@@ -487,6 +542,12 @@ static void draw_frame(GLFWwindow* window) {
         // OP_NONE: nothing completed yet; OP_PROCESS_OK is excluded above
         // by !processed (processed=true shows the "Processed" tag instead).
     }
+
+    // What the buttons, progress bar, log and status used: the settings area
+    // leaves that much room next frame. A status line is always reserved so
+    // the columns do not jump when one appears.
+    bottom_h = std::max(ImGui::GetCursorPosY() - bottom_start, 0.0f) + ImGui::GetStyle().WindowPadding.y;
+    if (!(g_app.done.load() && !g_app.busy.load())) bottom_h += ImGui::GetTextLineHeightWithSpacing();
 
     // --- Preview popup ---
     render_preview_popup();

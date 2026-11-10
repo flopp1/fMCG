@@ -151,7 +151,10 @@ void normalize(Node& n) {
     }
     double sum = 0;
     for (double x : w) sum += x;
-    for (double& x : w) x /= sum;
+    // Already normalised (up to rounding): leave the weights bit-exact, so an
+    // edit that is undone (add a box, delete it) gives back the same tree.
+    if (std::fabs(sum - 1.0) > 1e-12)
+        for (double& x : w) x /= sum;
     n.kids = std::move(kids);
     n.weights = std::move(w);
 }
@@ -246,19 +249,23 @@ int insert_box(Node& root, int leaf, int side) {
     return leaf + 1;
 }
 
-int remove_leaf(Node& root, int leaf) {
+int remove_leaf(Node& root, int leaf, int prefer) {
     Found f = find(root, leaf);
     if (!f.node || !f.parent) return -1;
     Node* p = f.parent;
     const int k = f.k;
-    const int nb = k > 0 ? k - 1 : 1;                 // neighbour kid
+    int nb = k > 0 ? k - 1 : 1;                       // neighbour kid
+    if (prefer >= 0 && prefer != leaf) {              // a box right beside it in the same split
+        const Found q = find(root, prefer);
+        if (q.node && q.parent == p && (q.k == k - 1 || q.k == k + 1)) nb = q.k;
+    }
     p->weights[nb] += p->weights[k];
     p->kids.erase(p->kids.begin() + k);
     p->weights.erase(p->weights.begin() + k);
     normalize(root);
     // In reading order the neighbour's adjacent leaf is right before the
-    // removed one (k > 0), or takes its number (k == 0).
-    return k > 0 ? leaf - 1 : leaf;
+    // removed one (neighbour before it), or takes its number (after it).
+    return nb < k ? leaf - 1 : leaf;
 }
 
 bool equalize_parent(Node& root, int leaf) {

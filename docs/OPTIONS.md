@@ -92,7 +92,7 @@ The overlay is split into boxes. Each box has its own text, and says where in th
   - **Exact size** (under the selected box's settings) shows the box's left, right, top and bottom edges as percentages of the frame. Type a value and press Enter to move that edge; the boxes on its other side change with it. Edges on the frame border cannot move.
   - **Add a box: Left / Right / Above / Below** puts a new empty box on that side of the selected box. The two share the selected box's space half and half, the selected box keeps its text, and the new box is selected.
   - **Equal sizes** gives the selected box and the boxes it was split with the same size.
-  - **Delete box** removes the selected box and its text, after asking if it has any. Its space goes to the box before it (or after it, for the first).
+  - **Delete box** removes the selected box and its text, after asking if it has any. Its space goes to the box selected before it when that box is right beside it (so adding a box and deleting it again restores the layout exactly), otherwise to the box before it (or after it, for the first). The previously selected box is selected again.
 - **Text sits at** chooses one of 9 points of the selected box: a corner, an edge centre or the centre. The block of text is placed there, inset by the **Margin**.
 - **Lines** sets how the box's lines align with each other.
   - **Follow position** (the default) aligns them to the side the text sits at: left, centred or right.

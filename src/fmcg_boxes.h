@@ -59,10 +59,12 @@ bool split_leaf(Node& root, int leaf, int dir, int n);
 // 3 below), taking half of that box's space; the box keeps its content.
 // Returns the new box's index, -1 on bad input.
 int insert_box(Node& root, int leaf, int side);
-// Removes box `leaf` and its content: its space goes to the neighbour
-// before it (after it when it is the first). Returns the index of the
-// neighbouring box next to it afterwards, -1 if it is the only box.
-int remove_leaf(Node& root, int leaf);
+// Removes box `leaf` and its content: its space goes to box `prefer` when
+// that box is right beside it in the same split (e.g. the box it was just
+// added next to), else to the neighbour before it (after it when it is the
+// first). Returns the index of the box that got the space, -1 if `leaf` is
+// the only box. Undoing insert_box this way restores the tree exactly.
+int remove_leaf(Node& root, int leaf, int prefer = -1);
 // Gives every part of the split that directly holds `leaf` the same size.
 bool equalize_parent(Node& root, int leaf);
 
