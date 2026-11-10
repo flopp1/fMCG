@@ -102,7 +102,7 @@ extern const char* const k_default_layout;
 // stripped); an empty layout gives the default layout's lines.
 std::vector<std::string> layout_lines(const std::string& text);
 // Every box's lines in box order, with the box index of each line (the
-// FrameTextSource template). No lines at all = the default layout in box 0.
+// FrameTextSource template). Boxes without text add no lines.
 void pattern_template(const PatternData& p, std::vector<std::string>& lines, std::vector<int>& boxes);
 
 // Ensure the shipped "Default" pattern exists on first run.

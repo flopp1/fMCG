@@ -83,14 +83,15 @@ Two separate options, both off by default. Only one can be on at a time; ticking
 
 ## Boxes
 
-The overlay is split into boxes. Each box has its own text, and says where in the box that text sits. Boxes never overlap and always cover the whole frame; a box without text shows nothing.
+The overlay is split into boxes. Each box has its own text, and says where in the box that text sits. Boxes never overlap and always cover the whole frame; a box without text shows nothing, and a pattern whose boxes are all empty shows no text at all.
 
 - **The box editor** above the text editor shows the frame as it will be drawn, with the boxes on top. It shows the processed song's last frame, or every stat at zero before Process.
   - Click a box to select it. Its number is in its top-left corner, and the text editor below shows its text.
   - **Split into columns** and **Split into rows** divide the selected box into the number of equal **parts** chosen beside them (2 to 8). Splitting a column into more columns adds them to the same row of columns.
   - Drag the line between two boxes to resize the boxes on both sides of it. The line snaps to 1/2, 1/3, 1/4, 1/5, 1/6, 1/8, 1/10 and 1/12 of the frame and to the edges of other boxes; the tooltip shows where it is. Hold Alt to drag without snapping.
+  - **Exact size** (under the selected box's settings) shows the box's left, right, top and bottom edges as percentages of the frame. Type a value and press Enter to move that edge; the boxes on its other side change with it. Edges on the frame border cannot move.
   - **Equal sizes** gives the selected box and the boxes it was split with the same size.
-  - **Delete box** removes the selected box. Its space goes to the box before it (or after it, for the first), and its text is added to the end of that box's text.
+  - **Delete box** removes the selected box and its text, after asking if it has any. Its space goes to the box before it (or after it, for the first).
 - **Text sits at** chooses one of 9 points of the selected box: a corner, an edge centre or the centre. The block of text is placed there, inset by the **Margin**.
 - **Lines** sets how the box's lines align with each other.
   - **Follow position** (the default) aligns them to the side the text sits at: left, centred or right.

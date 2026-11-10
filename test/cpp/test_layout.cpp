@@ -384,6 +384,20 @@ int main() {
             check("fit: the widest block fits its third of the frame", r.scale() < 1.0 && r.block_width() <= 213 - 60);
         }
 
+        // No lines at all (every box empty): the frame is just the background.
+        {
+            FrameTextSource fx = src;
+            fx.template_lines.clear();
+            fx.template_boxes.clear();
+            FrameRenderer r;
+            const bool ok = r.init(s16, p, bg, fx.block_spec());
+            const Canvas& c = r.render_pieces(fx.pieces(10));
+            bool plain = ok && r.block_count() == 0;
+            const uint8_t bgb[4] = {(uint8_t)(bg >> 24), (uint8_t)(bg >> 16), (uint8_t)(bg >> 8), (uint8_t)bg};
+            for (size_t i = 0; i < c.px.size() && plain; i += 4) plain = std::memcmp(&c.px[i], bgb, 4) == 0;
+            check("empty boxes: nothing is drawn", plain);
+        }
+
         // A whole-frame box == no boxes (the old corner preset), all 9 anchors.
         {
             bool eq = true;

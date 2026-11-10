@@ -335,6 +335,7 @@ static void draw_box_editor() {
                           "Click a box to select it and edit its text below.\n"
                           "Drag the line between two boxes to resize them. It snaps to 1/2, 1/3,\n"
                           "1/4, ... of the frame and to other box edges; hold Alt to move freely.\n"
+                          "\"Exact size\" below sets the selected box's edges to typed percentages.\n"
                           "Boxes without text show nothing.");
 
     // Thumbnail size: the panel's width at the video's aspect, at most 260 px high.
@@ -472,16 +473,30 @@ static void draw_box_editor() {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Gives the selected box and the boxes it was split with the same size.");
         ImGui::SameLine();
-        if (ImGui::Button("Delete box")) {
-            commit_layout_buf();
-            const int to = remove_leaf(root, sel);
+        auto delete_selected = [&]() {
+            const int to = remove_leaf(root, g_ui.selected_box);
             if (to >= 0) {
                 g_ui.selected_box = to;
                 load_layout_buf();
             }
+        };
+        if (ImGui::Button("Delete box")) {
+            commit_layout_buf();
+            if (g_ui.layout_buf[0]) ImGui::OpenPopup("Delete box?");
+            else delete_selected();
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Removes the selected box; its space and its text go to the neighbouring box.");
+            ImGui::SetTooltip("Removes the selected box and its text; its space goes to the neighbouring box.");
+        if (ImGui::BeginPopupModal("Delete box?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("Delete box %d and its text?", g_ui.selected_box + 1);
+            if (ImGui::Button("Delete", ImVec2(120, 0))) {
+                delete_selected();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(120, 0))) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
         ImGui::SameLine();
     }
     ImGui::SetNextItemWidth(90);
@@ -521,6 +536,34 @@ static void draw_box_editor() {
                               "width of its widest possible line, so e.g. a label stays centred over\n"
                               "its stat while the block stays at its position.");
         ImGui::EndGroup();
+
+        // Exact edges: typing a value moves the line on that edge, like a drag.
+        if (n > 1 && ImGui::TreeNode("Exact size (% of the frame)")) {
+            const FRect r = leaf_rects(root)[g_ui.selected_box];
+            static const char* const k_side[4] = {"Left", "Top", "Right", "Bottom"};
+            for (int side : {0, 2, 1, 3}) {
+                Divider d;
+                const bool movable = edge_divider(root, g_ui.selected_box, side, d);
+                double v = 100.0 * (side == 0 ? r.x0 : side == 1 ? r.y0 : side == 2 ? r.x1 : r.y1);
+                if (side == 2 || side == 3) ImGui::SameLine(0, 16);
+                ImGui::TextUnformatted(k_side[side]);
+                ImGui::SameLine(side == 0 || side == 1 ? 60.0f : 0.0f);
+                ImGui::SetNextItemWidth(150);
+                if (!movable) ImGui::BeginDisabled();
+                ImGui::PushID(side);
+                if (ImGui::InputDouble("##edge", &v, 0.1, 1.0, "%.3f%%", ImGuiInputTextFlags_EnterReturnsTrue) && movable)
+                    move_divider(root, d, v / 100.0);
+                ImGui::PopID();
+                if (!movable) ImGui::EndDisabled();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip(movable ? "Type a value and press Enter, or use - / + (0.1%%, Ctrl for 1%%).\n"
+                                                "Moves the line on this edge, so the boxes on its other side\n"
+                                                "change size too."
+                                              : "The edge of the frame.");
+            }
+            ImGui::TextDisabled("Size: %.3f%% x %.3f%% of the frame", 100.0 * (r.x1 - r.x0), 100.0 * (r.y1 - r.y0));
+            ImGui::TreePop();
+        }
     }
     ImGui::Spacing();
 }

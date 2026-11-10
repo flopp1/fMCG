@@ -80,19 +80,22 @@ int main() {
         leaf_at(root, 1)->box.text = "B";
         leaf_at(root, 2)->box.text = "C\n";
         int to = remove_leaf(root, 1);
-        check("remove middle: text appended to the box before it", to == 0 && leaf_at(root, 0)->box.text == "A\nB");
-        check("remove middle: space goes to it", near(leaf_rects(root)[0].x1, 2.0 / 3) && tiles(root));
+        check("remove middle: its text goes with it, the box before it is next",
+              to == 0 && leaf_at(root, 0)->box.text == "A" && leaf_at(root, 1)->box.text == "C\n");
+        check("remove middle: space goes to the box before it", near(leaf_rects(root)[0].x1, 2.0 / 3) && tiles(root));
         to = remove_leaf(root, 0);
-        check("remove first: text to the next box, which takes its number",
-              to == 0 && leaf_count(root) == 1 && root.split == kLeaf && root.box.text == "C\nA\nB");
+        check("remove first: the next box takes its number and its space",
+              to == 0 && leaf_count(root) == 1 && root.split == kLeaf && root.box.text == "C\n");
         check("the only box cannot be removed", remove_leaf(root, 0) == -1);
-        Node n;   // removal next to a nested split: the adjacent leaf receives the text
+        Node n;   // removal next to a nested split
         split_leaf(n, 0, kColumns, 2);
         split_leaf(n, 0, kRows, 2);         // leaves: 0 top-left, 1 bottom-left, 2 right
+        leaf_at(n, 0)->box.text = "TL";
+        leaf_at(n, 1)->box.text = "BL";
         leaf_at(n, 2)->box.text = "R";
         to = remove_leaf(n, 2);
-        check("remove after a nested split: its last leaf gets the text",
-              to == 1 && leaf_at(n, 1)->box.text == "R" && n.split == kRows && tiles(n));
+        check("remove after a nested split: the neighbouring leaf is reported, texts unchanged",
+              to == 1 && leaf_at(n, 0)->box.text == "TL" && leaf_at(n, 1)->box.text == "BL" && n.split == kRows && tiles(n));
     }
     {   // dividers and dragging
         Node root;
@@ -117,6 +120,19 @@ int main() {
         move_divider(root, row, 0.2);
         check("row divider moves the whole top strip", near(leaf_rects(root)[2].y1, 0.2) && near(leaf_rects(root)[3].y0, 0.2));
         check("equal sizes", equalize_parent(root, 1) && near(leaf_rects(root)[1].x0, 1.0 / 3));
+        // Edges of box 1 (top middle): left / right are column lines, bottom
+        // is the row line, top is the frame.
+        Divider e;
+        check("edge_divider: frame edge has none", !edge_divider(root, 1, 1, e));
+        check("edge_divider: left edge", edge_divider(root, 1, 0, e) && e.dir == kColumns && e.index == 0);
+        check("edge_divider: bottom edge = the row line", edge_divider(root, 1, 3, e) && e.dir == kRows);
+        Divider right;
+        check("edge_divider: typed right edge moves it", edge_divider(root, 1, 2, right) &&
+                                                          move_divider(root, right, 0.7) &&
+                                                          near(leaf_rects(root)[1].x1, 0.7) && near(leaf_rects(root)[2].x0, 0.7) && tiles(root));
+        check("edge_divider: bad input", !edge_divider(root, 9, 0, e) && !edge_divider(root, 0, 4, e));
+        // The bottom box spans the whole width: its top edge is the row line.
+        check("edge_divider: wide box below", edge_divider(root, 3, 1, e) && e.dir == kRows && !edge_divider(root, 3, 0, e));
     }
     {   // hit testing, from_rect, place list
         Node root;

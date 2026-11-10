@@ -69,7 +69,8 @@ The overlay is split into **boxes**, shown over a small picture of the frame abo
 
 - Click a box to select it. The text editor below shows that box's text.
 - **Split into columns** or **Split into rows** divides the selected box into equal parts. To place three counters side by side, split the one box into 3 columns.
-- Drag the line between two boxes to resize them. It snaps to halves, thirds, quarters and so on of the frame, and to other box edges. Hold Alt to drag freely.
+- Drag the line between two boxes to resize them. It snaps to halves, thirds, quarters and so on of the frame, and to other box edges. Hold Alt to drag freely, or type exact percentages under **Exact size**.
+- **Delete box** removes the selected box and its text. A box with no text shows nothing.
 - **Text sits at** picks the point of the box where its text goes: a corner, an edge centre or the centre. The text keeps the pattern's **Margin** from the box edges.
 - **Lines** aligns the box's lines with each other: following that point (the default), or left, centred or right.
 

@@ -213,10 +213,10 @@ int main() {
         pattern_template(q, lines, boxes);
         CHECK(lines == std::vector<std::string>({"A {nc}", "B {nps}", "NPS", "{nps}", "x = y"}));
         CHECK(boxes == std::vector<int>({0, 0, 2, 2, 3}));
-        PatternData e;   // no text anywhere: the default layout in box 0
+        PatternData e;   // no text anywhere: nothing is shown (no default layout)
         fmcg_boxes::split_leaf(e.boxes, 0, fmcg_boxes::kColumns, 2);
         pattern_template(e, lines, boxes);
-        CHECK(!lines.empty() && boxes == std::vector<int>(lines.size(), 0));
+        CHECK(lines.empty() && boxes.empty());
     }
     migrated_render_check();
     {   // Globals: the old single "Dedup" checkbox (track_dedup) meant layered dedup on archives.

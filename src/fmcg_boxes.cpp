@@ -241,20 +241,12 @@ int remove_leaf(Node& root, int leaf) {
     Node* p = f.parent;
     const int k = f.k;
     const int nb = k > 0 ? k - 1 : 1;                 // neighbour kid
-    // The neighbour's leaf next to the removed box gets its text.
-    Node* t = &p->kids[nb];
-    while (t->split != kLeaf) t = k > 0 ? &t->kids.back() : &t->kids.front();
-    const std::string& moved = f.node->box.text;
-    if (!moved.empty()) {
-        if (!t->box.text.empty() && t->box.text.back() != '\n') t->box.text += '\n';
-        t->box.text += moved;
-    }
     p->weights[nb] += p->weights[k];
     p->kids.erase(p->kids.begin() + k);
     p->weights.erase(p->weights.begin() + k);
     normalize(root);
-    // In reading order the receiving leaf is right before the removed one
-    // (k > 0), or takes its number (k == 0).
+    // In reading order the neighbour's adjacent leaf is right before the
+    // removed one (k > 0), or takes its number (k == 0).
     return k > 0 ? leaf - 1 : leaf;
 }
 
@@ -270,6 +262,23 @@ std::vector<Divider> dividers(const Node& root) {
     std::vector<int> path;
     dividers_of(root, FRect{}, path, out);
     return out;
+}
+
+bool edge_divider(const Node& root, int leaf, int side, Divider& out) {
+    const std::vector<FRect> rects = leaf_rects(root);
+    if (leaf < 0 || (size_t)leaf >= rects.size() || side < 0 || side > 3) return false;
+    const FRect& r = rects[leaf];
+    const bool vertical = side == 0 || side == 2;      // a left / right edge: a column divider
+    const double edge = side == 0 ? r.x0 : side == 1 ? r.y0 : side == 2 ? r.x1 : r.y1;
+    const double a = vertical ? r.y0 : r.x0, b = vertical ? r.y1 : r.x1;
+    const double eps = 1e-9;
+    for (const Divider& d : dividers(root))
+        if (d.dir == (vertical ? kColumns : kRows) && std::fabs(d.pos - edge) < eps && d.lo <= a + eps &&
+            d.hi >= b - eps) {
+            out = d;
+            return true;
+        }
+    return false;
 }
 
 bool move_divider(Node& root, const Divider& d, double pos) {

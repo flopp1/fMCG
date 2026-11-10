@@ -55,9 +55,9 @@ bool parse_structure(const std::string& s, Node& out);
 // (kRows). The first part keeps the content, the others start empty. Inside a
 // split of the same direction the parts join it (no extra nesting).
 bool split_leaf(Node& root, int leaf, int dir, int n);
-// Removes box `leaf`: its space goes to the neighbour before it (after it
-// when it is the first), and its text is appended to that neighbour's.
-// Returns the neighbour's new index, -1 if it is the only box.
+// Removes box `leaf` and its content: its space goes to the neighbour
+// before it (after it when it is the first). Returns the index of the
+// neighbouring box next to it afterwards, -1 if it is the only box.
 int remove_leaf(Node& root, int leaf);
 // Gives every part of the split that directly holds `leaf` the same size.
 bool equalize_parent(Node& root, int leaf);
@@ -72,6 +72,9 @@ struct Divider {
     double min_pos = 0, max_pos = 1;   // how far it can move
 };
 std::vector<Divider> dividers(const Node& root);
+// The divider on one edge of box `leaf` (side: 0 left, 1 top, 2 right,
+// 3 bottom); false on a frame edge.
+bool edge_divider(const Node& root, int leaf, int side, Divider& out);
 // Moves a divider to `pos` (clamped to its range); the two parts next to it
 // change size, everything else stays.
 bool move_divider(Node& root, const Divider& d, double pos);

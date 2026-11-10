@@ -565,8 +565,4 @@ void pattern_template(const PatternData& p, std::vector<std::string>& lines, std
             boxes.push_back(i);
         }
     }
-    if (lines.empty()) {
-        lines = layout_lines(k_default_layout);
-        boxes.assign(lines.size(), 0);
-    }
 }
