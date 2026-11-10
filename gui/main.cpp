@@ -173,7 +173,7 @@ static void draw_frame(GLFWwindow* window) {
         if (ImGui::Button("Process", ImVec2(140, 30)) && can_process) {
             g_ui.s.midi_file = g_ui.midi_buf;
             g_ui.s.output_video = g_ui.output_buf;
-            g_ui.s.pattern.layout_text = g_ui.layout_buf;
+            commit_layout_buf();
             g_app.processed = false;
             g_app.done = false;
             g_app.log_lines.clear();
@@ -403,6 +403,7 @@ static void draw_frame(GLFWwindow* window) {
             g_app.result_path.clear();
             g_app.frames_data.clear();
             g_app.template_lines.clear();
+            g_app.template_boxes.clear();
             g_app.total_notes = 0;
             g_app.total_ticks = 0;
             g_app.meter = SongMeter{};
@@ -619,7 +620,7 @@ int main() {
         if (!names.empty()) set_active_pattern(names[0]);
         else {
             PatternData p;                 // no store available: in-memory defaults
-            p.layout_text = k_default_layout;
+            p.boxes.box.text = k_default_layout;
             apply_pattern_to_ui(p);
             g_ui.pattern_baseline = p;
         }

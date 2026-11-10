@@ -43,7 +43,7 @@ CORE = ["src/fmcg_midi.cpp", "src/fmcg_format.cpp", "src/fmcg_util.cpp", "src/fm
 CORE_FULL = CORE + ["src/fmcg_fonts.cpp"]
 # In-built renderer: HarfBuzz is compiled from the vendored amalgamation on
 # Windows and comes from the system (pkg-config) elsewhere.
-TEXT = ["src/fmcg_text.cpp", "src/fmcg_video.cpp"] + (["vendor/harfbuzz/src/harfbuzz.cc"] if IS_WIN else [])
+TEXT = ["src/fmcg_text.cpp", "src/fmcg_boxes.cpp", "src/fmcg_video.cpp"] + (["vendor/harfbuzz/src/harfbuzz.cc"] if IS_WIN else [])
 
 
 def _pkg(args):

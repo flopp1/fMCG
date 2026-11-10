@@ -317,16 +317,17 @@ bool save_pattern(const std::string& name, const PatternData& p) {
 std::string pattern_to_ini(const std::string& name, const PatternData& p) {
     std::ostringstream ss;
     ss << "# fMCG pattern: " << name << "\n";
-    ss << "layout = " << escape_newlines(p.layout_text) << "\n";
-    ss << "alignment = " << p.alignment << "\n";
-    ss << "pos_mode = " << p.pos_mode << "\n";
-    ss << "pos_x = " << p.pos_x << "\n";
-    ss << "pos_y = " << p.pos_y << "\n";
-    ss << "frame_anchor = " << p.frame_anchor << "\n";
-    ss << "block_anchor = " << p.block_anchor << "\n";
+    ss << "boxes = " << fmcg_boxes::structure_string(p.boxes) << "\n";
+    for (int i = 0, n = fmcg_boxes::leaf_count(p.boxes); i < n; ++i) {
+        const fmcg_boxes::BoxContent& b = fmcg_boxes::leaf_at(p.boxes, i)->box;
+        const std::string k = "box" + std::to_string(i + 1) + "_";
+        ss << k << "layout = " << escape_newlines(b.text) << "\n";
+        ss << k << "anchor = " << b.anchor << "\n";
+        ss << k << "line_align = " << b.line_align << "\n";
+    }
+    ss << "margin = " << p.margin << "\n";
     ss << "cells = " << (p.cells ? 1 : 0) << "\n";
     ss << "cell_align = " << p.cell_align << "\n";
-    ss << "line_align = " << p.line_align << "\n";
     ss << "font_family = " << p.font_family << "\n";
     ss << "font_variant = " << p.font_variant << "\n";
     ss << "font_size = " << p.font_size << "\n";
@@ -364,17 +365,81 @@ std::string pattern_to_ini(const std::string& name, const PatternData& p) {
     return ss.str();
 }
 
-bool load_pattern(const std::string& name, PatternData& out) {
+bool load_pattern(const std::string& name, PatternData& out, int frame_w, int frame_h) {
     std::string pdir = patterns_dir();
     if (pdir.empty() || name.empty()) return false;
     std::ifstream f(path_from_utf8(pdir) / path_from_utf8(name + ".ini"));
     if (!f.is_open()) return false;
     std::ostringstream ss; ss << f.rdbuf();
-    pattern_from_ini(ss.str(), out);
+    pattern_from_ini(ss.str(), out, frame_w, frame_h);
     return true;
 }
 
-void pattern_from_ini(const std::string& text, PatternData& out) {
+// A pattern from before boxes: one block, placed by a corner preset
+// (alignment + 30 px margin) or by a custom x,y (frame anchor + offset, block
+// anchor on that point). Converted into the box that puts the block in the
+// same place: the whole frame for a preset; for a custom position the box
+// whose matching edge (or centre line) is the point, margin 0.
+static void boxes_from_old_position(const KV& kv, bool ass_era, PatternData& out, int W, int H) {
+    auto has = [&kv](const char* key) {
+        for (const auto& e : kv) if (e.first == key) return true;
+        return false;
+    };
+    fmcg_boxes::BoxContent c;
+    c.text = unescape_newlines(get_str(kv, "layout", k_default_layout));
+    int alignment = get_int(kv, "alignment", 0);
+    if (alignment < 0 || alignment > 5) alignment = 0;
+    static const int k_corner_numpad[6] = {7, 9, 1, 3, 8, 2};   // TL, TR, BL, BR, top centre, bottom centre
+    const int pos_mode = get_int(kv, "pos_mode", 0);
+    if (pos_mode != 1) {
+        c.anchor = k_corner_numpad[alignment];
+        out.boxes = fmcg_boxes::Node();
+        out.boxes.box = c;
+        out.margin = 30;
+        return;
+    }
+    // 3x3 anchor indices (0 = top-left .. 8 = bottom-right).
+    int fa = get_int(kv, "frame_anchor", 0), ba = get_int(kv, "block_anchor", 0);
+    if (fa < 0 || fa > 8) fa = 0;
+    if (ba < 0 || ba > 8) ba = 0;
+    if (ass_era && !has("block_anchor")) {
+        // ASS era: custom x,y anchored the block by its corner alignment,
+        // measured from the frame's top-left.
+        static const int k_corner_anchor[6] = {0, 2, 6, 8, 1, 7};
+        ba = k_corner_anchor[alignment];
+        fa = 0;
+    }
+    W = std::max(16, W);
+    H = std::max(16, H);
+    const double px = get_int(kv, "pos_x", 30), py = get_int(kv, "pos_y", 30);
+    const int fh = fa % 3, fv = fa / 3, bh = ba % 3, bv = ba / 3;
+    double X = fh == 2 ? W - px : fh == 1 ? W / 2.0 + px : px;
+    double Y = fv == 2 ? H - py : fv == 1 ? H / 2.0 + py : py;
+    X = std::max(0.0, std::min((double)W, X));
+    Y = std::max(0.0, std::min((double)H, Y));
+    // One axis: the box edge(s) through the point, and the anchor side.
+    auto span = [](double P, double L, int side, double& a, double& b, int& out_side) {
+        out_side = side;
+        if (side == 0) { a = P; b = L; }
+        else if (side == 2) { a = 0; b = P; }
+        else {
+            const double d = std::min(P, L - P);
+            if (d >= 1.0) { a = P - d; b = P + d; }
+            else { a = 0; b = L; out_side = P <= L / 2 ? 0 : 2; }   // centred on an edge: clamps there
+        }
+        if (b - a < 1.0) { a = 0; b = L; out_side = side == 0 ? 2 : 0; }   // at the far edge
+    };
+    double x0, x1, y0, y1;
+    int sh, sv;
+    span(X, W, bh, x0, x1, sh);
+    span(Y, H, bv, y0, y1, sv);
+    c.anchor = (sv == 0 ? 7 : sv == 1 ? 4 : 1) + sh;
+    if (sh != bh) c.line_align = bh + 1;   // the anchor moved to an edge: lines keep the old block anchor's side
+    out.boxes = fmcg_boxes::from_rect({x0 / W, y0 / H, x1 / W, y1 / H}, c);
+    out.margin = 0;
+}
+
+void pattern_from_ini(const std::string& text, PatternData& out, int frame_w, int frame_h) {
     KV kv = parse_ini(text);
     auto has = [&kv](const char* key) {
         for (const auto& e : kv) if (e.first == key) return true;
@@ -384,20 +449,24 @@ void pattern_from_ini(const std::string& text, PatternData& out) {
     // by libass, with a 1 px black outline and custom x,y anchoring the block
     // by its corner alignment (\pos under the style's alignment).
     const bool ass_era = !has("outline_enabled");
-    out.layout_text          = unescape_newlines(get_str(kv, "layout", k_default_layout));
-    out.alignment            = get_int(kv, "alignment", 0);
-    out.pos_mode             = get_int(kv, "pos_mode", 0);
-    out.pos_x                = get_int(kv, "pos_x", 30);
-    out.pos_y                = get_int(kv, "pos_y", 30);
-    out.frame_anchor         = get_int(kv, "frame_anchor", 0);
-    if (out.frame_anchor < 0 || out.frame_anchor > 8) out.frame_anchor = 0;
-    out.block_anchor         = get_int(kv, "block_anchor", 0);
-    if (out.block_anchor < 0 || out.block_anchor > 8) out.block_anchor = 0;
+    if (has("boxes") && fmcg_boxes::parse_structure(get_str(kv, "boxes"), out.boxes)) {
+        for (int i = 0, n = fmcg_boxes::leaf_count(out.boxes); i < n; ++i) {
+            fmcg_boxes::BoxContent& b = fmcg_boxes::leaf_at(out.boxes, i)->box;
+            const std::string k = "box" + std::to_string(i + 1) + "_";
+            b.text = unescape_newlines(get_str(kv, (k + "layout").c_str()));
+            b.anchor = get_int(kv, (k + "anchor").c_str(), 7);
+            if (b.anchor < 1 || b.anchor > 9) b.anchor = 7;
+            b.line_align = get_int(kv, (k + "line_align").c_str(), 0);
+            if (b.line_align < 0 || b.line_align > 3) b.line_align = 0;
+        }
+        out.margin = get_int(kv, "margin", 30);
+    } else {
+        boxes_from_old_position(kv, ass_era, out, frame_w, frame_h);
+    }
+    if (out.margin < 0 || out.margin > 1000) out.margin = 30;
     out.cells                = get_bool(kv, "cells", false);
     out.cell_align           = get_int(kv, "cell_align", 2);
     if (out.cell_align < 0 || out.cell_align > 2) out.cell_align = 2;
-    out.line_align           = get_int(kv, "line_align", 0);
-    if (out.line_align < 0 || out.line_align > 3) out.line_align = 0;
     out.font_family          = get_str(kv, "font_family", "Arial");
     out.font_variant         = get_str(kv, "font_variant");
     out.font_size            = get_int(kv, "font_size", 36);
@@ -435,16 +504,7 @@ void pattern_from_ini(const std::string& text, PatternData& out) {
     out.bpm.decimals         = get_int(kv, "bpm_decimals", 2);
     if (out.bpm.decimals < 0) out.bpm.decimals = 0;
     if (out.bpm.decimals > 6) out.bpm.decimals = 6;
-    if (out.pos_mode < 0 || out.pos_mode > 1) out.pos_mode = 0;
-    if (out.alignment < 0 || out.alignment > 5) out.alignment = 0;
     if (out.font_size <= 0) out.font_size = 36;
-    if (ass_era && out.pos_mode == 1 && !has("block_anchor")) {
-        // GUI corner index (TL, TR, BL, BR, top centre, bottom centre) ->
-        // 3x3 anchor index; x,y stayed measured from the frame's top-left.
-        static const int k_corner_anchor[6] = {0, 2, 6, 8, 1, 7};
-        out.block_anchor = k_corner_anchor[out.alignment];
-        out.frame_anchor = 0;
-    }
 }
 
 bool delete_pattern(const std::string& name) {
@@ -477,7 +537,7 @@ std::vector<std::string> list_patterns() {
 void ensure_default_pattern() {
     if (pattern_exists("Default")) return;
     PatternData p;   // struct defaults == the shipped default look
-    p.layout_text = k_default_layout;
+    p.boxes.box.text = k_default_layout;
     save_pattern("Default", p);
 }
 
@@ -490,4 +550,23 @@ std::vector<std::string> layout_lines(const std::string& text) {
         if (!line.empty()) out.push_back(line);
     }
     return out.empty() && text != k_default_layout ? layout_lines(k_default_layout) : out;
+}
+
+void pattern_template(const PatternData& p, std::vector<std::string>& lines, std::vector<int>& boxes) {
+    lines.clear();
+    boxes.clear();
+    for (int i = 0, n = fmcg_boxes::leaf_count(p.boxes); i < n; ++i) {
+        std::istringstream in(fmcg_boxes::leaf_at(p.boxes, i)->box.text);
+        std::string line;
+        while (std::getline(in, line)) {
+            while (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty()) continue;
+            lines.push_back(line);
+            boxes.push_back(i);
+        }
+    }
+    if (lines.empty()) {
+        lines = layout_lines(k_default_layout);
+        boxes.assign(lines.size(), 0);
+    }
 }

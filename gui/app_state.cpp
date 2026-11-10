@@ -11,26 +11,9 @@ UiState  g_ui;
 // Alignment + font-variant helpers
 // ---------------------------------------------------------------------------
 
-int gui_anchor_to_numpad(int idx) {
-    static const int k[9] = {7, 8, 9, 4, 5, 6, 1, 2, 3};
-    return (idx >= 0 && idx < 9) ? k[idx] : 7;
-}
-
-int gui_alignment_to_ass(int idx) {
-    switch (idx) {
-        case 0: return 7;    // Top Left
-        case 1: return 9;    // Top Right
-        case 2: return 1;    // Bottom Left
-        case 3: return 3;    // Bottom Right
-        case 4: return 8;    // Top Center
-        case 5: return 2;    // Bottom Center
-        default: return 7;
-    }
-}
-
 void set_app_pattern(const PatternData& p) {
     g_app.pattern = p;
-    g_app.template_lines = layout_lines(p.layout_text);
+    pattern_template(p, g_app.template_lines, g_app.template_boxes);
 }
 
 // ---------------------------------------------------------------------------
@@ -107,38 +90,44 @@ float AppState::display_progress() {
     return p;
 }
 
-fmcg_text::TextStyle app_text_style() {
+fmcg_text::TextStyle text_style_for(const PatternData& p) {
     fmcg_text::TextStyle st;
-    st.font_file = find_font_file_for_variant(g_app.pattern.font_family, g_app.pattern.font_variant, &st.face_index);
-    st.size = g_app.pattern.font_size;
-    st.colour = fmcg_text::from_ass_colour(g_app.pattern.text_color_aabbggrr);
-    st.outline = g_app.pattern.outline_enabled && g_app.pattern.outline_width > 0.0;
-    st.outline_width = g_app.pattern.outline_width;
-    st.outline_colour = fmcg_text::from_ass_colour(g_app.pattern.outline_color_aabbggrr);
-    g_app.pattern.typo.apply(st);
+    st.font_file = find_font_file_for_variant(p.font_family, p.font_variant, &st.face_index);
+    st.size = p.font_size;
+    st.colour = fmcg_text::from_ass_colour(p.text_color_aabbggrr);
+    st.outline = p.outline_enabled && p.outline_width > 0.0;
+    st.outline_width = p.outline_width;
+    st.outline_colour = fmcg_text::from_ass_colour(p.outline_color_aabbggrr);
+    p.typo.apply(st);
     return st;
 }
 
-fmcg_text::Placement app_placement() {
+fmcg_text::Placement placement_for(const PatternData& p, int frame_w, int frame_h) {
     fmcg_text::Placement pl;
-    pl.frame_w = std::max(16, g_app.vid_width);
-    pl.frame_h = std::max(16, g_app.vid_height);
-    pl.pos_mode = g_app.pattern.pos_mode;
-    pl.pos_x = g_app.pattern.pos_x;
-    pl.pos_y = g_app.pattern.pos_y;
-    pl.frame_anchor = gui_anchor_to_numpad(g_app.pattern.frame_anchor);
-    pl.block_anchor = gui_anchor_to_numpad(g_app.pattern.block_anchor);
-    pl.cells = g_app.pattern.cells;
-    pl.cell_align = g_app.pattern.cell_align;
-    pl.line_align = g_app.pattern.line_align;
-    pl.alignment = gui_alignment_to_ass(g_app.pattern.alignment);
+    pl.frame_w = std::max(16, frame_w);
+    pl.frame_h = std::max(16, frame_h);
+    pl.boxes = fmcg_boxes::place_list(p.boxes);
+    pl.margin = p.margin;
+    pl.cells = p.cells;
+    pl.cell_align = p.cell_align;
     return pl;
+}
+
+fmcg_text::TextStyle app_text_style() { return text_style_for(g_app.pattern); }
+fmcg_text::Placement app_placement() { return placement_for(g_app.pattern, g_app.vid_width, g_app.vid_height); }
+
+FrameTextSource text_source_for(const PatternData& p) {
+    FrameTextSource src = app_text_source();
+    pattern_template(p, src.template_lines, src.template_boxes);
+    src.fmt = p.format_opts();
+    return src;
 }
 
 FrameTextSource app_text_source() {
     FrameTextSource src;
     src.frames = &g_app.frames_data;
     src.template_lines = g_app.template_lines;
+    src.template_boxes = g_app.template_boxes;
     src.song.notes = g_app.total_notes;
     src.song.cc = g_app.frames_data.empty() ? 0 : g_app.frames_data.back().cumulative_cc;
     src.song.ticks = g_app.total_ticks;

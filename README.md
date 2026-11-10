@@ -39,7 +39,7 @@ You can design an overlay before loading anything: with no file processed, Previ
 
 ## Layout
 
-Each line of the layout box is one row of the overlay, and a row can mix any text with tokens, for example `Notes: {nc}/{nc-total}  NPS: {nps}`. **Stats list** in the app shows every token, and **Load from file...** reads a layout from a `.txt` file.
+Each line of a box's text is one row of the overlay, and a row can mix any text with tokens, for example `Notes: {nc}/{nc-total}  NPS: {nps}`. **Insert stat** adds a token at the cursor, **Stats list** in the app shows every token, and **Load from file...** reads a box's text from a `.txt` file.
 
 | Stat | Tokens (current / total / remaining) |
 |---|---|
@@ -63,17 +63,22 @@ Each line of the layout box is one row of the overlay, and a row can mix any tex
 - During the start delay, the time fields count up from a negative value to zero.
 - Beats and measures follow the file's time signatures; files without any count in 4/4.
 
-**Lines in different places.** A line that is only a position, such as `[bottom-right]`, sends the lines below it to that spot. The positions are the four corners, the four edge centres and `[center]`. Lines before the first position line use the pattern's placement, and `[default]` returns to it. Position lines themselves are not shown, and **Insert position** next to the layout box adds one. For example:
+### Boxes
+
+The overlay is split into **boxes**, shown over a small picture of the frame above the text editor. A new pattern has one box covering the whole frame.
+
+- Click a box to select it. The text editor below shows that box's text.
+- **Split into columns** or **Split into rows** divides the selected box into equal parts. To place three counters side by side, split the one box into 3 columns.
+- Drag the line between two boxes to resize them. It snaps to halves, thirds, quarters and so on of the frame, and to other box edges. Hold Alt to drag freely.
+- **Text sits at** picks the point of the box where its text goes: a corner, an edge centre or the centre. The text keeps the pattern's **Margin** from the box edges.
+- **Lines** aligns the box's lines with each other: following that point (the default), or left, centred or right.
+
+For a label centred over its stat in each third of the frame, split the frame into 3 columns and set each box's text to sit at the top centre:
 
 ```text
-Time: {time-milli}/{time-milli-max}
-[top-right]
-Notes: {nc}/{nc-total}
-[bottom-center]
-NPS: {nps}   BPM: {bpm}
+NOTES
+{nc}
 ```
-
-Add `, center` (or `, left`, `, right`) to a position line to align that block's lines with each other instead of to its side. For example, `[top-left, center]` keeps a label centred over its stat while the block stays in the corner. **Insert stat** adds a stat token at the cursor.
 
 ## Settings
 
@@ -99,18 +104,17 @@ The window has two columns. **Global settings** on the left apply to every video
 | Setting | What it does |
 |---|---|
 | Font, size, colours, outline | The look of the text. New patterns have a 1 px black outline. |
-| Layout | The overlay text (see [Layout](#layout)). |
+| Boxes and layout | The frame split into boxes, each with its own text, position and line alignment (see [Boxes](#boxes)). |
 | Comma separators | Per stat: `1,234,567` or `1234567`. |
 | Leading zeros | Pads each stat to the digit count of its own maximum. |
 | Fixed-width stats | Gives each stat a cell as wide as its widest value, aligned left, centre or right. |
 | BPM decimals | 0 to 6 decimal places for `{bpm}`. |
-| Counter position | A corner preset, or an exact x,y with separate frame and text-block anchors. Position lines in the layout place other lines elsewhere. |
-| Line alignment | How a block's lines align with each other: follow the block's side, or left, centre or right inside the block. |
+| Margin | The space between each box's edges and its text, 30 px by default. |
 | Advanced typography | Kerning, ligatures, numeral styles, stylistic sets, extra OpenType features, letter and line spacing. |
 
 Global settings save automatically. Patterns are saved with **Save** and **Save As...**, and patterns from older fMCG versions keep their look.
 
-[docs/OPTIONS.md](docs/OPTIONS.md) explains every setting in detail, including dedup, positioning, typography, encoder settings, CJCMCG files and where settings are stored.
+[docs/OPTIONS.md](docs/OPTIONS.md) explains every setting in detail, including dedup, boxes, typography, encoder settings, CJCMCG files and where settings are stored.
 
 ## License
 

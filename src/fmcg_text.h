@@ -78,28 +78,36 @@ bool valid_feature(const std::string& f);
 struct FontFeature { std::string tag, name; };
 std::vector<FontFeature> font_features(const std::string& font_file, int face_index = 0);
 
+// One box of the overlay (fmcg_boxes): a rectangle in fractions of the frame,
+// the numpad point of it where the text block sits, and the line alignment.
+struct BoxPlace {
+    double x0 = 0, y0 = 0, x1 = 1, y1 = 1;
+    int anchor = 7;
+    int line_align = 0;
+};
+
 // Where the text block goes and how its lines are laid out (same meaning as
 // the GUI settings). Anchors use the numpad convention: 7 8 9 = top
 // left/centre/right, 4 5 6 = middle, 1 2 3 = bottom.
 struct Placement {
     int frame_w = 1920, frame_h = 1080;
-    int pos_mode = 0;               // 0 = preset position (alignment + margin), 1 = custom position
-    int alignment = 7;              // pos_mode 0: numpad alignment (corners, edge centres, 5 = centre)
-    int margin = 30;                // pos_mode 0 margin, as libass MarginL/R/V
-    // pos_mode 1: (pos_x, pos_y) is measured from `frame_anchor` -- inward from
-    // an edge (left/top: +x right/+y down; right/bottom: +x left/+y up), or
-    // from the centre line (+x right/+y down) -- and the block's `block_anchor`
-    // point is put there. Lines align to the block anchor's side.
-    int pos_x = 30, pos_y = 30;
-    int frame_anchor = 7;
-    int block_anchor = 7;
-    // How lines align inside the block: 0 = to the block's side (preset
-    // alignment / block anchor), 1 left, 2 centre, 3 right.
+    // The block's box in px; box_w or box_h <= 0 = the whole frame. The block
+    // sits at the `alignment` point of the box inset by `margin`, and stays
+    // inside the box (and, with its outline, inside the frame).
+    double box_x = 0, box_y = 0, box_w = 0, box_h = 0;
+    int alignment = 7;              // numpad point of the (inset) box
+    int margin = 30;                // inset of every box, px
+    // How lines align inside the block: 0 = to the block's side (alignment),
+    // 1 left, 2 centre, 3 right.
     int line_align = 0;
     // The block is at least this wide (px) when placing it and aligning its
     // lines; FrameRenderer sets it to the block's widest possible width when
     // line_align != 0, so centred lines do not drift as values grow.
     double min_width = 0.0;
+    // FrameRenderer: the overlay's boxes; line i is drawn in box
+    // TextBlockSpec::boxes[i]. Empty = one box covering the frame, with the
+    // alignment / line_align above.
+    std::vector<BoxPlace> boxes;
     // Fixed-width stat cells: each stat takes the width of its widest value in
     // the video (TextBlockSpec), aligned inside it -- lines stop shifting.
     bool cells = false;
@@ -122,14 +130,9 @@ using PieceLines = std::vector<std::vector<TextPiece>>;
 struct TextBlockSpec {
     PieceLines pieces;
     std::vector<std::vector<std::vector<std::string>>> extremes;
-    // Per line: 0 = drawn at the Placement; 1..9 = in a separate block at that
-    // numpad position (pos_mode 0 at the Placement's margin). Lines with the
-    // same position form one block, in line order. Empty = all at 0.
-    std::vector<int> anchors;
-    // Per line: the line alignment from its position header (0 = the
-    // Placement's line_align, 1 left, 2 centre, 3 right). A block takes the
-    // first non-zero value among its lines. Empty = all 0.
-    std::vector<int> line_aligns;
+    // Per line: the index of the box (Placement::boxes) it is drawn in; lines
+    // of one box form one block, in line order. Empty = all in box 0.
+    std::vector<int> boxes;
 };
 
 struct ShapedGlyph { uint32_t id; double x, y; };   // pen position in px, relative to the line origin
@@ -181,9 +184,9 @@ private:
 // Renders consecutive frames into one canvas: only the area touched by the
 // previous and the current text is re-cleared and redrawn. `dirty()` is that
 // area (for texture uploads and change detection). The lines can be split
-// into several blocks at different positions (TextBlockSpec::anchors); only
-// blocks whose text changed (and blocks overlapping them) are redrawn, and
-// one font scale fits every block.
+// over several boxes (Placement::boxes, TextBlockSpec::boxes), one block per
+// box; only blocks whose text changed (and blocks overlapping them) are
+// redrawn, and one font scale fits every block into its box.
 class FrameRenderer {
 public:
     bool init(const TextStyle& style, const Placement& placement, RGBA background,
@@ -214,10 +217,9 @@ private:
         Layout layout;               // as last drawn
         double x0 = 0, y0 = 0;
         Rect last{};                 // pixels touched by the last draw
-        bool align_set = false;      // a header gave place.line_align
     };
     void build_blocks(size_t nlines);
-    Placement block_placement(int anchor) const;
+    Placement block_placement(int box) const;
     const ShapedLine& line_shape(size_t li, const std::vector<TextPiece>& pieces) const;
     const Canvas& draw(const PieceLines& pieces);
     TextRenderer text_;
@@ -225,8 +227,7 @@ private:
     RGBA bg_ = 0x000000FFu;
     Canvas canvas_;
     Rect dirty_{};
-    std::vector<int> anchors_;             // per line (TextBlockSpec::anchors)
-    std::vector<int> aligns_;              // per line (TextBlockSpec::line_aligns)
+    std::vector<int> line_boxes_;          // per line (TextBlockSpec::boxes)
     std::vector<Block> blocks_;
     size_t blocks_for_ = (size_t)-1;       // line count blocks_ was built for
     std::vector<std::vector<double>> cell_w_;

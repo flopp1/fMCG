@@ -5,29 +5,24 @@
 //   Linux   : $XDG_CONFIG_HOME/fMCG/... (~/.config/fMCG)
 //
 // Global settings hold everything EXCEPT what a pattern defines. Patterns
-// bundle the overlay appearance: layout text, alignment/position, font
-// family+style+size, text colour, background colour, outline, typography,
+// bundle the overlay appearance: boxes (each with its layout text and
+// anchor), margin, font family+style+size, text colour, background colour, outline, typography,
 // comma options, padding, BPM decimals.
 // Every file is a flat "key = value" INI, written atomically on each change.
 #pragma once
 #include "../src/fmcg_format.h"   // CommaOpts, PadOpts
 #include "../src/fmcg_text.h"     // Typography
+#include "../src/fmcg_boxes.h"    // boxes
 
 #include <string>
 #include <vector>
 
 // The overlay-appearance bundle a pattern captures.
 struct PatternData {
-    std::string layout_text;
-    int         alignment = 0;        // GUI corner index (see alignment_items)
-    int         pos_mode = 0;         // 0 = corners, 1 = explicit x/y
-    int         pos_x = 30;
-    int         pos_y = 30;
-    int         frame_anchor = 0;     // custom position: frame point x,y is measured from (GUI 3x3 index, 0 = top-left)
-    int         block_anchor = 0;     // custom position: block point placed there (GUI 3x3 index)
+    fmcg_boxes::Node boxes;           // the frame split into boxes, each with its layout text
+    int         margin = 30;          // inset of every box, px
     bool        cells = false;        // fixed-width stat cells
     int         cell_align = 2;       // 0 left, 1 centre, 2 right
-    int         line_align = 0;       // lines in a block: 0 follow its position, 1 left, 2 centre, 3 right
     std::string font_family = "Arial";
     std::string font_variant;         // subfamily/style ("" = family default)
     int         font_size = 36;
@@ -42,10 +37,8 @@ struct PatternData {
     BpmOpts     bpm;
 
     bool operator==(const PatternData& o) const {
-        return layout_text == o.layout_text && alignment == o.alignment &&
-               pos_mode == o.pos_mode && pos_x == o.pos_x && pos_y == o.pos_y &&
-               frame_anchor == o.frame_anchor && block_anchor == o.block_anchor &&
-               cells == o.cells && cell_align == o.cell_align && line_align == o.line_align &&
+        return boxes == o.boxes && margin == o.margin &&
+               cells == o.cells && cell_align == o.cell_align &&
                font_family == o.font_family && font_variant == o.font_variant &&
                font_size == o.font_size &&
                text_color_aabbggrr == o.text_color_aabbggrr &&
@@ -91,11 +84,13 @@ std::string globals_to_ini(const GlobalSettings& s);
 
 // Patterns: stored as one INI per pattern inside the patterns/ subfolder.
 std::vector<std::string> list_patterns();                 // sorted by name
-bool load_pattern(const std::string& name, PatternData& out);
+// frame_w / frame_h: the video size, used only to convert a custom x,y
+// position of a pattern from before boxes into a box.
+bool load_pattern(const std::string& name, PatternData& out, int frame_w = 1920, int frame_h = 1080);
 // Parse a pattern file's text (load_pattern without the file I/O). Accepts
 // files written by every earlier version: missing keys take the defaults,
 // and keys whose meaning changed are migrated (see the comments inside).
-void pattern_from_ini(const std::string& text, PatternData& out);
+void pattern_from_ini(const std::string& text, PatternData& out, int frame_w = 1920, int frame_h = 1080);
 std::string pattern_to_ini(const std::string& name, const PatternData& p);
 bool save_pattern(const std::string& name, const PatternData& p);   // overwrite allowed
 bool delete_pattern(const std::string& name);
@@ -106,6 +101,9 @@ extern const char* const k_default_layout;
 // Layout text -> overlay template lines: one per non-empty line ('\r'
 // stripped); an empty layout gives the default layout's lines.
 std::vector<std::string> layout_lines(const std::string& text);
+// Every box's lines in box order, with the box index of each line (the
+// FrameTextSource template). No lines at all = the default layout in box 0.
+void pattern_template(const PatternData& p, std::vector<std::string>& lines, std::vector<int>& boxes);
 
 // Ensure the shipped "Default" pattern exists on first run.
 void ensure_default_pattern();

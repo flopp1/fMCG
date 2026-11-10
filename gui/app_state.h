@@ -93,9 +93,10 @@ struct AppState {
     std::vector<FrameStats>   frames_data;
     // The overlay look the preview and the render draw with: the pattern the
     // last Process ran with, updated from the live UI at each Render click
-    // (snap_live_settings). template_lines = layout_lines(pattern.layout_text).
+    // (snap_live_settings). template_lines / template_boxes = pattern_template(pattern).
     PatternData               pattern;
     std::vector<std::string>  template_lines;
+    std::vector<int>          template_boxes;
     bool                      show_preview{false};
     bool                      render_active{false};  // true while a render is in progress
     // The Preview popup was opened to watch a render (Render Video click, or
@@ -165,7 +166,7 @@ struct UiState {
     char midi_buf[1024] = "";
     char output_buf[1024] = "";
     char layout_buf[8192] = "";
-    int  alignment_idx = 0;         // corner/center dropdown index
+    int  selected_box = 0;          // box whose text layout_buf edits (fmcg_boxes leaf index)
     int  selected_font_idx = 0;
     std::vector<std::string> system_fonts;
     std::vector<const char*> font_cstrs;        // refreshed after list changes
@@ -194,17 +195,17 @@ extern UiState g_ui;   // single instance (defined in app_state.cpp)
 
 extern AppState g_app;   // single global instance (defined in app_state.cpp)
 
-// GUI corner dropdown index -> ASS \an numpad alignment
-// (0 TL,1 TR,2 BL,3 BR,4 Top Center,5 Bottom Center -> 7,9,1,3,8,2)
-int gui_alignment_to_ass(int idx);
-// 3x3 anchor index in reading order (0 = top-left .. 8 = bottom-right) -> numpad 7 8 9 / 4 5 6 / 1 2 3.
-int gui_anchor_to_numpad(int idx);
 
 // In-built renderer inputs built from the processed/preview state in g_app
 // (shared by the preview and the render job so both draw identical frames).
 fmcg_text::TextStyle app_text_style();
 fmcg_text::Placement app_placement();
 FrameTextSource app_text_source();
+// The same for any pattern (the box editor's thumbnail draws the pattern
+// being edited, before Preview / Render snap it into g_app).
+fmcg_text::TextStyle text_style_for(const PatternData& p);
+fmcg_text::Placement placement_for(const PatternData& p, int frame_w, int frame_h);
+FrameTextSource text_source_for(const PatternData& p);
 
 // Set the preview / render look (g_app.pattern + its template lines).
 void set_app_pattern(const PatternData& p);

@@ -98,22 +98,24 @@ int main(int argc, char** argv) {
         check("incremental frames == fresh render (60 sequences)", all_equal);
     }
 
-    // 2. custom position: the block always stays fully on screen
+    // 2. any box, any anchor: the block always stays fully on screen
     {
         bool inside = true;
         std::mt19937 rng(11);
         for (int k = 0; k < 40; ++k) {
             Placement p = pl;
-            p.pos_mode = 1;
-            p.pos_x = (int)(rng() % 700);
-            p.pos_y = (int)(rng() % 400);
+            p.box_x = (int)(rng() % 600);
+            p.box_y = (int)(rng() % 300);
+            p.box_w = 1 + (int)(rng() % 300);
+            p.box_h = 1 + (int)(rng() % 200);
+            p.alignment = 1 + (int)(rng() % 9);
             FrameRenderer r;
             r.init(st, p, bg);
             r.render({"Notes: 93,823,560,428,205", "Poly 1"});
             const Rect in = ink(r.canvas(), bg);
             if (in.empty() || in.x < 0 || in.y < 0 || in.x + in.w > p.frame_w || in.y + in.h > p.frame_h) inside = false;
         }
-        check("custom x,y: block clamped inside the frame", inside);
+        check("any box: block clamped inside the frame", inside);
     }
 
     // 3. corner alignments put the ink near the right corner

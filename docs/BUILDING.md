@@ -120,7 +120,7 @@ sudo apt install build-essential pkg-config libglfw3-dev libarchive-dev liblzma-
 ```text
 src/         core library modules (fmcg_path, fmcg_util, fmcg_midi, fmcg_engine, fmcg_sweep,
              fmcg_parallel, fmcg_layered, fmcg_cjcmcg, fmcg_format, fmcg_fonts, fmcg_text,
-             fmcg_video; fmcg_reader.h = the shared MIDI reader)
+             fmcg_boxes, fmcg_video; fmcg_reader.h = the shared MIDI reader)
 gui/         Dear ImGui application (app_state, dialogs, jobs, preview, main, panels,
              pattern_panel, global_panel, colour_edit, settings_store)
 fMCG_core.h  umbrella header: includes every src/ module, nothing else

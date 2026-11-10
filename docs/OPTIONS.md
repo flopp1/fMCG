@@ -6,7 +6,7 @@ This page explains each setting more fully than the [README](../README.md).
 - [Timing and MIDI handling](#timing-and-midi-handling)
 - [Deduplication](#deduplication)
 - [Text and number formatting](#text-and-number-formatting)
-- [Counter position](#counter-position)
+- [Boxes](#boxes)
 - [Advanced typography](#advanced-typography)
 - [Output formats and encoder settings](#output-formats-and-encoder-settings)
 - [Patterns and saved settings](#patterns-and-saved-settings)
@@ -81,31 +81,24 @@ Two separate options, both off by default. Only one can be on at a time; ticking
 - **Text / Background colour:** click a swatch for a picker with R/G/B sliders and a hex value.
 - **Outline** draws a border of the chosen width and colour around the text. It is on (1 px black) for new patterns.
 
-## Counter position
+## Boxes
 
-- **Corners** places the block with the alignment dropdown (top or bottom; left, centre or right), 30 px from the edges.
-- **Custom x,y** uses two anchors:
-  - **Measured from** is the point of the frame that x,y count from: a corner, an edge centre or the centre.
-    - From an edge, the values count inward: from the right edge +x moves left, and from the bottom +y moves up.
-    - From a centre line, +x is right and +y is down.
-    - A position measured from a corner stays in that corner when the resolution changes.
-  - **Block anchor** is the point of the text block that sits at that position, one of the same 9 points. The lines of the block align to that side (left, centre or right).
-  - The defaults, Top Left and Top Left, put the block's top-left corner at x,y.
-- **Position lines in the layout** split the overlay into several blocks.
-  - A layout line that is only `[top-left]`, `[top-center]`, `[top-right]`, `[center-left]`, `[center]`, `[center-right]`, `[bottom-left]`, `[bottom-center]` or `[bottom-right]` sends the lines below it, up to the next position line, to that point of the frame. They sit 30 px from the edges, like **Corners**.
-  - Lines before the first position line use the placement above (Corners or Custom x,y). `[default]` returns to that placement for the lines below it.
-  - Position lines are not shown. Lines that share a position form one block, in layout order, and a position that matches the Corners setting joins the default lines.
-  - Names ignore case and spaces. `centre` and `middle` work like `center`, and `[top]`, `[bottom]`, `[left]` and `[right]` are the edge centres. Any other text in brackets is shown as written.
-  - Each block's lines align to its side: left, centred or right, unless a line alignment is set (below).
-  - **Insert position**, next to the layout box, adds a position line above the line the cursor is on. Its **Lines in the block** choice adds a line alignment to it. **Insert stat** adds a stat token at the cursor.
-  - Blocks can overlap if their lines are long enough. Shorten the lines or move a block if they collide.
-  - Every block uses the same font and the same fixed-width cells, and one font scale is chosen so that every block fits.
-- **Line alignment** sets how the lines of a block align with each other, separately from where the block sits.
-  - **Follow position** (the default) aligns them to the block's side, as described above.
-  - **Left**, **Center** or **Right** aligns them that way inside the block. The block keeps the width of its widest possible line for the whole video, so a centred label does not drift while the stat under it grows, and the block stays against its corner or edge.
-  - A position line can set it for its own block: `[top-left, center]`, `[bottom-right, left]`, `[default, right]`. If two position lines for the same spot give different alignments, the first one counts.
-  - For a label centred over a number, also turn on **Fixed-width stats** with **Center** alignment, so the number is centred in its cell.
-- **The text never leaves the frame.** In every mode the block, including its outline, is kept fully on screen. If the largest block the video will ever show does not fit, the font is scaled down once for the whole video. The preview shows a note, and the render log says by how much.
+The overlay is split into boxes. Each box has its own text, and says where in the box that text sits. Boxes never overlap and always cover the whole frame; a box without text shows nothing.
+
+- **The box editor** above the text editor shows the frame as it will be drawn, with the boxes on top. It shows the processed song's last frame, or every stat at zero before Process.
+  - Click a box to select it. Its number is in its top-left corner, and the text editor below shows its text.
+  - **Split into columns** and **Split into rows** divide the selected box into the number of equal **parts** chosen beside them (2 to 8). Splitting a column into more columns adds them to the same row of columns.
+  - Drag the line between two boxes to resize the boxes on both sides of it. The line snaps to 1/2, 1/3, 1/4, 1/5, 1/6, 1/8, 1/10 and 1/12 of the frame and to the edges of other boxes; the tooltip shows where it is. Hold Alt to drag without snapping.
+  - **Equal sizes** gives the selected box and the boxes it was split with the same size.
+  - **Delete box** removes the selected box. Its space goes to the box before it (or after it, for the first), and its text is added to the end of that box's text.
+- **Text sits at** chooses one of 9 points of the selected box: a corner, an edge centre or the centre. The block of text is placed there, inset by the **Margin**.
+- **Lines** sets how the box's lines align with each other.
+  - **Follow position** (the default) aligns them to the side the text sits at: left, centred or right.
+  - **Left**, **Center** or **Right** aligns them that way inside the text block. The block then keeps the width of its widest possible line for the whole video, so for example a centred label does not drift while the stat under it grows.
+- **Margin** is the space kept between each box's edges and its text, 30 px by default, the same for every box.
+- Box sizes are fractions of the frame, so a layout keeps its proportions at any resolution.
+- For a label centred over a number, also turn on **Fixed-width stats** with **Center** alignment, so the number is centred in its cell.
+- **The text never leaves its box or the frame.** Every block, including its outline, is kept inside its box when it fits there, and always inside the frame. If the largest block the video will ever show does not fit its box, the font is scaled down once for the whole video, by the same amount for every box. The preview shows a note, and the render log says by how much.
 
 ## Advanced typography
 
@@ -145,7 +138,7 @@ The section lists the features the selected font has, and warns when a chosen op
 ## Patterns and saved settings
 
 - A **pattern** stores the overlay's look:
-  - layout text and position;
+  - the boxes, with each box's text, position and line alignment, and the margin;
   - font family, style and size, and advanced typography;
   - text, background and outline colours;
   - comma options, padding, fixed-width cells and BPM decimals.
@@ -158,7 +151,8 @@ The section lists the features the selected font has, and warns when a chosen op
 - Pattern files from older versions keep their look:
   - missing settings take their defaults;
   - patterns saved before the built-in renderer (the FFmpeg/ASS era) keep that era's 1 px black outline;
-  - their custom positions stay anchored by the corner they used.
+  - a corner position becomes one box covering the frame, with the text at that corner;
+  - a custom x,y position becomes a box with an edge at that point (margin 0), converted at the resolution set when the pattern is loaded. The text is drawn exactly where it was, except when it did not fit between the point and the frame edge: it used to be pushed back from the edge and is now scaled down to fit its box.
 - Everything else is a **global setting**: resolution, FPS, delays, MIDI handling, threads, dedup, output format and encoder settings.
   - Global settings are saved automatically when changed, at most once per second, and restored at the next launch.
   - Risky fast dedup is the exception and is never saved.

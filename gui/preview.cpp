@@ -98,10 +98,50 @@ void draw_canvas(const fmcg_text::PieceLines& pieces, const FrameTextSource& src
     }
 }
 
+// The box editor's thumbnail: its own renderer and texture, so it never
+// disturbs the preview popup's.
+struct Thumbnail {
+    fmcg_text::FrameRenderer fr;
+    GLuint tex = 0;
+    std::string key;
+    bool ok = false;
+};
+Thumbnail g_thumb;
+
 } // namespace
 
-
-
+ImTextureID pattern_thumbnail(const PatternData& p) {
+    const int W = std::max(16, g_ui.s.global.width), H = std::max(16, g_ui.s.global.height);
+    std::ostringstream k;
+    k << pattern_to_ini("", p) << '|' << W << 'x' << H << '|' << g_app.frames_epoch << ','
+      << g_app.frames_data.size() << ',' << g_ui.s.global.start_delay;
+    if (k.str() != g_thumb.key) {
+        g_thumb.key = k.str();
+        FrameTextSource src = text_source_for(p);
+        src.start_delay = g_ui.s.global.start_delay;
+        fmcg_text::PieceLines pieces;
+        if (!g_app.frames_data.empty() && src.frame_count() > 0) {
+            pieces = src.pieces(src.frame_count() - 1);
+        } else {
+            FrameStats zero;
+            pieces = src.pieces_for(zero, false);
+        }
+        const fmcg_text::RGBA bg = fmcg_text::from_ass_colour(p.bg_color_aabbggrr) | 0xFFu;
+        std::string err;
+        g_thumb.ok = g_thumb.fr.init(text_style_for(p), placement_for(p, W, H), bg, src.block_spec(), &err);
+        if (g_thumb.ok) {
+            const fmcg_text::Canvas& c = g_thumb.fr.render_pieces(pieces);
+            if (!g_thumb.tex) glGenTextures(1, &g_thumb.tex);
+            glBindTexture(GL_TEXTURE_2D, g_thumb.tex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, c.w, c.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, c.px.data());
+        }
+    }
+    return g_thumb.ok ? (ImTextureID)(intptr_t)g_thumb.tex : (ImTextureID)0;
+}
 
 
 // ---------------------------------------------------------------------------

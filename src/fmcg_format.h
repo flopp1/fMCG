@@ -79,29 +79,6 @@ struct TemplateSegment {
 };
 std::vector<TemplateSegment> parse_template_line(const std::string& line);
 
-// Position headers: a layout line that is only "[top-left]", "[bottom-center]",
-// "[center]", ... sends the lines below it (up to the next header) to that
-// point of the frame, at the pattern's margin; "[default]" returns to the
-// pattern's own placement. Header lines are not shown. Names are
-// case-insensitive; "centre" / "middle" = "center", spaces or "_" = "-", and
-// "top" / "bottom" / "left" / "right" alone are the edge centres.
-// After a comma, "left" / "center" / "right" sets how the block's lines align
-// inside it ("[top-left, center]"); without it they follow the block's side.
-// Returns the numpad anchor (7 8 9 / 4 5 6 / 1 2 3), 0 for [default], -1 if
-// the line is not a header.
-int position_header(const std::string& line);
-// The same, also giving the line alignment: 0 = none given, 1 left,
-// 2 centre, 3 right (Placement::line_align).
-int position_header(const std::string& line, int& line_align);
-// Line alignment words after the comma, for line_align 1..3.
-inline const char* const k_line_align_names[3] = {"left", "center", "right"};
-// The nine positions in reading order (top-left .. bottom-right), as written
-// in a header, and their numpad anchors.
-inline const char* const k_position_names[9] = {"top-left", "top-center", "top-right",
-                                                "center-left", "center", "center-right",
-                                                "bottom-left", "bottom-center", "bottom-right"};
-inline const int k_position_anchors[9] = {7, 8, 9, 4, 5, 6, 1, 2, 3};
-
 // One formatted line as pieces: literal text (cell -1) and stat values
 // (cell = index of the stat on its line, 0, 1, ...).
 std::vector<fmcg_text::TextPiece> format_template_segments(const std::vector<TemplateSegment>& segs,
@@ -121,6 +98,9 @@ std::string format_line(const std::string& line, const FrameStats& fs, const Son
 struct FrameTextSource {
     const std::vector<FrameStats>* frames = nullptr;
     std::vector<std::string> template_lines;
+    // Per template line: the box it is drawn in (fmcg_boxes leaf index;
+    // TextBlockSpec::boxes). Empty = every line in box 0.
+    std::vector<int> template_boxes;
     SongTotals song;                            // song.duration is ignored: see song_duration()
     FormatOpts fmt;
     double fps = 60.0, start_delay = 0.0, end_delay = 0.0;
@@ -138,11 +118,8 @@ struct FrameTextSource {
     // stat takes in this video: what the renderer needs for fixed-width cells
     // and for fitting the largest block into the frame.
     fmcg_text::TextBlockSpec block_spec() const;
-    // Per shown line (header lines excluded): 0 = the pattern's placement,
-    // 1..9 = the numpad position set by the header above it.
-    const std::vector<int>& line_anchors() const;
-    // Per shown line: the line alignment its header gave (0 = none, 1..3).
-    const std::vector<int>& line_aligns() const;
+    // template_boxes, one entry per template line (missing entries = 0).
+    std::vector<int> line_boxes() const;
 
 private:
     // template_lines split once (re-split only when the lines change); the
@@ -150,8 +127,6 @@ private:
     // render / preview owns its FrameTextSource copy.
     const std::vector<std::vector<TemplateSegment>>& parsed() const;
     mutable std::vector<std::string> parsed_from_;
-    mutable std::vector<std::vector<TemplateSegment>> parsed_;   // shown lines only
-    mutable std::vector<int> anchors_;                            // per shown line
-    mutable std::vector<int> aligns_;                             // per shown line
+    mutable std::vector<std::vector<TemplateSegment>> parsed_;
     mutable bool parsed_ok_ = false;
 };

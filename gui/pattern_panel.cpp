@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <cstring>
 #include <cstdio>
+#include <cmath>
 
 #include <GL/gl.h>
 
@@ -201,22 +202,8 @@ static int layout_cursor_cb(ImGuiInputTextCallbackData* d) {
 }
 
 // Cursor in the layout editor (byte offset; -1 = never clicked). Kept after
-// the editor loses focus, so "Insert position" knows where the user was.
+// the editor loses focus, so "Insert stat" knows where the user was.
 static int g_layout_cursor = -1;
-
-// Inserts `line` as its own line, above the line the cursor was on (at the
-// end when the editor was never used).
-static void insert_layout_line(const std::string& line) {
-    std::string buf = g_ui.layout_buf;
-    size_t at = (g_layout_cursor < 0 || (size_t)g_layout_cursor > buf.size()) ? buf.size() : (size_t)g_layout_cursor;
-    while (at > 0 && buf[at - 1] != '\n') --at;   // start of that line
-    std::string ins = line + "\n";
-    if (at == buf.size() && !buf.empty() && buf.back() != '\n') ins = "\n" + line;   // a new last line
-    if (buf.size() + ins.size() >= sizeof(g_ui.layout_buf)) return;   // no room
-    buf.insert(at, ins);
-    std::memcpy(g_ui.layout_buf, buf.c_str(), buf.size() + 1);
-    g_layout_cursor = (int)(at + ins.size());
-}
 
 // Inserts `text` at the cursor (on a new last line when the editor was never
 // used) and moves the cursor after it, so several stats can be added in a row.
@@ -310,6 +297,234 @@ static void draw_layout_editor() {
 }
 
 // Pattern section: the overlay look, saved with the selected pattern (right column).
+// ---- Box editor ----------------------------------------------------------------
+// A thumbnail of the frame (the pattern as it is being edited, at the last
+// processed frame or with zero stats) with the boxes drawn over it. Click a
+// box to edit its text below; drag the line between two boxes to resize them
+// (snapping to 1/2, 1/3, 1/4, ... of the frame and to other box edges; hold
+// Alt to move freely).
+
+// "1/3" for simple fractions, else a percentage.
+static std::string fraction_label(double f) {
+    for (int d : {2, 3, 4, 5, 6, 8, 10, 12})
+        for (int k = 1; k < d; ++k)
+            if (std::fabs(f - (double)k / d) < 1e-6) {
+                int a = k, b = d;   // lowest terms
+                for (int g = 2; g <= a; ++g)
+                    while (a % g == 0 && b % g == 0) { a /= g; b /= g; }
+                return std::to_string(a) + "/" + std::to_string(b);
+            }
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%.1f%%", f * 100.0);
+    return buf;
+}
+
+static void draw_box_editor() {
+    using namespace fmcg_boxes;
+    Node& root = g_ui.s.pattern.boxes;
+    const int W = std::max(16, g_ui.s.global.width), H = std::max(16, g_ui.s.global.height);
+    if (g_ui.selected_box >= leaf_count(root)) select_box(leaf_count(root) - 1);
+    const int sel = g_ui.selected_box;
+
+    ImGui::Text("Boxes");
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The frame is split into boxes; each box has its own text, drawn at the\n"
+                          "point of the box chosen under \"Text sits at\".\n"
+                          "Click a box to select it and edit its text below.\n"
+                          "Drag the line between two boxes to resize them. It snaps to 1/2, 1/3,\n"
+                          "1/4, ... of the frame and to other box edges; hold Alt to move freely.\n"
+                          "Boxes without text show nothing.");
+
+    // Thumbnail size: the panel's width at the video's aspect, at most 260 px high.
+    float tw = ImGui::GetContentRegionAvail().x, th = tw * (float)H / (float)W;
+    if (th > 260.0f) { th = 260.0f; tw = th * (float)W / (float)H; }
+    if (tw < 32.0f || th < 18.0f) return;
+    const ImVec2 p0 = ImGui::GetCursorScreenPos(), p1(p0.x + tw, p0.y + th);
+    const ImTextureID tex = fmcg_preview::pattern_thumbnail(current_pattern_from_ui());
+    ImGui::InvisibleButton("##boxcanvas", ImVec2(tw, th));
+    const bool hovered = ImGui::IsItemHovered();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (tex) dl->AddImage(tex, p0, p1);
+    else dl->AddRectFilled(p0, p1, IM_COL32(20, 20, 20, 255));
+    dl->PushClipRect(p0, p1, true);
+
+    auto sx = [&](double f) { return p0.x + (float)f * tw; };
+    auto sy = [&](double f) { return p0.y + (float)f * th; };
+    const ImGuiIO& io = ImGui::GetIO();
+    const double mx = (io.MousePos.x - p0.x) / tw, my = (io.MousePos.y - p0.y) / th;
+
+    // Boxes: outline, number, the anchor point, the selected one highlighted.
+    const std::vector<FRect> rects = leaf_rects(root);
+    const float mgx = (float)g_ui.s.pattern.margin / W * tw, mgy = (float)g_ui.s.pattern.margin / H * th;
+    for (size_t i = 0; i < rects.size(); ++i) {
+        const FRect& r = rects[i];
+        const ImVec2 a(sx(r.x0), sy(r.y0)), b(sx(r.x1), sy(r.y1));
+        const bool is_sel = (int)i == sel;
+        if (is_sel) dl->AddRectFilled(a, b, IM_COL32(255, 200, 0, 36));
+        dl->AddRect(a, b, IM_COL32(0, 0, 0, 170), 0.0f, 0, 3.0f);
+        dl->AddRect(a, b, is_sel ? IM_COL32(255, 200, 0, 255) : IM_COL32(255, 255, 255, 150), 0.0f, 0,
+                    is_sel ? 2.0f : 1.0f);
+        // Box number in the bottom-right corner (clear of the usual top-left text).
+        const std::string num = std::to_string(i + 1);
+        const ImVec2 ns = ImGui::CalcTextSize(num.c_str());
+        const ImVec2 np(b.x - ns.x - 4, b.y - ns.y - 2);
+        dl->AddText(ImVec2(np.x + 1, np.y + 1), IM_COL32(0, 0, 0, 200), num.c_str());
+        dl->AddText(np, is_sel ? IM_COL32(255, 200, 0, 255) : IM_COL32(255, 255, 255, 200), num.c_str());
+        // Anchor point of the box inset by the margin.
+        const int an = leaf_at(root, (int)i)->box.anchor;
+        float ix0 = a.x + mgx, ix1 = b.x - mgx, iy0 = a.y + mgy, iy1 = b.y - mgy;
+        if (ix1 < ix0) ix0 = ix1 = (a.x + b.x) / 2;
+        if (iy1 < iy0) iy0 = iy1 = (a.y + b.y) / 2;
+        const int col = (an - 1) % 3, row = an >= 7 ? 0 : an >= 4 ? 1 : 2;
+        const ImVec2 ap(col == 0 ? ix0 : col == 1 ? (ix0 + ix1) / 2 : ix1, row == 0 ? iy0 : row == 1 ? (iy0 + iy1) / 2 : iy1);
+        dl->AddCircleFilled(ap, 3.5f, IM_COL32(0, 0, 0, 200));
+        dl->AddCircleFilled(ap, 2.5f, is_sel ? IM_COL32(255, 200, 0, 255) : IM_COL32(255, 255, 255, 200));
+    }
+
+    // Dividers: hover, drag, snap.
+    static bool dragging = false;
+    static Divider drag;
+    const std::vector<Divider> divs = dividers(root);
+    int hov = -1;
+    float best = 6.0f;
+    for (size_t i = 0; i < divs.size() && !dragging; ++i) {
+        const Divider& d = divs[i];
+        const bool cols = d.dir == kColumns;
+        const double along = cols ? my : mx;
+        if (along < d.lo || along > d.hi) continue;
+        const float dist = cols ? std::fabs(io.MousePos.x - sx(d.pos)) : std::fabs(io.MousePos.y - sy(d.pos));
+        if (dist < best) { best = dist; hov = (int)i; }
+    }
+    if (hovered && hov >= 0)
+        ImGui::SetMouseCursor(divs[hov].dir == kColumns ? ImGuiMouseCursor_ResizeEW : ImGuiMouseCursor_ResizeNS);
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+        if (hov >= 0) {
+            dragging = true;
+            drag = divs[hov];
+        } else {
+            const int b = leaf_at_point(root, mx, my);
+            if (b >= 0 && b != sel) select_box(b);
+        }
+    }
+    if (dragging && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) dragging = false;
+    if (dragging) {
+        const bool cols = drag.dir == kColumns;
+        ImGui::SetMouseCursor(cols ? ImGuiMouseCursor_ResizeEW : ImGuiMouseCursor_ResizeNS);
+        double target = cols ? mx : my;
+        bool snapped = false;
+        if (!io.KeyAlt) {
+            const double tol = 7.0 / (cols ? tw : th);
+            double best_d = tol, snap = target;
+            for (int d : {2, 3, 4, 5, 6, 8, 10, 12})
+                for (int k = 1; k < d; ++k) {
+                    const double f = (double)k / d;
+                    if (std::fabs(f - target) < best_d - 1e-12) { best_d = std::fabs(f - target); snap = f; }
+                }
+            for (const Divider& o : divs)   // other box edges in the same direction
+                if (o.dir == drag.dir && !(o.path == drag.path && o.index == drag.index) &&
+                    std::fabs(o.pos - target) < best_d - 1e-12) {
+                    best_d = std::fabs(o.pos - target);
+                    snap = o.pos;
+                }
+            if (snap != target) { target = snap; snapped = true; }
+        }
+        commit_layout_buf();
+        move_divider(root, drag, target);
+        // Where it ended up (the move clamps to the neighbours' minimum size).
+        double now = target;
+        for (const Divider& o : dividers(root))
+            if (o.path == drag.path && o.index == drag.index) now = o.pos;
+        if (snapped && std::fabs(now - target) < 1e-9) {
+            if (cols) dl->AddLine(ImVec2(sx(now), p0.y), ImVec2(sx(now), p1.y), IM_COL32(0, 220, 255, 255), 2.0f);
+            else dl->AddLine(ImVec2(p0.x, sy(now)), ImVec2(p1.x, sy(now)), IM_COL32(0, 220, 255, 255), 2.0f);
+        }
+        ImGui::SetTooltip("%s %s of the frame", cols ? "x =" : "y =", fraction_label(now).c_str());
+    } else if (hovered && hov >= 0) {
+        const Divider& d = divs[hov];
+        if (d.dir == kColumns) dl->AddLine(ImVec2(sx(d.pos), sy(d.lo)), ImVec2(sx(d.pos), sy(d.hi)), IM_COL32(0, 220, 255, 255), 2.0f);
+        else dl->AddLine(ImVec2(sx(d.lo), sy(d.pos)), ImVec2(sx(d.hi), sy(d.pos)), IM_COL32(0, 220, 255, 255), 2.0f);
+    }
+    dl->PopClipRect();
+
+    // Structure: split, equal sizes, delete.
+    const int n = leaf_count(root);
+    static int parts = 3;
+    ImGui::Text("Box %d of %d:", sel + 1, n);
+    ImGui::SameLine();
+    if (ImGui::Button("Split into columns")) {
+        commit_layout_buf();
+        split_leaf(root, sel, kColumns, parts);
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Splits the selected box into %d equal boxes side by side.", parts);
+    ImGui::SameLine();
+    if (ImGui::Button("Split into rows")) {
+        commit_layout_buf();
+        split_leaf(root, sel, kRows, parts);
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Splits the selected box into %d equal boxes stacked.", parts);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(70);
+    if (ImGui::InputInt("parts", &parts)) parts = std::max(2, std::min(8, parts));
+    if (n > 1) {
+        if (ImGui::Button("Equal sizes")) equalize_parent(root, sel);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Gives the selected box and the boxes it was split with the same size.");
+        ImGui::SameLine();
+        if (ImGui::Button("Delete box")) {
+            commit_layout_buf();
+            const int to = remove_leaf(root, sel);
+            if (to >= 0) {
+                g_ui.selected_box = to;
+                load_layout_buf();
+            }
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Removes the selected box; its space and its text go to the neighbouring box.");
+        ImGui::SameLine();
+    }
+    ImGui::SetNextItemWidth(90);
+    if (ImGui::InputInt("Margin (px)", &g_ui.s.pattern.margin))
+        g_ui.s.pattern.margin = std::max(0, std::min(1000, g_ui.s.pattern.margin));
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Space kept between each box's edges and its text.");
+
+    // The selected box: where its text sits and how its lines align.
+    if (Node* leaf = leaf_at(root, g_ui.selected_box)) {
+        static const char* const k_anchor_names[9] = {"Top left", "Top center", "Top right",
+                                                      "Middle left", "Center", "Middle right",
+                                                      "Bottom left", "Bottom center", "Bottom right"};
+        ImGui::BeginGroup();
+        ImGui::TextUnformatted("Text sits at");
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) {
+                const int np = (r == 0 ? 7 : r == 1 ? 4 : 1) + c;
+                if (c) ImGui::SameLine(0, 2);
+                ImGui::PushID(np);
+                if (ImGui::RadioButton("##an", leaf->box.anchor == np)) leaf->box.anchor = np;
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s of the box", k_anchor_names[r * 3 + c]);
+                ImGui::PopID();
+            }
+        }
+        ImGui::EndGroup();
+        ImGui::SameLine(0, 24);
+        ImGui::BeginGroup();
+        ImGui::TextUnformatted("Lines");
+        static const char* k_line_align_items[] = {"Follow position", "Left", "Center", "Right"};
+        ImGui::SetNextItemWidth(150);
+        ImGui::Combo("##linealign", &leaf->box.line_align, k_line_align_items, 4);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How the box's lines align with each other.\n"
+                              "Follow position: to the side the text sits at.\n"
+                              "Left / Center / Right: that way inside the text block, which keeps the\n"
+                              "width of its widest possible line, so e.g. a label stays centred over\n"
+                              "its stat while the block stays at its position.");
+        ImGui::EndGroup();
+    }
+    ImGui::Spacing();
+}
+
 void draw_pattern_section() {
     // --- Pattern section: everything here is saved under the selected pattern
     ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f),
@@ -495,8 +710,10 @@ void draw_pattern_section() {
 
     draw_typography_options();
 
-    // Layout: one line per overlay row (pattern-saved).
-    ImGui::Text("Layout (one line per overlay row; {nc}, {time-milli}, {bpm}, ...)");
+    draw_box_editor();
+
+    // Layout of the selected box: one line per overlay row (pattern-saved).
+    ImGui::Text("Box %d text (one line per overlay row; {nc}, {time-milli}, {bpm}, ...)", g_ui.selected_box + 1);
     draw_layout_editor();
     if (ImGui::Button("Stats list"))
         ImGui::OpenPopup("Valid layout stats");
@@ -516,37 +733,7 @@ void draw_pattern_section() {
         ImGui::EndCombo();
     }
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Inserts a stat token at the cursor in the layout.");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(150);
-    if (ImGui::BeginCombo("##insert_pos", "Insert position", ImGuiComboFlags_HeightLarge)) {
-        // Optional line alignment for the inserted header ("[top-left, center]").
-        static int ins_align = 0;
-        ImGui::TextDisabled("Lines in the block:");
-        ImGui::RadioButton("follow position##ia", &ins_align, 0);
-        ImGui::SameLine();
-        ImGui::RadioButton("left##ia", &ins_align, 1);
-        ImGui::SameLine();
-        ImGui::RadioButton("center##ia", &ins_align, 2);
-        ImGui::SameLine();
-        ImGui::RadioButton("right##ia", &ins_align, 3);
-        ImGui::Separator();
-        const std::string suffix = ins_align > 0 ? std::string(", ") + k_line_align_names[ins_align - 1] : "";
-        for (int i = 0; i < 9; ++i)
-            if (ImGui::Selectable(k_position_names[i]))
-                insert_layout_line(std::string("[") + k_position_names[i] + suffix + "]");
-        ImGui::Separator();
-        if (ImGui::Selectable("default (the placement below)")) insert_layout_line("[default" + suffix + "]");
-        ImGui::EndCombo();
-    }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Adds a position line such as [bottom-right] above the line the cursor is on.\n"
-                          "The lines below it, up to the next position line, are drawn at that\n"
-                          "point of the frame (at the margin); position lines themselves are not shown.\n"
-                          "Lines before the first one use the placement settings below;\n"
-                          "[default] returns to them.\n"
-                          "A line alignment ([top-left, center]) aligns the block's lines that way\n"
-                          "instead of to its side.");
+        ImGui::SetTooltip("Inserts a stat token at the cursor in the selected box's text.");
     if (ImGui::BeginPopupModal("Valid layout stats", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
         static const char* const k_stats[] = {
             "Notes",  "{nc} / {nc-total} / {nc-rem}",
@@ -578,10 +765,6 @@ void draw_pattern_section() {
             ImGui::EndTable();
         }
         ImGui::Spacing();
-        ImGui::TextDisabled("Position lines: [top-left] [top-center] [top-right] [center-left] [center]");
-        ImGui::TextDisabled("[center-right] [bottom-left] [bottom-center] [bottom-right] [default]");
-        ImGui::TextDisabled("send the lines below them to that point of the frame;");
-        ImGui::TextDisabled("add \", left\", \", center\" or \", right\" to align the block's lines: [top-left, center].");
         ImGui::Spacing();
         if (ImGui::Button("Close", ImVec2(120, 0)))
             ImGui::CloseCurrentPopup();
@@ -699,69 +882,6 @@ void draw_pattern_section() {
         if (bdec > 6) bdec = 6;   // beyond 6 is display noise
         g_ui.s.pattern.bpm.decimals = bdec;
     }
-
-    ImGui::Text("Counter position:");
-    ImGui::SameLine();
-    if (ImGui::RadioButton("Corners##pm", g_ui.s.pattern.pos_mode == 0)) g_ui.s.pattern.pos_mode = 0;
-    ImGui::SameLine();
-    if (ImGui::RadioButton("Custom x,y##pm", g_ui.s.pattern.pos_mode == 1)) g_ui.s.pattern.pos_mode = 1;
-    if (g_ui.s.pattern.pos_mode == 0) {
-        ImGui::SetNextItemWidth(160);
-        if (ImGui::Combo("##align", &g_ui.alignment_idx, k_alignment_items, k_alignment_count)) {
-            g_ui.s.pattern.alignment = g_ui.alignment_idx;
-        }
-    } else {
-        // Custom position: x,y measured from a point of the frame, and the
-        // block's own anchor point placed there (fmcg_text::Placement).
-        static const char* k_anchor_items[] = {"Top Left", "Top Center", "Top Right",
-                                               "Middle Left", "Center", "Middle Right",
-                                               "Bottom Left", "Bottom Center", "Bottom Right"};
-        ImGui::Text("Measured from");
-        ImGui::SameLine(130);
-        ImGui::SetNextItemWidth(150);
-        ImGui::Combo("##fanchor", &g_ui.s.pattern.frame_anchor, k_anchor_items, 9);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("The point of the FRAME that x,y count from.\n"
-                              "From an edge, x,y count inward (from the right edge +x moves left,\n"
-                              "from the bottom +y moves up); from a centre line, +x is right, +y down.\n"
-                              "Keeps the counter in place when the resolution changes.");
-        ImGui::SameLine();
-        ImGui::Text("Block anchor");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(150);
-        ImGui::Combo("##banchor", &g_ui.s.pattern.block_anchor, k_anchor_items, 9);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("The point of the TEXT BLOCK that sits at the position.\n"
-                              "Lines align to its side (left, centre or right).");
-        // Ranges: 0..size from an edge, -size/2..size/2 from a centre line.
-        const bool cx = g_ui.s.pattern.frame_anchor % 3 == 1, cy = g_ui.s.pattern.frame_anchor / 3 == 1;
-        const int min_x = cx ? -g_ui.s.global.width / 2 : 0, max_x = cx ? g_ui.s.global.width / 2 : g_ui.s.global.width;
-        const int min_y = cy ? -g_ui.s.global.height / 2 : 0, max_y = cy ? g_ui.s.global.height / 2 : g_ui.s.global.height;
-        ImGui::Text("x");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(90);
-        int xin = g_ui.s.pattern.pos_x;
-        if (ImGui::InputInt("##posx", &xin, 0, 0)) g_ui.s.pattern.pos_x = std::max(min_x, std::min(max_x, xin));
-        ImGui::SameLine();
-        ImGui::Text("y");
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(90);
-        int yin = g_ui.s.pattern.pos_y;
-        if (ImGui::InputInt("##posy", &yin, 0, 0)) g_ui.s.pattern.pos_y = std::max(min_y, std::min(max_y, yin));
-        ImGui::SameLine();
-        ImGui::TextDisabled("x: %d..%d  y: %d..%d  (the block always stays fully on screen)", min_x, max_x, min_y, max_y);
-    }
-    ImGui::Text("Line alignment:");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(150);
-    static const char* k_line_align_items[] = {"Follow position", "Left", "Center", "Right"};
-    ImGui::Combo("##linealign", &g_ui.s.pattern.line_align, k_line_align_items, 4);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("How the lines of a block align with each other.\n"
-                          "Follow position: to the block's side (left, centre or right).\n"
-                          "Left / Center / Right: that way inside the block, which keeps the width of\n"
-                          "its widest possible line, so e.g. a label stays centred over its stat.\n"
-                          "A position line can override it: [top-left, center].");
 }
 
 // Global section: session-wide settings, autosaved, not in patterns (left column).

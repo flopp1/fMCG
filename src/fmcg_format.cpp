@@ -236,85 +236,20 @@ FrameStats FrameTextSource::stats(size_t k) const {
     return z;
 }
 
-// Lower-cased, separators (space, '_', '-') collapsed to single '-', trimmed;
-// "centre" / "middle" -> "center".
-static std::string norm_position_word(const std::string& line, size_t a, size_t b) {
-    std::string n;
-    for (size_t i = a; i < b; ++i) {
-        char c = line[i];
-        if (c == '\t') c = ' ';
-        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-        if (c == ' ' || c == '_') c = '-';
-        if (c == '-' && (n.empty() || n.back() == '-')) continue;   // collapse / trim separators
-        n += c;
-    }
-    while (!n.empty() && n.back() == '-') n.pop_back();
-    for (const char* from : {"centre", "middle"})
-        for (size_t p; (p = n.find(from)) != std::string::npos;) n.replace(p, std::string(from).size(), "center");
-    return n;
-}
-
-int position_header(const std::string& line) {
-    int la;
-    return position_header(line, la);
-}
-
-int position_header(const std::string& line, int& line_align) {
-    line_align = 0;
-    size_t a = 0, b = line.size();
-    while (a < b && (line[a] == ' ' || line[a] == '\t' || line[a] == '\r')) ++a;
-    while (b > a && (line[b - 1] == ' ' || line[b - 1] == '\t' || line[b - 1] == '\r')) --b;
-    if (b - a < 3 || line[a] != '[' || line[b - 1] != ']') return -1;
-    const size_t comma = line.find(',', a + 1);
-    const size_t name_end = comma < b - 1 ? comma : b - 1;
-    const std::string n = norm_position_word(line, a + 1, name_end);
-    if (comma < b - 1) {   // ", left" / ", center" / ", right"
-        const std::string w = norm_position_word(line, comma + 1, b - 1);
-        for (int i = 0; i < 3; ++i)
-            if (w == k_line_align_names[i]) line_align = i + 1;
-        if (line_align == 0) return -1;
-    }
-    static const struct { const char* name; int anchor; } names[] = {
-        {"default", 0},
-        {"top-left", 7}, {"top-center", 8}, {"top", 8}, {"top-right", 9},
-        {"center-left", 4}, {"left", 4}, {"center", 5}, {"center-center", 5}, {"center-right", 6}, {"right", 6},
-        {"bottom-left", 1}, {"bottom-center", 2}, {"bottom", 2}, {"bottom-right", 3},
-        {"left-top", 7}, {"right-top", 9}, {"left-bottom", 1}, {"right-bottom", 3},
-        {"left-center", 4}, {"right-center", 6}, {"center-top", 8}, {"center-bottom", 2},
-    };
-    for (const auto& e : names)
-        if (n == e.name) return e.anchor;
-    return -1;
-}
-
 const std::vector<std::vector<TemplateSegment>>& FrameTextSource::parsed() const {
     if (!parsed_ok_ || parsed_from_ != template_lines) {
         parsed_.clear();
-        anchors_.clear();
-        aligns_.clear();
-        int anchor = 0, align = 0;   // lines before any header: the pattern's placement
-        for (const std::string& t : template_lines) {
-            int la = 0;
-            const int h = position_header(t, la);
-            if (h >= 0) { anchor = h; align = la; continue; }
-            parsed_.push_back(parse_template_line(t));
-            anchors_.push_back(anchor);
-            aligns_.push_back(align);
-        }
+        for (const std::string& t : template_lines) parsed_.push_back(parse_template_line(t));
         parsed_from_ = template_lines;
         parsed_ok_ = true;
     }
     return parsed_;
 }
 
-const std::vector<int>& FrameTextSource::line_anchors() const {
-    parsed();
-    return anchors_;
-}
-
-const std::vector<int>& FrameTextSource::line_aligns() const {
-    parsed();
-    return aligns_;
+std::vector<int> FrameTextSource::line_boxes() const {
+    std::vector<int> b = template_boxes;
+    b.resize(template_lines.size(), 0);
+    return b;
 }
 
 fmcg_text::PieceLines FrameTextSource::pieces_for(const FrameStats& fs, bool lead_in) const {
@@ -398,8 +333,7 @@ fmcg_text::TextBlockSpec FrameTextSource::block_spec() const {
     }
     fmcg_text::TextBlockSpec spec;
     spec.pieces = pieces_for(probes.front().first, probes.front().second);
-    spec.anchors = line_anchors();
-    spec.line_aligns = line_aligns();
+    spec.boxes = line_boxes();
     spec.extremes.resize(spec.pieces.size());
     for (const auto& pr : probes) {
         const fmcg_text::PieceLines pl = pieces_for(pr.first, pr.second);

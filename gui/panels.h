@@ -7,8 +7,6 @@
 
 #include <string>
 
-extern const char* const k_alignment_items[];
-extern const int k_alignment_count;
 extern double g_pattern_list_time;   // last patterns-folder scan (ImGui time)
 extern bool font_list_loaded;        // font-list lazy-init (set at startup)
 
@@ -20,6 +18,11 @@ void mark_globals_dirty();
 // Patterns.
 PatternData current_pattern_from_ui();
 void apply_pattern_to_ui(const PatternData& p);
+// The layout editor shows the selected box's text: commit_layout_buf() stores
+// the editor's text into that box; select_box() commits, then switches.
+void commit_layout_buf();
+void select_box(int index);
+void load_layout_buf();   // the selected box's text -> the editor (no commit)
 bool pattern_dirty();
 void set_active_pattern(const std::string& name);
 void sync_pattern_index();

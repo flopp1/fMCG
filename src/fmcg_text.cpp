@@ -305,23 +305,19 @@ static bool align_middle(int a) { return a == 4 || a == 5 || a == 6; }
 
 void TextRenderer::place(const Layout& L, const Placement& p, double& x0, double& y0) const {
     const double w = std::max(L.width, p.min_width), h = L.height();
-    if (p.pos_mode == 1) {
-        // Reference point on the frame, then the block's anchor point on it.
-        const int fa = p.frame_anchor, ba = p.block_anchor;
-        const double X = align_right(fa) ? p.frame_w - p.pos_x
-                       : align_center(fa) ? p.frame_w / 2.0 + p.pos_x : (double)p.pos_x;
-        const double Y = align_bottom(fa) ? p.frame_h - p.pos_y
-                       : align_middle(fa) ? p.frame_h / 2.0 + p.pos_y : (double)p.pos_y;
-        x0 = X - (align_right(ba) ? w : align_center(ba) ? w / 2.0 : 0.0);
-        y0 = Y - (align_bottom(ba) ? h : align_middle(ba) ? h / 2.0 : 0.0);
-    } else {
-        const double ax = align_right(p.alignment) ? p.frame_w - p.margin
-                        : align_center(p.alignment) ? p.frame_w / 2.0 : (double)p.margin;
-        const double ay = align_bottom(p.alignment) ? p.frame_h - p.margin
-                        : align_middle(p.alignment) ? p.frame_h / 2.0 : (double)p.margin;
-        x0 = align_right(p.alignment) ? ax - w : align_center(p.alignment) ? ax - w / 2.0 : ax;
-        y0 = align_bottom(p.alignment) ? ay - h : align_middle(p.alignment) ? ay - h / 2.0 : ay;
-    }
+    const bool whole = !(p.box_w > 0 && p.box_h > 0);
+    const double bx = whole ? 0.0 : p.box_x, by = whole ? 0.0 : p.box_y;
+    const double bw = whole ? p.frame_w : p.box_w, bh = whole ? p.frame_h : p.box_h;
+    // The box inset by the margin (collapsed to its centre line when too small).
+    double ix0 = bx + p.margin, ix1 = bx + bw - p.margin, iy0 = by + p.margin, iy1 = by + bh - p.margin;
+    if (ix1 < ix0) ix0 = ix1 = bx + bw / 2.0;
+    if (iy1 < iy0) iy0 = iy1 = by + bh / 2.0;
+    const int a = p.alignment;
+    x0 = align_right(a) ? ix1 - w : align_center(a) ? (ix0 + ix1) / 2.0 - w / 2.0 : ix0;
+    y0 = align_bottom(a) ? iy1 - h : align_middle(a) ? (iy0 + iy1) / 2.0 - h / 2.0 : iy0;
+    // Inside the box when it fits there.
+    if (w <= bw) x0 = std::max(bx, std::min(x0, bx + bw - w));
+    if (h <= bh) y0 = std::max(by, std::min(y0, by + bh - h));
     // Keep the whole block (and its outline) on screen whenever it fits; a
     // block larger than the frame starts at the top-left edge. The 1 px edge
     // covers glyph bitmaps, which round outward beyond the em box.
@@ -335,7 +331,7 @@ void TextRenderer::place(const Layout& L, const Placement& p, double& x0, double
 double TextRenderer::line_offset(const Layout& L, size_t i, const Placement& p) const {
     if (i >= L.lines.size()) return 0.0;
     const int a = p.line_align >= 1 && p.line_align <= 3 ? 6 + p.line_align   // 7 / 8 / 9
-                : p.pos_mode == 1 ? p.block_anchor : p.alignment;
+                                                         : p.alignment;
     const double slack = std::max(L.width, p.min_width) - L.lines[i].advance;
     return align_right(a) ? slack : align_center(a) ? slack / 2.0 : 0.0;
 }
@@ -408,50 +404,48 @@ bool FrameRenderer::init(const TextStyle& style, const Placement& placement, RGB
     have_prev_ = false;
     prev_pieces_.clear();
     line_cache_.clear();
-    anchors_.clear();
-    aligns_.clear();
+    line_boxes_.clear();
     blocks_.clear();
     blocks_for_ = (size_t)-1;
     return text_.load(style, err);
 }
 
-// Block placement for a line's anchor: 0 = the Placement itself, 1..9 = that
-// numpad position at the Placement's margin.
-Placement FrameRenderer::block_placement(int anchor) const {
-    if (anchor <= 0 || anchor > 9) return place_;
+// Placement of box `box`: its rectangle in px (edges rounded, so neighbouring
+// boxes share them exactly), anchor and line alignment.
+Placement FrameRenderer::block_placement(int box) const {
     Placement p = place_;
-    p.pos_mode = 0;
-    p.alignment = anchor;
+    p.boxes.clear();
+    if (box < 0 || (size_t)box >= place_.boxes.size()) return p;
+    const BoxPlace& b = place_.boxes[box];
+    const double x0 = std::round(b.x0 * p.frame_w), x1 = std::round(b.x1 * p.frame_w);
+    const double y0 = std::round(b.y0 * p.frame_h), y1 = std::round(b.y1 * p.frame_h);
+    p.box_x = x0; p.box_w = x1 - x0;
+    p.box_y = y0; p.box_h = y1 - y0;
+    p.alignment = b.anchor;
+    p.line_align = b.line_align;
     return p;
 }
 
-// Groups the lines into blocks: one per distinct position, in order of first
-// appearance. The pattern's own placement in preset mode IS a position, so
-// "[top-right]" lines join the default lines when the pattern sits top-right.
+// Groups the lines into blocks: one per box that has lines, in order of
+// first appearance.
 void FrameRenderer::build_blocks(size_t nlines) {
     for (const Block& b : blocks_) {     // a new grouping: wipe the old blocks
         canvas_.fill_rect(b.last, bg_);
         dirty_ = dirty_.united(b.last);
     }
     blocks_.clear();
-    std::vector<int> keys;   // block key: numpad position, or 0 for a custom (pos_mode 1) default block
+    std::vector<int> keys;   // box index of each block (-1: no boxes, the Placement itself)
     for (size_t li = 0; li < nlines; ++li) {
-        const int a = li < anchors_.size() ? anchors_[li] : 0;
-        const int key = a > 0 ? a : (place_.pos_mode == 0 ? place_.alignment : 0);
+        int key = li < line_boxes_.size() ? line_boxes_[li] : 0;
+        if (place_.boxes.empty()) key = -1;
+        else if (key < 0 || (size_t)key >= place_.boxes.size()) key = 0;
         size_t bi = 0;
         while (bi < keys.size() && keys[bi] != key) ++bi;
         if (bi == keys.size()) {
             keys.push_back(key);
             Block b;
-            b.place = block_placement(key == 0 ? 0 : (a > 0 ? a : 0));
+            b.place = block_placement(key);
             blocks_.push_back(std::move(b));
-        }
-        // Line alignment: the first one a header of this block gives, else
-        // the Placement's.
-        const int la = li < aligns_.size() ? aligns_[li] : 0;
-        if (la >= 1 && la <= 3 && !blocks_[bi].align_set) {
-            blocks_[bi].place.line_align = la;
-            blocks_[bi].align_set = true;
         }
         blocks_[bi].lines.push_back(li);
     }
@@ -461,8 +455,7 @@ void FrameRenderer::build_blocks(size_t nlines) {
 bool FrameRenderer::init(const TextStyle& style, const Placement& placement, RGBA background,
                          const TextBlockSpec& spec, std::string* err) {
     if (!init(style, placement, background, err)) return false;
-    anchors_ = spec.anchors;
-    aligns_ = spec.line_aligns;
+    line_boxes_ = spec.boxes;
     build_blocks(spec.pieces.size());
     // Cell widths (widest candidate per stat) and the largest block the
     // video can show, at the current font size.
@@ -521,14 +514,12 @@ bool FrameRenderer::init(const TextStyle& style, const Placement& placement, RGB
             block_w_ = std::max(block_w_, w);
             block_h_ = std::max(block_h_, h);
             if (w <= 0 || h <= 0) continue;
-            // Available area: the frame, minus the margin for preset positions.
-            double aw = place_.frame_w, ah = place_.frame_h;
-            if (b.place.pos_mode == 0) {
-                aw -= 2.0 * place_.margin;
-                ah -= 2.0 * place_.margin;
-                if (aw <= 0) aw = place_.frame_w;
-                if (ah <= 0) ah = place_.frame_h;
-            }
+            // Available area: the block's box minus the margin.
+            const bool whole = !(b.place.box_w > 0 && b.place.box_h > 0);
+            const double bw = whole ? place_.frame_w : b.place.box_w, bh = whole ? place_.frame_h : b.place.box_h;
+            double aw = bw - 2.0 * place_.margin, ah = bh - 2.0 * place_.margin;
+            if (aw <= 0) aw = bw;
+            if (ah <= 0) ah = bh;
             fit_scale = std::min({fit_scale, (aw - pad) / w, (ah - pad) / h});
         }
     };

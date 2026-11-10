@@ -34,10 +34,6 @@
 #endif
 #include "panels.h"
 
-const char* const k_alignment_items[] = {
-    "Top Left", "Top Right", "Bottom Left", "Bottom Right", "Top Center", "Bottom Center"
-};
-const int k_alignment_count = 6;
 
 // --- persistence glue -------------------------------------------------------
 
@@ -60,16 +56,33 @@ void mark_globals_dirty() { g_ui.globals_dirty = true; }
 // The pattern being edited: g_ui.s.pattern with the layout editor's text.
 PatternData current_pattern_from_ui() {
     PatternData p = g_ui.s.pattern;
-    p.layout_text = g_ui.layout_buf;
+    if (fmcg_boxes::Node* b = fmcg_boxes::leaf_at(p.boxes, g_ui.selected_box)) b->box.text = g_ui.layout_buf;
     return p;
+}
+
+void commit_layout_buf() {
+    if (fmcg_boxes::Node* b = fmcg_boxes::leaf_at(g_ui.s.pattern.boxes, g_ui.selected_box))
+        b->box.text = g_ui.layout_buf;
+}
+
+void load_layout_buf() {
+    const int n = fmcg_boxes::leaf_count(g_ui.s.pattern.boxes);
+    g_ui.selected_box = std::max(0, std::min(n - 1, g_ui.selected_box));
+    const fmcg_boxes::Node* b = fmcg_boxes::leaf_at(g_ui.s.pattern.boxes, g_ui.selected_box);
+    strncpy(g_ui.layout_buf, b ? b->box.text.c_str() : "", sizeof(g_ui.layout_buf) - 1);
+    g_ui.layout_buf[sizeof(g_ui.layout_buf) - 1] = '\0';
+}
+
+void select_box(int index) {
+    commit_layout_buf();
+    g_ui.selected_box = index;
+    load_layout_buf();
 }
 
 void apply_pattern_to_ui(const PatternData& p) {
     g_ui.s.pattern = p;
-    strncpy(g_ui.layout_buf, p.layout_text.c_str(), sizeof(g_ui.layout_buf) - 1);
-    g_ui.layout_buf[sizeof(g_ui.layout_buf) - 1] = '\0';
-    if (g_ui.s.pattern.alignment < 0 || g_ui.s.pattern.alignment >= k_alignment_count) g_ui.s.pattern.alignment = 0;
-    g_ui.alignment_idx = g_ui.s.pattern.alignment;
+    g_ui.selected_box = 0;
+    load_layout_buf();
     g_ui.variants_for.clear();   // the style combo re-reads the family's styles
     // Family: prefer an exact match in the enumerated list; else keep the name
     // (custom-input fallback path still renders it if the file exists).
@@ -86,7 +99,7 @@ bool pattern_dirty() {
 void set_active_pattern(const std::string& name) {
     g_ui.active_pattern = name;
     PatternData p;
-    if (load_pattern(name, p)) {
+    if (load_pattern(name, p, g_ui.s.global.width, g_ui.s.global.height)) {
         apply_pattern_to_ui(p);
         g_ui.pattern_baseline = p;
     }
